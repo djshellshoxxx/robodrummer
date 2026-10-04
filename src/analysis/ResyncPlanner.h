@@ -24,13 +24,15 @@ public:
             return ResyncAction::None;
         }
 
-        persistentErrorSeconds_ += deltaSeconds;
-
         const bool reliableTiming = rhythm.locked &&
                                     rhythm.tempoConfidence >= 0.60f &&
                                     rhythm.beatConfidence >= 0.55f;
-        if (!reliableTiming)
+        if (!reliableTiming) {
+            persistentErrorSeconds_ = 0.0;
             return ResyncAction::Wait;
+        }
+
+        persistentErrorSeconds_ += deltaSeconds;
 
         const bool reliableDownbeat = rhythm.downbeatConfidence >= 0.60f;
         const bool onBeatOne = rhythm.beatInBar == 1;
