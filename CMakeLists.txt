@@ -27,7 +27,8 @@ foreach(test_name IN ITEMS
     phase_follower
     performance_analyzer
     dynamics_follower
-    downbeat_tracker)
+    downbeat_tracker
+    resync_planner)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   add_test(NAME ${test_name} COMMAND test_${test_name})
