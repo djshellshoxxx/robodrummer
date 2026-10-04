@@ -1,13 +1,13 @@
 # RoboDrummer JUCE Build
 
-RoboDrummer Phase 2 builds with CMake and JUCE 9.0.3.
+RoboDrummer uses JUCE 9.0.3 through CMake FetchContent. The JUCE shell is deliberately thin: musical logic, timing, groove generation and tests remain in JUCE-independent C++ where practical.
 
 ## Requirements
 
 - CMake 3.22 or newer
 - C++20 compiler
-- Git (CMake FetchContent downloads JUCE)
-- Windows: Visual Studio 2022/2026 with Desktop C++ workload
+- Git
+- Windows: Visual Studio with Desktop C++ workload
 - Linux: ALSA/X11/Freetype/WebKit development packages used by JUCE
 
 ## Core-only build
@@ -27,27 +27,40 @@ cmake --build build --config Release --target RoboDrummer_VST3 RoboDrummer_Stand
 
 CMake downloads the pinned JUCE release during configuration.
 
-## Current Phase 2 behavior
+## Current timing modes
 
-The plugin currently provides:
+### Drummer Leads
 
-- VST3 and Standalone targets
-- stereo guitar/analysis input and stereo mixed output
-- internal tempo fallback when the host does not expose tempo
-- host tempo and time-signature following when available
-- generated starter kick/snare/closed-hat/open-hat/ride/crash/tom sounds so the plugin works without external sample assets
-- basic-rock procedural groove generation
-- intensity control
-- MIDI intervention notes 36–47 on MIDI channel 16
-- generated General MIDI drum output on MIDI channel 10
-- persistent BPM/intensity state
-- basic Live GUI
+Host BPM and PPQ are authoritative when available. Internal BPM is used as the fallback. Guitar analysis continues to run for telemetry but does not move the clock.
 
-The incoming guitar signal is currently passed through unchanged and reserved for the next phase's analysis engine. Phase 2 does not yet infer guitar tempo, beats or musical sections.
+### Hybrid
+
+The plugin blends trusted guitar tempo toward the host/internal base tempo according to Leadership, tracker confidence and Follow Range. Phase correction is bounded and gradual so normal timing drift does not create sudden drum jumps.
+
+### Guitarist Leads
+
+The guitar receives full requested timing authority, still subject to confidence gating and Follow Range. RoboDrummer remains silent while acquiring a reliable timing lock, then enters on a detected beat boundary.
+
+Large phase disagreement is currently flagged rather than immediately corrected. A later stage will turn that flag into a musical hard-resync action such as a short fill/break and re-entry.
+
+## Current live controls
+
+- Internal BPM
+- Intensity
+- Timing mode: Drummer Leads / Hybrid / Guitarist Leads
+- Leadership
+- Follow Range
+- detected guitar BPM
+- tempo confidence
+- beat confidence
+- tracker lock state
+- effective guitar authority
+- Fill
+- Reset Listening
 
 ## MIDI intervention map
 
-RoboDrummer treats **MIDI channel 16** as its intervention/control channel. This avoids confusing the control triggers with the generated General MIDI drum stream on channel 10.
+RoboDrummer treats MIDI channel 16 as its intervention/control channel. Generated drum MIDI is sent on General MIDI drum channel 10.
 
 | Note | Action |
 |---:|---|
@@ -64,4 +77,12 @@ RoboDrummer treats **MIDI channel 16** as its intervention/control channel. This
 | 46 | Resume drummer |
 | 47 | Reset listening |
 
-The control map is deliberately compact because normal performance is intended to remain mostly automatic.
+Not every higher-level command has a complete arrangement behavior yet; the command model is in place so those behaviors can be added without changing the MIDI contract.
+
+## Real-time notes
+
+The audio thread does not perform disk I/O or network I/O. The current generated starter kit is created during `prepareToPlay`. The event scheduler, sampler trigger path, timing-authority controller and phase follower use fixed/preallocated state in the processing path.
+
+## VST3 compatibility
+
+RoboDrummer has never shipped a VST2 build. `VST3_CAN_REPLACE_VST2` is therefore disabled in the CMake target, avoiding JUCE's VST2/VST3 parameter-compatibility guard and making the VST3 identity explicit.
