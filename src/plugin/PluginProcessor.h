@@ -4,6 +4,7 @@
 #include "plugin/HostTransportAdapter.h"
 #include "plugin/JamEngine.h"
 #include <atomic>
+#include <cstdint>
 
 class RoboDrummerAudioProcessor final : public juce::AudioProcessor {
 public:
@@ -34,14 +35,16 @@ public:
     void setStateInformation(const void*, int) override;
 
     void setInternalBpm(double bpm) noexcept;
-    double getInternalBpm() const noexcept { return internalBpm_.load(); }
+    double getInternalBpm() const noexcept { return internalBpm_.load(std::memory_order_relaxed); }
     void setIntensity(float value) noexcept;
-    float getIntensity() const noexcept { return intensity_.load(); }
-    robodrummer::HostTransportSnapshot getLastTransport() const noexcept { return lastTransport_; }
-    void requestFill() noexcept { jam_.apply(robodrummer::MidiCommand::Fill); }
-    void resetJamPhase() noexcept { jam_.resetPhase(); }
+    float getIntensity() const noexcept { return intensity_.load(std::memory_order_relaxed); }
+    robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
+    void requestFill() noexcept { pendingUiCommands_.fetch_or(FillBit, std::memory_order_release); }
+    void resetJamPhase() noexcept { pendingUiCommands_.fetch_or(ResetBit, std::memory_order_release); }
 
 private:
+    enum PendingUiBits : std::uint32_t { FillBit = 1u << 0, ResetBit = 1u << 1 };
+
     void installStarterKit(double sampleRate);
     static int midiNoteFor(robodrummer::DrumInstrument) noexcept;
 
@@ -49,7 +52,14 @@ private:
     robodrummer::DrumSamplePlayer samplePlayer_{};
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
-    robodrummer::HostTransportSnapshot lastTransport_{};
+    std::atomic<std::uint32_t> pendingUiCommands_{0};
+    std::atomic<double> lastHostBpm_{120.0};
+    std::atomic<double> lastHostPpq_{0.0};
+    std::atomic<int> lastHostNumerator_{4};
+    std::atomic<int> lastHostDenominator_{4};
+    std::atomic<bool> lastHostPlaying_{false};
+    std::atomic<bool> lastHostTempoValid_{false};
+    std::atomic<bool> lastHostPpqValid_{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RoboDrummerAudioProcessor)
 };
