@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include "analysis/PerformanceAnalyzer.h"
 #include "analysis/PhaseFollower.h"
 #include "analysis/RhythmAnalyzer.h"
 #include "analysis/TimingAuthorityController.h"
@@ -48,6 +49,10 @@ public:
     float getLeadership() const noexcept { return leadership_.load(std::memory_order_relaxed); }
     void setFollowRange(double bpm) noexcept { followRangeBpm_.store(juce::jlimit(0.0, 80.0, bpm), std::memory_order_relaxed); }
     double getFollowRange() const noexcept { return followRangeBpm_.load(std::memory_order_relaxed); }
+    void setDynamicFollow(float value) noexcept { dynamicFollow_.store(juce::jlimit(0.0f, 1.0f, value), std::memory_order_relaxed); }
+    float getDynamicFollow() const noexcept { return dynamicFollow_.load(std::memory_order_relaxed); }
+    float getDetectedGuitarIntensity() const noexcept { return guitarIntensity_.load(std::memory_order_relaxed); }
+    float getEffectiveDrummerIntensity() const noexcept { return effectiveDrummerIntensity_.load(std::memory_order_relaxed); }
     double getEffectiveDrummerBpm() const noexcept { return effectiveDrummerBpm_.load(std::memory_order_relaxed); }
     float getEffectiveGuitarAuthority() const noexcept { return effectiveGuitarAuthority_.load(std::memory_order_relaxed); }
     double getPhaseErrorCycles() const noexcept { return phaseErrorCycles_.load(std::memory_order_relaxed); }
@@ -72,6 +77,7 @@ private:
 
     robodrummer::JamEngine jam_{};
     robodrummer::LiveRhythmAnalyzer rhythmAnalyzer_{};
+    robodrummer::PerformanceAnalyzer performanceAnalyzer_{};
     robodrummer::TimingAuthorityController timingAuthority_{};
     robodrummer::PhaseFollower phaseFollower_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
@@ -81,11 +87,14 @@ private:
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
+    std::atomic<float> dynamicFollow_{0.60f};
     std::atomic<int> leadershipMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
     std::atomic<float> leadership_{0.5f};
     std::atomic<double> followRangeBpm_{15.0};
     std::atomic<double> effectiveDrummerBpm_{120.0};
+    std::atomic<float> effectiveDrummerIntensity_{0.5f};
     std::atomic<float> effectiveGuitarAuthority_{0.0f};
+    std::atomic<float> guitarIntensity_{0.0f};
     std::atomic<double> phaseErrorCycles_{0.0};
     std::atomic<bool> hardResyncRecommended_{false};
     std::atomic<bool> adaptiveJoinedVisible_{false};
