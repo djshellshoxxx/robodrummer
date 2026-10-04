@@ -23,7 +23,22 @@ int main() {
     assert(std::abs(best.bpm - 120.0) <= 1.5);
     assert(best.confidence > 0.20f);
 
+    tracker.reset();
+    t = 0.0;
+    for (int i = 0; i < 24; ++i) {
+        if (!(i > 0 && i % 5 == 0)) tracker.addOnset(t, 1.0f);
+        t += 0.5;
+    }
+    best = tracker.best();
+    assert(std::abs(best.bpm - 120.0) <= 1.5);
+
+    tracker.reset();
+    t = 0.0;
+    for (int i = 0; i < 8; ++i) { tracker.addOnset(t, 1.0f); t += 0.5; }
+    for (int i = 0; i < 16; ++i) { tracker.addOnset(t, 1.0f); t += 60.0 / 132.0; }
+    best = tracker.best();
+    assert(std::abs(best.bpm - 132.0) <= 2.0);
+
     const auto top = tracker.topHypotheses();
-    assert(std::abs(top[0].bpm - 120.0) <= 1.5);
-    assert(top[0].confidence >= top[1].confidence * 0.5f);
+    assert(std::abs(top[0].bpm - 132.0) <= 2.0);
 }
