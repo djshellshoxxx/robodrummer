@@ -6,9 +6,19 @@ The intended product is a VST3/CLAP/AU instrument plus a standalone application.
 
 The design target is roughly 90% autonomous performance with the remaining 10% exposed as optional MIDI intervention: fills, next section, intensity changes, half/double time, crash, break, stop/resume, and listening reset.
 
+## Current development status
+
+Phase 1 established the JUCE-independent C++ core and tests. Phase 2 is now integrating that core into a JUCE VST3 and Standalone application.
+
+The Phase 2 shell includes host tempo/meter intake, MIDI intervention mapping, deterministic block scheduling, an internal fixed-voice drum player, generated starter drum sounds, generated MIDI drum output, state persistence, and a minimal live GUI. The incoming guitar input is preserved for Phase 3, where causal onset/beat/tempo analysis will be added.
+
+See [docs/JUCE_BUILD.md](docs/JUCE_BUILD.md) for build instructions and the current MIDI map.
+
 ## Project documents
 
 - [SPEC.md](SPEC.md) — engineering/product specification
+- [docs/PHASE2_SCOPE.md](docs/PHASE2_SCOPE.md) — JUCE shell scope
+- [docs/JUCE_BUILD.md](docs/JUCE_BUILD.md) — build instructions and Phase 2 behavior
 - [research/jam-session-behavior.md](research/jam-session-behavior.md) — improvisation, entrainment, leader/follower behavior, tempo drift, turn-taking and implications for the engine
 - [research/genre-tempo-drumming.md](research/genre-tempo-drumming.md) — groove, genre, tempo, drum-pattern and song-form research
 - [research/realtime-tracking.md](research/realtime-tracking.md) — causal beat/downbeat/tempo tracking research and proposed tracking architecture
