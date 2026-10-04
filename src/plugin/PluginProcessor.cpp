@@ -97,6 +97,9 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
     jam_.setTempo(internalBpm_.load(std::memory_order_relaxed));
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
+    adaptiveJoined_ = false;
+    adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
+    lastAudioMode_ = leadershipMode_.load(std::memory_order_relaxed);
     samplePlayer_.clear();
     installStarterKit(sampleRate_);
 }
@@ -119,6 +122,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         jam_.apply(robodrummer::MidiCommand::ResetListening);
         rhythmAnalyzer_.reset();
         timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
+        adaptiveJoined_ = false;
+        adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
     }
 
     robodrummer::RhythmState rhythm{};
@@ -171,9 +176,18 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     settings.leadership = leadership_.load(std::memory_order_relaxed);
     settings.followRangeBpm = followRangeBpm_.load(std::memory_order_relaxed);
     settings.response = robodrummer::FollowResponse::Balanced;
+
+    const int modeValue = static_cast<int>(settings.mode);
+    if (modeValue != lastAudioMode_) {
+        adaptiveJoined_ = settings.mode == robodrummer::LeadershipMode::DrummerLeads;
+        adaptiveJoinedVisible_.store(adaptiveJoined_, std::memory_order_relaxed);
+        lastAudioMode_ = modeValue;
+        if (settings.mode != robodrummer::LeadershipMode::DrummerLeads)
+            timingAuthority_.reset(baseBpm);
+    }
+
     const double blockSeconds = buffer.getNumSamples() > 0 ? static_cast<double>(buffer.getNumSamples()) / sampleRate_ : 0.0;
     const auto authority = timingAuthority_.update(baseBpm, rhythm, settings, blockSeconds);
-
     effectiveDrummerBpm_.store(authority.outputBpm, std::memory_order_relaxed);
     effectiveGuitarAuthority_.store(authority.effectiveGuitarAuthority, std::memory_order_relaxed);
 
@@ -181,10 +195,32 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     jam_.setMeter(numerator, denominator);
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
 
-    // Host phase is authoritative only when the drummer leads. Adaptive modes deliberately
-    // stop hard-resyncing to host PPQ so the guitar can become a timing source without fighting the DAW.
     if (hasPpq && settings.mode == robodrummer::LeadershipMode::DrummerLeads)
         jam_.syncToPpq(hostPpq);
+
+    if (settings.mode != robodrummer::LeadershipMode::DrummerLeads) {
+        const auto phase = phaseFollower_.update(jam_.currentBeatPhase(), rhythm, authority.outputBpm,
+                                                 authority.effectiveGuitarAuthority, settings.response, sampleRate_);
+        phaseErrorCycles_.store(phase.phaseErrorCycles, std::memory_order_relaxed);
+        hardResyncRecommended_.store(phase.hardResyncRecommended, std::memory_order_relaxed);
+        if (!phase.hardResyncRecommended && adaptiveJoined_)
+            jam_.nudgePhaseSamples(phase.correctionSamples);
+
+        if (!adaptiveJoined_) {
+            const bool confident = rhythm.locked && rhythm.tempoConfidence >= 0.60f && rhythm.beatConfidence >= 0.55f;
+            const bool nearBeatBoundary = rhythm.beatPhase <= 0.08 || rhythm.beatPhase >= 0.92;
+            if (confident && nearBeatBoundary) {
+                jam_.resetPhase();
+                adaptiveJoined_ = true;
+                adaptiveJoinedVisible_.store(true, std::memory_order_release);
+            }
+        }
+    } else {
+        adaptiveJoined_ = true;
+        adaptiveJoinedVisible_.store(true, std::memory_order_relaxed);
+        phaseErrorCycles_.store(0.0, std::memory_order_relaxed);
+        hardResyncRecommended_.store(false, std::memory_order_relaxed);
+    }
 
     for (const auto metadata : midi) {
         const auto msg = metadata.getMessage();
@@ -195,6 +231,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     }
 
     if (hostPositionAvailable && !playing && settings.mode == robodrummer::LeadershipMode::DrummerLeads) return;
+    if (settings.mode != robodrummer::LeadershipMode::DrummerLeads && !adaptiveJoined_) return;
 
     std::array<robodrummer::DrumEvent, 128> events{};
     const auto eventCount = jam_.processBlock(buffer.getNumSamples(), events.data(), events.size());
