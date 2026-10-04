@@ -17,12 +17,14 @@ private:
     juce::Label title_;
     juce::Label tempoLabel_;
     juce::Label transportLabel_;
+    juce::Label guitarLabel_;
+    juce::Label trackingLabel_;
     juce::Slider bpm_;
     juce::Slider intensity_;
     juce::Label bpmCaption_;
     juce::Label intensityCaption_;
     juce::TextButton fillButton_{"FILL"};
-    juce::TextButton resetButton_{"RESET PHASE"};
+    juce::TextButton resetButton_{"RESET LISTENING"};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RoboDrummerAudioProcessorEditor)
 };
