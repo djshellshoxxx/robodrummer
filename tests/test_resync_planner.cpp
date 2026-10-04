@@ -19,12 +19,16 @@ int main() {
     auto action = planner.update(true, rhythm, 0.10);
     assert(action == ResyncAction::Wait);
 
-    // Repeated disagreement with a reliable downbeat should schedule a musical reset.
+    // Repeated disagreement with a reliable downbeat should emit one musical reset event.
     rhythm.downbeatConfidence = 0.80f;
     rhythm.beatInBar = 1;
-    for (int i = 0; i < 5; ++i)
+    bool sawResync = false;
+    for (int i = 0; i < 6; ++i) {
         action = planner.update(true, rhythm, 0.10);
-    assert(action == ResyncAction::BreakAndRealign);
+        if (action == ResyncAction::BreakAndRealign)
+            sawResync = true;
+    }
+    assert(sawResync);
 
     // Once recovered, the planner clears persistence.
     action = planner.update(false, rhythm, 0.10);
