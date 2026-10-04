@@ -1,4 +1,5 @@
 #pragma once
+#include "analysis/DownbeatTracker.h"
 #include "analysis/OnsetDetector.h"
 #include "analysis/TempoTracker.h"
 #include <algorithm>
@@ -34,12 +35,26 @@ public:
     void reset() noexcept {
         detector_.reset();
         tempo_.reset();
+        downbeat_.reset(4);
         sampleCursor_ = 0;
         phaseAnchorSeconds_ = std::numeric_limits<double>::quiet_NaN();
         lastOnsetSeconds_ = std::numeric_limits<double>::quiet_NaN();
         lastUpdateSeconds_ = 0.0;
         previousTempo_ = 120.0;
+        lastObservedBeatIndex_ = std::numeric_limits<long long>::min();
         state_ = {};
+    }
+
+    void setMeterNumerator(int meterNumerator) noexcept {
+        const int meter = std::clamp(meterNumerator, 2, 12);
+        if (meter != state_.meterNumerator) {
+            downbeat_.reset(meter);
+            lastObservedBeatIndex_ = std::numeric_limits<long long>::min();
+            state_.meterNumerator = meter;
+            state_.beatInBar = 1;
+            state_.downbeatConfidence = 0.0f;
+            state_.meterConfidence = 0.0f;
+        }
     }
 
     void processBlock(const float* mono, int numSamples) noexcept {
@@ -66,11 +81,16 @@ private:
         if (!std::isfinite(phaseAnchorSeconds_) || best.confidence < 0.30f) {
             phaseAnchorSeconds_ = seconds;
         } else {
-            const double beatsFromAnchor = std::round((seconds - phaseAnchorSeconds_) / period);
-            const double predicted = phaseAnchorSeconds_ + std::max(0.0, beatsFromAnchor) * period;
+            const double beatPosition = (seconds - phaseAnchorSeconds_) / period;
+            const long long nearestBeat = static_cast<long long>(std::llround(beatPosition));
+            const double predicted = phaseAnchorSeconds_ + static_cast<double>(nearestBeat) * period;
             const double error = seconds - predicted;
             if (std::abs(error) <= period * 0.22) {
                 phaseAnchorSeconds_ += std::clamp(error * 0.25, -0.020, 0.020);
+                if (best.confidence >= 0.30f && nearestBeat != lastObservedBeatIndex_) {
+                    downbeat_.observeBeat(std::clamp(strength, 0.0f, 1.0f));
+                    lastObservedBeatIndex_ = nearestBeat;
+                }
             }
         }
         lastOnsetSeconds_ = seconds;
@@ -100,6 +120,12 @@ private:
             state_.predictedNextBeatSeconds = nowSeconds + period;
         }
 
+        const auto bar = downbeat_.state();
+        state_.meterNumerator = bar.meterNumerator;
+        state_.beatInBar = bar.currentBeatInBar;
+        state_.downbeatConfidence = bar.downbeatConfidence;
+        state_.meterConfidence = bar.downbeatConfidence * 0.65f; // Meter is configured, bar phase is inferred.
+
         float recency = 0.0f;
         if (std::isfinite(lastOnsetSeconds_)) {
             const double silence = std::max(0.0, nowSeconds - lastOnsetSeconds_);
@@ -115,8 +141,10 @@ private:
     double lastOnsetSeconds_{std::numeric_limits<double>::quiet_NaN()};
     double lastUpdateSeconds_{0.0};
     double previousTempo_{120.0};
+    long long lastObservedBeatIndex_{std::numeric_limits<long long>::min()};
     AdaptiveOnsetDetector detector_{};
     TempoTracker tempo_{};
+    DownbeatTracker downbeat_{};
     RhythmState state_{};
 };
 
