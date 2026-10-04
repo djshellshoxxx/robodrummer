@@ -94,6 +94,7 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     jam_.prepare(sampleRate_);
     rhythmAnalyzer_.prepare(sampleRate_);
+    performanceAnalyzer_.prepare(sampleRate_);
     timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
     jam_.setTempo(internalBpm_.load(std::memory_order_relaxed));
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
@@ -121,21 +122,27 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     if ((pending & ResetBit) != 0) {
         jam_.apply(robodrummer::MidiCommand::ResetListening);
         rhythmAnalyzer_.reset();
+        performanceAnalyzer_.reset();
         timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
         adaptiveJoined_ = false;
         adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
     }
 
     robodrummer::RhythmState rhythm{};
+    robodrummer::PerformanceState performance{};
     if (getTotalNumInputChannels() > 0 && buffer.getNumSamples() > 0) {
-        rhythmAnalyzer_.processBlock(buffer.getReadPointer(0), buffer.getNumSamples());
+        const auto* guitar = buffer.getReadPointer(0);
+        rhythmAnalyzer_.processBlock(guitar, buffer.getNumSamples());
+        performanceAnalyzer_.processBlock(guitar, buffer.getNumSamples());
         rhythm = rhythmAnalyzer_.state();
+        performance = performanceAnalyzer_.state();
         detectedGuitarBpm_.store(rhythm.tempoBpm, std::memory_order_relaxed);
         guitarTempoConfidence_.store(rhythm.tempoConfidence, std::memory_order_relaxed);
         guitarBeatConfidence_.store(rhythm.beatConfidence, std::memory_order_relaxed);
         guitarBeatPhase_.store(rhythm.beatPhase, std::memory_order_relaxed);
         predictedNextGuitarBeatSeconds_.store(rhythm.predictedNextBeatSeconds, std::memory_order_relaxed);
         guitarTrackerLocked_.store(rhythm.locked, std::memory_order_release);
+        guitarIntensity_.store(performance.intensity, std::memory_order_relaxed);
     }
 
     double baseBpm = internalBpm_.load(std::memory_order_relaxed);
@@ -191,9 +198,17 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     effectiveDrummerBpm_.store(authority.outputBpm, std::memory_order_relaxed);
     effectiveGuitarAuthority_.store(authority.effectiveGuitarAuthority, std::memory_order_relaxed);
 
+    const float manualIntensity = intensity_.load(std::memory_order_relaxed);
+    float effectiveIntensity = manualIntensity;
+    if (settings.mode != robodrummer::LeadershipMode::DrummerLeads) {
+        const float dynamicAmount = dynamicFollow_.load(std::memory_order_relaxed) * authority.effectiveGuitarAuthority;
+        effectiveIntensity = std::clamp(manualIntensity + (performance.intensity - manualIntensity) * dynamicAmount, 0.0f, 1.0f);
+    }
+    effectiveDrummerIntensity_.store(effectiveIntensity, std::memory_order_relaxed);
+
     jam_.setTempo(authority.outputBpm);
     jam_.setMeter(numerator, denominator);
-    jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
+    jam_.setIntensity(effectiveIntensity);
 
     if (hasPpq && settings.mode == robodrummer::LeadershipMode::DrummerLeads)
         jam_.syncToPpq(hostPpq);
@@ -264,6 +279,7 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     juce::ValueTree state("RoboDrummerState");
     state.setProperty("bpm", internalBpm_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("intensity", intensity_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("dynamicFollow", dynamicFollow_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadershipMode", leadershipMode_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadership", leadership_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("followRange", followRangeBpm_.load(std::memory_order_relaxed), nullptr);
@@ -276,6 +292,7 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
         if (state.isValid() && state.hasType("RoboDrummerState")) {
             setInternalBpm(static_cast<double>(state.getProperty("bpm", 120.0)));
             setIntensity(static_cast<float>(state.getProperty("intensity", 0.5f)));
+            setDynamicFollow(static_cast<float>(state.getProperty("dynamicFollow", 0.60f)));
             const int mode = juce::jlimit(0, 2, static_cast<int>(state.getProperty("leadershipMode", 0)));
             setLeadershipMode(static_cast<robodrummer::LeadershipMode>(mode));
             setLeadership(static_cast<float>(state.getProperty("leadership", 0.5f)));
