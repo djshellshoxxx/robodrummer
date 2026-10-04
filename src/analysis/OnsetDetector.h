@@ -23,6 +23,8 @@ public:
     void reset() noexcept {
         frameEnergy_ = 0.0;
         frameSamples_ = 0;
+        framePeakMagnitude_ = 0.0f;
+        framePeakIndex_ = 0;
         previousLogEnergy_ = 0.0f;
         noveltyMean_ = 0.0f;
         noveltyDeviation_ = 0.01f;
@@ -36,6 +38,11 @@ public:
         for (int i = 0; i < numSamples; ++i) {
             const float x = std::isfinite(input[i]) ? input[i] : 0.0f;
             frameEnergy_ += static_cast<double>(x) * static_cast<double>(x);
+            const float magnitude = std::abs(x);
+            if (magnitude > framePeakMagnitude_) {
+                framePeakMagnitude_ = magnitude;
+                framePeakIndex_ = frameSamples_;
+            }
             ++frameSamples_;
             ++samplesSinceOnset_;
 
@@ -48,7 +55,8 @@ public:
 
             if (novelty > threshold && samplesSinceOnset_ >= refractorySamples_ && count < capacity) {
                 const float normalized = std::clamp((novelty - threshold) / std::max(0.05f, threshold * 2.0f), 0.0f, 1.0f);
-                out[count++] = {i, normalized};
+                const int peakOffset = i - (frameSize_ - 1 - framePeakIndex_);
+                out[count++] = {std::max(0, peakOffset), normalized};
                 samplesSinceOnset_ = 0;
             }
 
@@ -59,6 +67,8 @@ public:
             previousLogEnergy_ = 0.82f * previousLogEnergy_ + 0.18f * logEnergy;
             frameEnergy_ = 0.0;
             frameSamples_ = 0;
+            framePeakMagnitude_ = 0.0f;
+            framePeakIndex_ = 0;
         }
 
         return count;
@@ -72,6 +82,8 @@ private:
     int refractorySamples_{2160};
     double frameEnergy_{0.0};
     int frameSamples_{0};
+    float framePeakMagnitude_{0.0f};
+    int framePeakIndex_{0};
     float previousLogEnergy_{0.0f};
     float noveltyMean_{0.0f};
     float noveltyDeviation_{0.01f};
