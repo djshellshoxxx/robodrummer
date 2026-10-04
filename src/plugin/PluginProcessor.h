@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include "analysis/PhaseFollower.h"
 #include "analysis/RhythmAnalyzer.h"
 #include "analysis/TimingAuthorityController.h"
 #include "audio/DrumSamplePlayer.h"
@@ -49,6 +50,8 @@ public:
     double getFollowRange() const noexcept { return followRangeBpm_.load(std::memory_order_relaxed); }
     double getEffectiveDrummerBpm() const noexcept { return effectiveDrummerBpm_.load(std::memory_order_relaxed); }
     float getEffectiveGuitarAuthority() const noexcept { return effectiveGuitarAuthority_.load(std::memory_order_relaxed); }
+    double getPhaseErrorCycles() const noexcept { return phaseErrorCycles_.load(std::memory_order_relaxed); }
+    bool isHardResyncRecommended() const noexcept { return hardResyncRecommended_.load(std::memory_order_relaxed); }
 
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
@@ -69,6 +72,7 @@ private:
     robodrummer::JamEngine jam_{};
     robodrummer::LiveRhythmAnalyzer rhythmAnalyzer_{};
     robodrummer::TimingAuthorityController timingAuthority_{};
+    robodrummer::PhaseFollower phaseFollower_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
     double sampleRate_{48000.0};
 
@@ -79,6 +83,8 @@ private:
     std::atomic<double> followRangeBpm_{15.0};
     std::atomic<double> effectiveDrummerBpm_{120.0};
     std::atomic<float> effectiveGuitarAuthority_{0.0f};
+    std::atomic<double> phaseErrorCycles_{0.0};
+    std::atomic<bool> hardResyncRecommended_{false};
     std::atomic<std::uint32_t> pendingUiCommands_{0};
     std::atomic<double> lastHostBpm_{120.0};
     std::atomic<double> lastHostPpq_{0.0};
