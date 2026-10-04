@@ -1,8 +1,9 @@
 #pragma once
 #include "core/DrumEvent.h"
-#include <array>
 #include <algorithm>
+#include <array>
 #include <cstddef>
+#include <utility>
 #include <vector>
 namespace robodrummer {
 class DrumSamplePlayer {
@@ -14,21 +15,21 @@ public:
     void clear() noexcept { for (auto& v : voices) v.active = false; }
     void trigger(const DrumEvent& e) noexcept {
         const auto idx = index(e.instrument);
-        if (samples[idx].left.empty()) return;
+        if (idx >= InstrumentCount || samples[idx].left.empty()) return;
         for (auto& v : voices) {
             if (!v.active) { v = {true, idx, 0, std::clamp(e.velocity, 0.0f, 1.0f)}; return; }
         }
     }
     void render(float** outputs, int channels, int numSamples) noexcept {
-        if (!outputs || channels <= 0 || numSamples <= 0) return;
+        if (!outputs || !outputs[0] || channels <= 0 || numSamples <= 0) return;
         for (auto& v : voices) {
             if (!v.active) continue;
             const auto& s = samples[v.sampleIndex];
             for (int n = 0; n < numSamples && v.position < s.left.size(); ++n, ++v.position) {
                 const float l = s.left[v.position] * v.gain;
-                const float r = (s.right.empty() ? l : s.right[v.position] * v.gain);
+                const float r = v.position < s.right.size() ? s.right[v.position] * v.gain : l;
                 outputs[0][n] += l;
-                if (channels > 1) outputs[1][n] += r;
+                if (channels > 1 && outputs[1]) outputs[1][n] += r;
             }
             if (v.position >= s.left.size()) v.active = false;
         }
