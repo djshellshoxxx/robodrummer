@@ -119,6 +119,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     int denominator = 4;
     bool playing = true;
     bool hostPositionAvailable = false;
+    bool hasPpq = false;
+    double hostPpq = 0.0;
 
     lastHostTempoValid_.store(false, std::memory_order_relaxed);
     lastHostPpqValid_.store(false, std::memory_order_relaxed);
@@ -132,20 +134,23 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             if (hostBpm.hasValue()) bpm = *hostBpm;
             if (sig.hasValue()) { numerator = sig->numerator; denominator = sig->denominator; }
             playing = pos->getIsPlaying();
+            hasPpq = ppq.hasValue();
+            hostPpq = hasPpq ? *ppq : 0.0;
 
             lastHostBpm_.store(hostBpm.hasValue() ? *hostBpm : bpm, std::memory_order_relaxed);
-            lastHostPpq_.store(ppq.hasValue() ? *ppq : 0.0, std::memory_order_relaxed);
+            lastHostPpq_.store(hostPpq, std::memory_order_relaxed);
             lastHostNumerator_.store(numerator, std::memory_order_relaxed);
             lastHostDenominator_.store(denominator, std::memory_order_relaxed);
             lastHostPlaying_.store(playing, std::memory_order_relaxed);
             lastHostTempoValid_.store(hostBpm.hasValue(), std::memory_order_release);
-            lastHostPpqValid_.store(ppq.hasValue(), std::memory_order_release);
+            lastHostPpqValid_.store(hasPpq, std::memory_order_release);
         }
     }
 
     jam_.setTempo(bpm);
     jam_.setMeter(numerator, denominator);
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
+    if (hasPpq) jam_.syncToPpq(hostPpq);
 
     for (const auto metadata : midi) {
         const auto msg = metadata.getMessage();
