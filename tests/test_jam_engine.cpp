@@ -20,6 +20,15 @@ int main() {
     assert(sawSnareBeat2);
 
     engine.resetPhase();
+    engine.syncToPpq(1.0);
+    const auto syncedCount = engine.processBlock(512, events.data(), events.size());
+    bool sawSyncedSnare = false;
+    for (std::size_t i = 0; i < syncedCount; ++i)
+        if (events[i].instrument == DrumInstrument::Snare && events[i].sampleOffset == 0)
+            sawSyncedSnare = true;
+    assert(sawSyncedSnare);
+
+    engine.resetPhase();
     engine.apply(MidiCommand::Fill);
     const auto fillCount = engine.processBlock(96000, events.data(), events.size());
     bool sawTom = false;
