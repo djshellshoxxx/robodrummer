@@ -2,6 +2,7 @@
 #include <JuceHeader.h>
 #include "analysis/PerformanceAnalyzer.h"
 #include "analysis/PhaseFollower.h"
+#include "analysis/ResyncPlanner.h"
 #include "analysis/RhythmAnalyzer.h"
 #include "analysis/TimingAuthorityController.h"
 #include "audio/DrumSamplePlayer.h"
@@ -58,6 +59,8 @@ public:
     double getPhaseErrorCycles() const noexcept { return phaseErrorCycles_.load(std::memory_order_relaxed); }
     bool isHardResyncRecommended() const noexcept { return hardResyncRecommended_.load(std::memory_order_relaxed); }
     bool hasAdaptiveJoined() const noexcept { return adaptiveJoinedVisible_.load(std::memory_order_relaxed); }
+    int getGuitarBeatInBar() const noexcept { return guitarBeatInBar_.load(std::memory_order_relaxed); }
+    float getGuitarDownbeatConfidence() const noexcept { return guitarDownbeatConfidence_.load(std::memory_order_relaxed); }
 
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
@@ -80,6 +83,7 @@ private:
     robodrummer::PerformanceAnalyzer performanceAnalyzer_{};
     robodrummer::TimingAuthorityController timingAuthority_{};
     robodrummer::PhaseFollower phaseFollower_{};
+    robodrummer::ResyncPlanner resyncPlanner_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
     double sampleRate_{48000.0};
     bool adaptiveJoined_{false};
@@ -111,6 +115,8 @@ private:
     std::atomic<float> guitarBeatConfidence_{0.0f};
     std::atomic<double> guitarBeatPhase_{0.0};
     std::atomic<double> predictedNextGuitarBeatSeconds_{0.0};
+    std::atomic<int> guitarBeatInBar_{1};
+    std::atomic<float> guitarDownbeatConfidence_{0.0f};
     std::atomic<bool> guitarTrackerLocked_{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RoboDrummerAudioProcessor)
