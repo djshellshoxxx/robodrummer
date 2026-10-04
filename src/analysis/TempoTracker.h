@@ -25,6 +25,7 @@ public:
         onsetCount_ = 0;
         writeIndex_ = 0;
         best_ = {};
+        hasBest_ = false;
     }
 
     void addOnset(double seconds, float strength = 1.0f) noexcept {
@@ -103,10 +104,29 @@ private:
 
     void updateBest() noexcept {
         const auto it = std::max_element(histogram_.begin(), histogram_.end());
-        if (it == histogram_.end() || *it <= 0.0f) { best_ = {}; return; }
-        const std::size_t idx = static_cast<std::size_t>(std::distance(histogram_.begin(), it));
+        if (it == histogram_.end() || *it <= 0.0f) {
+            best_ = {};
+            hasBest_ = false;
+            return;
+        }
+
+        std::size_t idx = static_cast<std::size_t>(std::distance(histogram_.begin(), it));
+        const double candidateBpm = MinBpm + static_cast<double>(idx) * BinSize;
+
+        if (hasBest_) {
+            const int currentIndex = std::clamp(
+                static_cast<int>(std::llround((best_.bpm - MinBpm) / BinSize)),
+                0, static_cast<int>(BinCount) - 1);
+            const float currentScore = histogram_[static_cast<std::size_t>(currentIndex)];
+            const float candidateScore = histogram_[idx];
+            const bool nearbyDrift = std::abs(candidateBpm - best_.bpm) <= 8.0;
+            const bool decisiveSwitch = currentScore <= 1.0e-6f || candidateScore > currentScore * 1.18f;
+            if (!nearbyDrift && !decisiveSwitch) idx = static_cast<std::size_t>(currentIndex);
+        }
+
         best_.bpm = MinBpm + static_cast<double>(idx) * BinSize;
         best_.confidence = confidenceForBin(idx);
+        hasBest_ = true;
     }
 
     std::array<float, BinCount> histogram_{};
@@ -115,6 +135,7 @@ private:
     std::size_t onsetCount_{0};
     std::size_t writeIndex_{0};
     TempoHypothesis best_{};
+    bool hasBest_{false};
 };
 
 } // namespace robodrummer
