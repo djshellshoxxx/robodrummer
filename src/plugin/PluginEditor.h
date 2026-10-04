@@ -20,15 +20,18 @@ private:
     juce::Label guitarLabel_;
     juce::Label trackingLabel_;
     juce::Label authorityLabel_;
+    juce::Label dynamicsLabel_;
     juce::Slider bpm_;
     juce::Slider intensity_;
     juce::Slider leadership_;
     juce::Slider followRange_;
+    juce::Slider dynamicFollow_;
     juce::ComboBox leadershipMode_;
     juce::Label bpmCaption_;
     juce::Label intensityCaption_;
     juce::Label leadershipCaption_;
     juce::Label followRangeCaption_;
+    juce::Label dynamicFollowCaption_;
     juce::Label modeCaption_;
     juce::TextButton fillButton_{"FILL"};
     juce::TextButton resetButton_{"RESET LISTENING"};
