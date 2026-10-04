@@ -1,6 +1,7 @@
 #include "plugin/JamEngine.h"
 #include <array>
 #include <cassert>
+#include <cmath>
 int main() {
     using namespace robodrummer;
     JamEngine engine;
@@ -18,6 +19,12 @@ int main() {
     }
     assert(sawKick0);
     assert(sawSnareBeat2);
+
+    engine.resetPhase();
+    engine.nudgePhaseSamples(2400); // 0.1 beat at 120 BPM, 48 kHz
+    assert(std::abs(engine.currentBeatPhase() - 0.10) < 0.002);
+    engine.nudgePhaseSamples(-1200);
+    assert(std::abs(engine.currentBeatPhase() - 0.05) < 0.002);
 
     engine.resetPhase();
     engine.syncToPpq(1.0);
