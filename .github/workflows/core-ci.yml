@@ -2,8 +2,12 @@ name: RoboDrummer CI
 
 on:
   push:
-    branches: [main, juce-shell-phase2]
+    branches: [main]
   pull_request:
+
+concurrency:
+  group: robodrummer-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   core:
