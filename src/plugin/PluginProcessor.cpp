@@ -92,6 +92,7 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
 
 void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     jam_.prepare(sampleRate);
+    rhythmAnalyzer_.prepare(sampleRate);
     jam_.setTempo(internalBpm_.load(std::memory_order_relaxed));
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
     samplePlayer_.clear();
@@ -112,7 +113,21 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
     const auto pending = pendingUiCommands_.exchange(0, std::memory_order_acquire);
     if ((pending & FillBit) != 0) jam_.apply(robodrummer::MidiCommand::Fill);
-    if ((pending & ResetBit) != 0) jam_.apply(robodrummer::MidiCommand::ResetListening);
+    if ((pending & ResetBit) != 0) {
+        jam_.apply(robodrummer::MidiCommand::ResetListening);
+        rhythmAnalyzer_.reset();
+    }
+
+    if (getTotalNumInputChannels() > 0 && buffer.getNumSamples() > 0) {
+        rhythmAnalyzer_.processBlock(buffer.getReadPointer(0), buffer.getNumSamples());
+        const auto rhythm = rhythmAnalyzer_.state();
+        detectedGuitarBpm_.store(rhythm.tempoBpm, std::memory_order_relaxed);
+        guitarTempoConfidence_.store(rhythm.tempoConfidence, std::memory_order_relaxed);
+        guitarBeatConfidence_.store(rhythm.beatConfidence, std::memory_order_relaxed);
+        guitarBeatPhase_.store(rhythm.beatPhase, std::memory_order_relaxed);
+        predictedNextGuitarBeatSeconds_.store(rhythm.predictedNextBeatSeconds, std::memory_order_relaxed);
+        guitarTrackerLocked_.store(rhythm.locked, std::memory_order_release);
+    }
 
     double bpm = internalBpm_.load(std::memory_order_relaxed);
     int numerator = 4;
