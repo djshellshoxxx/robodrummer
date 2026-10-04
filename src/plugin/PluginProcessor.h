@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include "analysis/RhythmAnalyzer.h"
 #include "audio/DrumSamplePlayer.h"
 #include "plugin/HostTransportAdapter.h"
 #include "plugin/JamEngine.h"
@@ -39,6 +40,12 @@ public:
     void setIntensity(float value) noexcept;
     float getIntensity() const noexcept { return intensity_.load(std::memory_order_relaxed); }
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
+    double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
+    float getGuitarTempoConfidence() const noexcept { return guitarTempoConfidence_.load(std::memory_order_relaxed); }
+    float getGuitarBeatConfidence() const noexcept { return guitarBeatConfidence_.load(std::memory_order_relaxed); }
+    double getGuitarBeatPhase() const noexcept { return guitarBeatPhase_.load(std::memory_order_relaxed); }
+    double getPredictedNextGuitarBeatSeconds() const noexcept { return predictedNextGuitarBeatSeconds_.load(std::memory_order_relaxed); }
+    bool isGuitarTrackerLocked() const noexcept { return guitarTrackerLocked_.load(std::memory_order_acquire); }
     void requestFill() noexcept { pendingUiCommands_.fetch_or(FillBit, std::memory_order_release); }
     void resetJamPhase() noexcept { pendingUiCommands_.fetch_or(ResetBit, std::memory_order_release); }
 
@@ -49,6 +56,7 @@ private:
     static int midiNoteFor(robodrummer::DrumInstrument) noexcept;
 
     robodrummer::JamEngine jam_{};
+    robodrummer::LiveRhythmAnalyzer rhythmAnalyzer_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
@@ -60,6 +68,12 @@ private:
     std::atomic<bool> lastHostPlaying_{false};
     std::atomic<bool> lastHostTempoValid_{false};
     std::atomic<bool> lastHostPpqValid_{false};
+    std::atomic<double> detectedGuitarBpm_{120.0};
+    std::atomic<float> guitarTempoConfidence_{0.0f};
+    std::atomic<float> guitarBeatConfidence_{0.0f};
+    std::atomic<double> guitarBeatPhase_{0.0};
+    std::atomic<double> predictedNextGuitarBeatSeconds_{0.0};
+    std::atomic<bool> guitarTrackerLocked_{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RoboDrummerAudioProcessor)
 };
