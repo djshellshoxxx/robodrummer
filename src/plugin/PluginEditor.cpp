@@ -86,7 +86,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(10.0f), 12.0f, 1.0f);
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
-    g.drawText("Adaptive tempo, phase and dynamics are confidence-gated. Large phase errors wait for a musical resync path.",
+    g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
                24, 568, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
@@ -156,8 +156,9 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
         juce::dontSendNotification);
     trackingLabel_.setText(
         juce::String("Tracker: ") + (processor_.isGuitarTrackerLocked() ? "LOCKED" : "acquiring") +
-            " | beat confidence " + juce::String(beatConfidence * 100.0f, 0) + "% | phase " +
-            juce::String(processor_.getGuitarBeatPhase(), 2) +
+            " | beat " + juce::String(processor_.getGuitarBeatInBar()) + "/4" +
+            " | beat conf " + juce::String(beatConfidence * 100.0f, 0) + "%" +
+            " | downbeat conf " + juce::String(processor_.getGuitarDownbeatConfidence() * 100.0f, 0) + "%" +
             (processor_.hasAdaptiveJoined() ? " | joined" : " | waiting to join"),
         juce::dontSendNotification);
     authorityLabel_.setText(
