@@ -22,6 +22,19 @@ public:
         const double samplesPerQuarter = sampleRate_ * 60.0 / effectiveBpm;
         sampleCursor_ = static_cast<long long>(std::llround(ppqPosition * samplesPerQuarter));
     }
+    void nudgePhaseSamples(long long deltaSamples) noexcept {
+        sampleCursor_ = std::max<long long>(0, sampleCursor_ + deltaSamples);
+    }
+    [[nodiscard]] double currentBeatPhase() const noexcept {
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return 0.0;
+        const double spq = sampleRate_ * 60.0 / effectiveBpm;
+        const double spb = spq * (4.0 / static_cast<double>(denominator_));
+        if (!(spb > 0.0)) return 0.0;
+        double phase = std::fmod(static_cast<double>(sampleCursor_) / spb, 1.0);
+        if (phase < 0.0) phase += 1.0;
+        return phase;
+    }
     void apply(MidiCommand command) noexcept {
         applyMidiCommand(state_, command);
         if (command == MidiCommand::Fill) fillTargetBar_ = -1;
