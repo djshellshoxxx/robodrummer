@@ -97,6 +97,7 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     rhythmAnalyzer_.prepare(sampleRate_);
     performanceAnalyzer_.prepare(sampleRate_);
     timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
+    resyncPlanner_.reset();
     jam_.setTempo(internalBpm_.load(std::memory_order_relaxed));
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
     adaptiveJoined_ = false;
@@ -125,6 +126,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         rhythmAnalyzer_.reset();
         performanceAnalyzer_.reset();
         timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
+        resyncPlanner_.reset();
         adaptiveJoined_ = false;
         adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
     }
@@ -142,6 +144,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         guitarBeatConfidence_.store(rhythm.beatConfidence, std::memory_order_relaxed);
         guitarBeatPhase_.store(rhythm.beatPhase, std::memory_order_relaxed);
         predictedNextGuitarBeatSeconds_.store(rhythm.predictedNextBeatSeconds, std::memory_order_relaxed);
+        guitarBeatInBar_.store(rhythm.beatInBar, std::memory_order_relaxed);
+        guitarDownbeatConfidence_.store(rhythm.downbeatConfidence, std::memory_order_relaxed);
         guitarTrackerLocked_.store(rhythm.locked, std::memory_order_release);
         guitarIntensity_.store(performance.intensity, std::memory_order_relaxed);
     }
@@ -179,6 +183,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         }
     }
 
+    rhythmAnalyzer_.setMeterNumerator(numerator);
+
     robodrummer::TimingAuthoritySettings settings;
     settings.mode = getLeadershipMode();
     settings.leadership = leadership_.load(std::memory_order_relaxed);
@@ -190,6 +196,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         adaptiveJoined_ = settings.mode == robodrummer::LeadershipMode::DrummerLeads;
         adaptiveJoinedVisible_.store(adaptiveJoined_, std::memory_order_relaxed);
         lastAudioMode_ = modeValue;
+        resyncPlanner_.reset();
         if (settings.mode != robodrummer::LeadershipMode::DrummerLeads)
             timingAuthority_.reset(baseBpm);
     }
@@ -220,8 +227,15 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                                                  authority.effectiveGuitarAuthority, settings.response, sampleRate_);
         phaseErrorCycles_.store(phase.phaseErrorCycles, std::memory_order_relaxed);
         hardResyncRecommended_.store(phase.hardResyncRecommended, std::memory_order_relaxed);
-        if (!phase.hardResyncRecommended && adaptiveJoined_)
+
+        const auto resyncAction = resyncPlanner_.update(phase.hardResyncRecommended, rhythm, blockSeconds);
+        if (resyncAction == robodrummer::ResyncAction::BreakAndRealign && adaptiveJoined_) {
+            jam_.resetPhase();
+            jam_.apply(robodrummer::MidiCommand::Crash);
+            hardResyncRecommended_.store(false, std::memory_order_relaxed);
+        } else if (!phase.hardResyncRecommended && adaptiveJoined_) {
             jam_.nudgePhaseSamples(phase.correctionSamples);
+        }
 
         if (!adaptiveJoined_) {
             const bool confident = rhythm.locked && rhythm.tempoConfidence >= 0.60f && rhythm.beatConfidence >= 0.55f;
@@ -230,6 +244,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                 jam_.resetPhase();
                 adaptiveJoined_ = true;
                 adaptiveJoinedVisible_.store(true, std::memory_order_release);
+                resyncPlanner_.reset();
             }
         }
     } else {
@@ -237,6 +252,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         adaptiveJoinedVisible_.store(true, std::memory_order_relaxed);
         phaseErrorCycles_.store(0.0, std::memory_order_relaxed);
         hardResyncRecommended_.store(false, std::memory_order_relaxed);
+        resyncPlanner_.reset();
     }
 
     for (const auto metadata : midi) {
