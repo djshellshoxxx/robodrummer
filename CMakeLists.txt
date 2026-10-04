@@ -53,7 +53,6 @@ if(ROBODRUMMER_BUILD_JUCE)
     NEEDS_MIDI_INPUT TRUE
     NEEDS_MIDI_OUTPUT TRUE
     IS_MIDI_EFFECT FALSE
-    VST3_CAN_REPLACE_VST2 FALSE
     COPY_PLUGIN_AFTER_BUILD FALSE
   )
   juce_generate_juce_header(RoboDrummer)
@@ -73,5 +72,6 @@ if(ROBODRUMMER_BUILD_JUCE)
   target_compile_definitions(RoboDrummer PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
+    JUCE_VST3_CAN_REPLACE_VST2=0
   )
 endif()
