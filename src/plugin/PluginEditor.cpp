@@ -2,7 +2,7 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(620, 360);
+    setSize(660, 430);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -28,10 +28,14 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     intensity_.onValueChange = [this] { processor_.setIntensity(static_cast<float>(intensity_.getValue())); };
     addAndMakeVisible(intensity_);
 
-    tempoLabel_.setText("Tempo: --", juce::dontSendNotification);
+    tempoLabel_.setText("Drummer tempo: --", juce::dontSendNotification);
     transportLabel_.setText("Transport: internal", juce::dontSendNotification);
+    guitarLabel_.setText("Guitar estimate: listening", juce::dontSendNotification);
+    trackingLabel_.setText("Tracker: acquiring", juce::dontSendNotification);
     addAndMakeVisible(tempoLabel_);
     addAndMakeVisible(transportLabel_);
+    addAndMakeVisible(guitarLabel_);
+    addAndMakeVisible(trackingLabel_);
 
     fillButton_.onClick = [this] { processor_.requestFill(); };
     resetButton_.onClick = [this] { processor_.resetJamPhase(); };
@@ -47,8 +51,8 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(10.0f), 12.0f, 1.0f);
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
-    g.drawText("Phase 2: generated starter kit + MIDI intervention. Live guitar following comes next.",
-               24, 320, getWidth() - 48, 22, juce::Justification::centredLeft);
+    g.drawText("Phase 3 telemetry: causal guitar onset/tempo/phase tracking is active. Drummer timing remains host/internal until tracker validation is complete.",
+               24, 385, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -68,20 +72,35 @@ void RoboDrummerAudioProcessorEditor::resized() {
     area.removeFromTop(18);
     tempoLabel_.setBounds(area.removeFromTop(28));
     transportLabel_.setBounds(area.removeFromTop(28));
+    guitarLabel_.setBounds(area.removeFromTop(28));
+    trackingLabel_.setBounds(area.removeFromTop(28));
 
     area.removeFromTop(18);
     auto buttons = area.removeFromTop(44);
     fillButton_.setBounds(buttons.removeFromLeft(160));
     buttons.removeFromLeft(12);
-    resetButton_.setBounds(buttons.removeFromLeft(160));
+    resetButton_.setBounds(buttons.removeFromLeft(190));
 }
 
 void RoboDrummerAudioProcessorEditor::timerCallback() {
     const auto t = processor_.getLastTransport();
     const double shownBpm = t.validTempo ? t.bpm : processor_.getInternalBpm();
-    tempoLabel_.setText("Tempo: " + juce::String(shownBpm, 1) + " BPM", juce::dontSendNotification);
+    tempoLabel_.setText("Drummer tempo: " + juce::String(shownBpm, 1) + " BPM", juce::dontSendNotification);
     transportLabel_.setText(
         t.validTempo ? (juce::String("Transport: host | ") + (t.playing ? "playing" : "stopped"))
                      : "Transport: internal fallback",
+        juce::dontSendNotification);
+
+    const auto detected = processor_.getDetectedGuitarBpm();
+    const auto tempoConfidence = processor_.getGuitarTempoConfidence();
+    const auto beatConfidence = processor_.getGuitarBeatConfidence();
+    guitarLabel_.setText(
+        "Guitar estimate: " + juce::String(detected, 1) + " BPM | tempo confidence " +
+            juce::String(tempoConfidence * 100.0f, 0) + "%",
+        juce::dontSendNotification);
+    trackingLabel_.setText(
+        juce::String("Tracker: ") + (processor_.isGuitarTrackerLocked() ? "LOCKED" : "acquiring") +
+            " | beat confidence " + juce::String(beatConfidence * 100.0f, 0) + "% | phase " +
+            juce::String(processor_.getGuitarBeatPhase(), 2),
         juce::dontSendNotification);
 }
