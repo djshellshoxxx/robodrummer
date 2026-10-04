@@ -35,10 +35,10 @@ The plugin currently provides:
 - stereo guitar/analysis input and stereo mixed output
 - internal tempo fallback when the host does not expose tempo
 - host tempo and time-signature following when available
-- generated starter kick/snare/hat/crash sounds so the plugin works without external sample assets
+- generated starter kick/snare/closed-hat/open-hat/ride/crash/tom sounds so the plugin works without external sample assets
 - basic-rock procedural groove generation
 - intensity control
-- MIDI intervention notes 36–47
+- MIDI intervention notes 36–47 on MIDI channel 16
 - generated General MIDI drum output on MIDI channel 10
 - persistent BPM/intensity state
 - basic Live GUI
@@ -46,6 +46,8 @@ The plugin currently provides:
 The incoming guitar signal is currently passed through unchanged and reserved for the next phase's analysis engine. Phase 2 does not yet infer guitar tempo, beats or musical sections.
 
 ## MIDI intervention map
+
+RoboDrummer treats **MIDI channel 16** as its intervention/control channel. This avoids confusing the control triggers with the generated General MIDI drum stream on channel 10.
 
 | Note | Action |
 |---:|---|
