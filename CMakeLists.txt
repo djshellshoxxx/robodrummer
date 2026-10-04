@@ -23,7 +23,8 @@ foreach(test_name IN ITEMS
     onset_detector
     tempo_tracker
     rhythm_analyzer
-    timing_authority)
+    timing_authority
+    phase_follower)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   add_test(NAME ${test_name} COMMAND test_${test_name})
