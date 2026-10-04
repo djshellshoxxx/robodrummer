@@ -52,6 +52,7 @@ public:
     float getEffectiveGuitarAuthority() const noexcept { return effectiveGuitarAuthority_.load(std::memory_order_relaxed); }
     double getPhaseErrorCycles() const noexcept { return phaseErrorCycles_.load(std::memory_order_relaxed); }
     bool isHardResyncRecommended() const noexcept { return hardResyncRecommended_.load(std::memory_order_relaxed); }
+    bool hasAdaptiveJoined() const noexcept { return adaptiveJoinedVisible_.load(std::memory_order_relaxed); }
 
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
@@ -75,6 +76,8 @@ private:
     robodrummer::PhaseFollower phaseFollower_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
     double sampleRate_{48000.0};
+    bool adaptiveJoined_{false};
+    int lastAudioMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
@@ -85,6 +88,7 @@ private:
     std::atomic<float> effectiveGuitarAuthority_{0.0f};
     std::atomic<double> phaseErrorCycles_{0.0};
     std::atomic<bool> hardResyncRecommended_{false};
+    std::atomic<bool> adaptiveJoinedVisible_{false};
     std::atomic<std::uint32_t> pendingUiCommands_{0};
     std::atomic<double> lastHostBpm_{120.0};
     std::atomic<double> lastHostPpq_{0.0};
