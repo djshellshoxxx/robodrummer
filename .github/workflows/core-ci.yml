@@ -1,8 +1,8 @@
-name: Core CI
+name: RoboDrummer CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, juce-shell-phase2]
   pull_request:
 
 jobs:
@@ -13,9 +13,26 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-      - name: Build
-        run: cmake --build build --config Release
-      - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Configure core
+        run: cmake -S . -B build-core -DCMAKE_BUILD_TYPE=Release -DROBODRUMMER_BUILD_JUCE=OFF
+      - name: Build core tests
+        run: cmake --build build-core --config Release
+      - name: Test core
+        run: ctest --test-dir build-core -C Release --output-on-failure
+
+  juce-shell:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux JUCE dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libfreetype6-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev pkg-config
+      - name: Configure JUCE shell
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DROBODRUMMER_BUILD_JUCE=ON
+      - name: Build VST3 and Standalone
+        run: cmake --build build --config Release --target RoboDrummer_VST3 RoboDrummer_Standalone
