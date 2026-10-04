@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "analysis/DynamicsFollower.h"
 #include "plugin/MidiCommandMapper.h"
 #include <array>
 #include <cmath>
@@ -199,11 +200,12 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     effectiveGuitarAuthority_.store(authority.effectiveGuitarAuthority, std::memory_order_relaxed);
 
     const float manualIntensity = intensity_.load(std::memory_order_relaxed);
-    float effectiveIntensity = manualIntensity;
-    if (settings.mode != robodrummer::LeadershipMode::DrummerLeads) {
-        const float dynamicAmount = dynamicFollow_.load(std::memory_order_relaxed) * authority.effectiveGuitarAuthority;
-        effectiveIntensity = std::clamp(manualIntensity + (performance.intensity - manualIntensity) * dynamicAmount, 0.0f, 1.0f);
-    }
+    const float effectiveIntensity = robodrummer::DynamicsFollower::blend(
+        manualIntensity,
+        performance.intensity,
+        dynamicFollow_.load(std::memory_order_relaxed),
+        authority.effectiveGuitarAuthority,
+        settings.mode);
     effectiveDrummerIntensity_.store(effectiveIntensity, std::memory_order_relaxed);
 
     jam_.setTempo(authority.outputBpm);
