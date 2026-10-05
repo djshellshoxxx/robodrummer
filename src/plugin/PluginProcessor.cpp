@@ -237,6 +237,16 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     effectiveGuitarAuthority_.store(authority.effectiveGuitarAuthority, std::memory_order_relaxed);
 
     const bool arrangementEnabled = arrangementEnabled_.load(std::memory_order_relaxed);
+    const auto arrangementRevision = arrangementRevision_.load(std::memory_order_acquire);
+    if (arrangementRevision != appliedArrangementRevision_) {
+        rebuildArrangementFromSlots();
+        appliedArrangementRevision_ = arrangementRevision;
+        lastArrangementBarIndex_ = jam_.currentBarIndex();
+        currentArrangementSection_.store(0, std::memory_order_relaxed);
+        if (arrangementEnabled)
+            applyCurrentArrangementSection();
+    }
+
     if (arrangementEnabled != lastArrangementEnabled_) {
         arrangement_.reset();
         lastArrangementBarIndex_ = jam_.currentBarIndex();
@@ -412,6 +422,15 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("leadershipMode", leadershipMode_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadership", leadership_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("followRange", followRangeBpm_.load(std::memory_order_relaxed), nullptr);
+    for (int i = 0; i < ArrangementSlotCount; ++i) {
+        const auto section = getArrangementSection(i);
+        const auto prefix = juce::String("arr") + juce::String(i);
+        state.setProperty(prefix + "Style", static_cast<int>(section.style), nullptr);
+        state.setProperty(prefix + "Bars", section.bars, nullptr);
+        state.setProperty(prefix + "Intensity", section.intensityTarget, nullptr);
+        state.setProperty(prefix + "Enabled", isArrangementSectionEnabled(i), nullptr);
+        state.setProperty(prefix + "Auto", section.autoAdvance, nullptr);
+    }
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
 
@@ -429,6 +448,16 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
             setLeadershipMode(static_cast<robodrummer::LeadershipMode>(mode));
             setLeadership(static_cast<float>(state.getProperty("leadership", 0.5f)));
             setFollowRange(static_cast<double>(state.getProperty("followRange", 15.0)));
+            for (int i = 0; i < ArrangementSlotCount; ++i) {
+                const auto current = getArrangementSection(i);
+                const auto prefix = juce::String("arr") + juce::String(i);
+                const int slotStyle = juce::jlimit(0, 5, static_cast<int>(state.getProperty(prefix + "Style", static_cast<int>(current.style))));
+                const int slotBars = juce::jlimit(1, 64, static_cast<int>(state.getProperty(prefix + "Bars", current.bars)));
+                const float slotIntensity = juce::jlimit(0.0f, 1.0f, static_cast<float>(state.getProperty(prefix + "Intensity", current.intensityTarget)));
+                const bool slotEnabled = static_cast<bool>(state.getProperty(prefix + "Enabled", isArrangementSectionEnabled(i)));
+                const bool slotAuto = static_cast<bool>(state.getProperty(prefix + "Auto", current.autoAdvance));
+                setArrangementSection(i, static_cast<robodrummer::JamStyle>(slotStyle), slotBars, slotIntensity, slotEnabled, slotAuto);
+            }
         }
     }
 }
@@ -439,6 +468,37 @@ void RoboDrummerAudioProcessor::setInternalBpm(double bpm) noexcept {
 
 void RoboDrummerAudioProcessor::setIntensity(float value) noexcept {
     intensity_.store(juce::jlimit(0.0f, 1.0f, value), std::memory_order_relaxed);
+}
+
+void RoboDrummerAudioProcessor::setArrangementSection(int index,
+                                                      robodrummer::JamStyle style,
+                                                      int bars,
+                                                      float intensity,
+                                                      bool enabled,
+                                                      bool autoAdvance) noexcept {
+    if (index < 0 || index >= ArrangementSlotCount) return;
+    arrangementStyle_[static_cast<std::size_t>(index)].store(juce::jlimit(0, 5, static_cast<int>(style)), std::memory_order_relaxed);
+    arrangementBars_[static_cast<std::size_t>(index)].store(juce::jlimit(1, 64, bars), std::memory_order_relaxed);
+    arrangementIntensity_[static_cast<std::size_t>(index)].store(juce::jlimit(0.0f, 1.0f, intensity), std::memory_order_relaxed);
+    arrangementSlotEnabled_[static_cast<std::size_t>(index)].store(enabled, std::memory_order_relaxed);
+    arrangementAutoAdvance_[static_cast<std::size_t>(index)].store(autoAdvance, std::memory_order_relaxed);
+    arrangementRevision_.fetch_add(1, std::memory_order_release);
+}
+
+robodrummer::SectionDefinition RoboDrummerAudioProcessor::getArrangementSection(int index) const noexcept {
+    if (index < 0 || index >= ArrangementSlotCount) return {};
+    const auto i = static_cast<std::size_t>(index);
+    robodrummer::SectionDefinition result;
+    result.style = static_cast<robodrummer::JamStyle>(arrangementStyle_[i].load(std::memory_order_relaxed));
+    result.bars = arrangementBars_[i].load(std::memory_order_relaxed);
+    result.intensityTarget = arrangementIntensity_[i].load(std::memory_order_relaxed);
+    result.autoAdvance = arrangementAutoAdvance_[i].load(std::memory_order_relaxed);
+    return result;
+}
+
+bool RoboDrummerAudioProcessor::isArrangementSectionEnabled(int index) const noexcept {
+    if (index < 0 || index >= ArrangementSlotCount) return false;
+    return arrangementSlotEnabled_[static_cast<std::size_t>(index)].load(std::memory_order_relaxed);
 }
 
 robodrummer::HostTransportSnapshot RoboDrummerAudioProcessor::getLastTransport() const noexcept {
@@ -454,13 +514,37 @@ robodrummer::HostTransportSnapshot RoboDrummerAudioProcessor::getLastTransport()
 }
 
 void RoboDrummerAudioProcessor::installStarterArrangement() noexcept {
+    const std::array<robodrummer::SectionDefinition, ArrangementSlotCount> defaults {{
+        {robodrummer::JamStyle::Rock, 8, 0.50f, true},
+        {robodrummer::JamStyle::Funk, 4, 0.66f, true},
+        {robodrummer::JamStyle::Rock, 8, 0.78f, true},
+        {robodrummer::JamStyle::Blues, 8, 0.48f, true},
+        {robodrummer::JamStyle::Punk, 4, 0.82f, true},
+        {robodrummer::JamStyle::Rock, 8, 0.60f, false}
+    }};
+
+    for (int i = 0; i < ArrangementSlotCount; ++i) {
+        const auto index = static_cast<std::size_t>(i);
+        arrangementStyle_[index].store(static_cast<int>(defaults[index].style), std::memory_order_relaxed);
+        arrangementBars_[index].store(defaults[index].bars, std::memory_order_relaxed);
+        arrangementIntensity_[index].store(defaults[index].intensityTarget, std::memory_order_relaxed);
+        arrangementSlotEnabled_[index].store(true, std::memory_order_relaxed);
+        arrangementAutoAdvance_[index].store(defaults[index].autoAdvance, std::memory_order_relaxed);
+    }
+    arrangementRevision_.store(1, std::memory_order_release);
+    rebuildArrangementFromSlots();
+    appliedArrangementRevision_ = 1;
+}
+
+void RoboDrummerAudioProcessor::rebuildArrangementFromSlots() noexcept {
     arrangement_.clear();
-    (void) arrangement_.add({robodrummer::JamStyle::Rock, 8, 0.50f, true});
-    (void) arrangement_.add({robodrummer::JamStyle::Funk, 4, 0.66f, true});
-    (void) arrangement_.add({robodrummer::JamStyle::Rock, 8, 0.78f, true});
-    (void) arrangement_.add({robodrummer::JamStyle::Blues, 8, 0.48f, true});
-    (void) arrangement_.add({robodrummer::JamStyle::Punk, 4, 0.82f, true});
-    (void) arrangement_.add({robodrummer::JamStyle::Rock, 8, 0.60f, false});
+    for (int i = 0; i < ArrangementSlotCount; ++i) {
+        if (!arrangementSlotEnabled_[static_cast<std::size_t>(i)].load(std::memory_order_relaxed))
+            continue;
+        (void) arrangement_.add(getArrangementSection(i));
+    }
+    arrangement_.reset();
+    currentArrangementSection_.store(0, std::memory_order_relaxed);
 }
 
 void RoboDrummerAudioProcessor::applyCurrentArrangementSection() noexcept {
