@@ -168,6 +168,11 @@ void RoboDrummerAudioProcessorEditor::resized() {
 }
 
 void RoboDrummerAudioProcessorEditor::timerCallback() {
+    arrangementToggle_.setToggleState(processor_.isArrangementEnabled(), juce::dontSendNotification);
+    jamStyle_.setSelectedId(static_cast<int>(processor_.getJamStyle()) + 1, juce::dontSendNotification);
+    if (processor_.isArrangementEnabled())
+        intensity_.setValue(processor_.getIntensity(), juce::dontSendNotification);
+
     const auto t = processor_.getLastTransport();
     tempoLabel_.setText("Drummer tempo: " + juce::String(processor_.getEffectiveDrummerBpm(), 1) + " BPM", juce::dontSendNotification);
     transportLabel_.setText(
