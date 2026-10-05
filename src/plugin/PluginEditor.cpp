@@ -2,7 +2,7 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(740, 675);
+    setSize(760, 725);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -54,6 +54,10 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     };
     addAndMakeVisible(jamStyle_);
 
+    arrangementToggle_.setToggleState(processor_.isArrangementEnabled(), juce::dontSendNotification);
+    arrangementToggle_.onClick = [this] { processor_.setArrangementEnabled(arrangementToggle_.getToggleState()); };
+    addAndMakeVisible(arrangementToggle_);
+
     leadership_.setRange(0.0, 1.0, 0.01);
     leadership_.setValue(processor_.getLeadership(), juce::dontSendNotification);
     leadership_.setSliderStyle(juce::Slider::LinearHorizontal);
@@ -83,7 +87,8 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     authorityLabel_.setText("Guitar authority: 0%", juce::dontSendNotification);
     dynamicsLabel_.setText("Dynamics: listening", juce::dontSendNotification);
     phraseLabel_.setText("Phrase: stable", juce::dontSendNotification);
-    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_ })
+    sectionLabel_.setText("Arrangement: free jam", juce::dontSendNotification);
+    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_, &sectionLabel_ })
         addAndMakeVisible(*label);
 
     fillButton_.onClick = [this] { processor_.requestFill(); };
@@ -101,7 +106,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 633, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, 682, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -127,6 +132,8 @@ void RoboDrummerAudioProcessorEditor::resized() {
     row = area.removeFromTop(36);
     styleCaption_.setBounds(row.removeFromLeft(112));
     jamStyle_.setBounds(row.removeFromLeft(220));
+    row.removeFromLeft(14);
+    arrangementToggle_.setBounds(row.removeFromLeft(220));
     area.removeFromTop(5);
 
     row = area.removeFromTop(36);
@@ -151,6 +158,7 @@ void RoboDrummerAudioProcessorEditor::resized() {
     authorityLabel_.setBounds(area.removeFromTop(25));
     dynamicsLabel_.setBounds(area.removeFromTop(25));
     phraseLabel_.setBounds(area.removeFromTop(25));
+    sectionLabel_.setBounds(area.removeFromTop(25));
 
     area.removeFromTop(10);
     auto buttons = area.removeFromTop(42);
@@ -203,4 +211,13 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
             " | fill strength " + juce::String(processor_.getPhraseFillStrength() * 100.0f, 0) + "%" +
             (processor_.isPhraseBoundary() ? " | BOUNDARY" : ""),
         juce::dontSendNotification);
+
+    if (processor_.isArrangementEnabled()) {
+        sectionLabel_.setText(
+            "Arrangement: section " + juce::String(processor_.getCurrentArrangementSection() + 1) +
+                " | MIDI 37 next / 38 previous",
+            juce::dontSendNotification);
+    } else {
+        sectionLabel_.setText("Arrangement: free jam", juce::dontSendNotification);
+    }
 }
