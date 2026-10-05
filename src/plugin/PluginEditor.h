@@ -12,6 +12,8 @@ public:
 
 private:
     void timerCallback() override;
+    void loadArrangementEditorSlot();
+    void commitArrangementEditorSlot();
 
     RoboDrummerAudioProcessor& processor_;
     juce::Label title_;
@@ -31,6 +33,13 @@ private:
     juce::ComboBox leadershipMode_;
     juce::ComboBox jamStyle_;
     juce::ToggleButton arrangementToggle_{"Programmed arrangement"};
+    juce::ComboBox arrangementSlot_;
+    juce::ComboBox arrangementStyle_;
+    juce::Slider arrangementBars_;
+    juce::Slider arrangementIntensity_;
+    juce::ToggleButton arrangementSlotEnabled_{"Enabled"};
+    juce::ToggleButton arrangementAutoAdvance_{"Auto advance"};
+    juce::Label arrangementEditCaption_;
     juce::Label bpmCaption_;
     juce::Label intensityCaption_;
     juce::Label leadershipCaption_;
@@ -40,6 +49,8 @@ private:
     juce::Label styleCaption_;
     juce::TextButton fillButton_{"FILL"};
     juce::TextButton resetButton_{"RESET LISTENING"};
+    int editingArrangementSlot_{0};
+    bool loadingArrangementEditor_{false};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RoboDrummerAudioProcessorEditor)
 };
