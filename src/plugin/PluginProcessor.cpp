@@ -426,11 +426,11 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     for (int i = 0; i < ArrangementSlotCount; ++i) {
         const auto section = getArrangementSection(i);
         const auto prefix = juce::String("arr") + juce::String(i);
-        state.setProperty(prefix + "Style", static_cast<int>(section.style), nullptr);
-        state.setProperty(prefix + "Bars", section.bars, nullptr);
-        state.setProperty(prefix + "Intensity", section.intensityTarget, nullptr);
-        state.setProperty(prefix + "Enabled", isArrangementSectionEnabled(i), nullptr);
-        state.setProperty(prefix + "Auto", section.autoAdvance, nullptr);
+        state.setProperty(juce::Identifier(prefix + "Style"), static_cast<int>(section.style), nullptr);
+        state.setProperty(juce::Identifier(prefix + "Bars"), section.bars, nullptr);
+        state.setProperty(juce::Identifier(prefix + "Intensity"), section.intensityTarget, nullptr);
+        state.setProperty(juce::Identifier(prefix + "Enabled"), isArrangementSectionEnabled(i), nullptr);
+        state.setProperty(juce::Identifier(prefix + "Auto"), section.autoAdvance, nullptr);
     }
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
@@ -452,11 +452,11 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
             for (int i = 0; i < ArrangementSlotCount; ++i) {
                 const auto current = getArrangementSection(i);
                 const auto prefix = juce::String("arr") + juce::String(i);
-                const int slotStyle = juce::jlimit(0, 5, static_cast<int>(state.getProperty(prefix + "Style", static_cast<int>(current.style))));
-                const int slotBars = juce::jlimit(1, 64, static_cast<int>(state.getProperty(prefix + "Bars", current.bars)));
-                const float slotIntensity = juce::jlimit(0.0f, 1.0f, static_cast<float>(state.getProperty(prefix + "Intensity", current.intensityTarget)));
-                const bool slotEnabled = static_cast<bool>(state.getProperty(prefix + "Enabled", isArrangementSectionEnabled(i)));
-                const bool slotAuto = static_cast<bool>(state.getProperty(prefix + "Auto", current.autoAdvance));
+                const int slotStyle = juce::jlimit(0, 5, static_cast<int>(state.getProperty(juce::Identifier(prefix + "Style"), static_cast<int>(current.style))));
+                const int slotBars = juce::jlimit(1, 64, static_cast<int>(state.getProperty(juce::Identifier(prefix + "Bars"), current.bars)));
+                const float slotIntensity = juce::jlimit(0.0f, 1.0f, static_cast<float>(state.getProperty(juce::Identifier(prefix + "Intensity"), current.intensityTarget)));
+                const bool slotEnabled = static_cast<bool>(state.getProperty(juce::Identifier(prefix + "Enabled"), isArrangementSectionEnabled(i)));
+                const bool slotAuto = static_cast<bool>(state.getProperty(juce::Identifier(prefix + "Auto"), current.autoAdvance));
                 setArrangementSection(i, static_cast<robodrummer::JamStyle>(slotStyle), slotBars, slotIntensity, slotEnabled, slotAuto);
             }
         }
