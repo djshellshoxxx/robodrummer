@@ -7,6 +7,7 @@
 #include "analysis/RhythmAnalyzer.h"
 #include "analysis/TimingAuthorityController.h"
 #include "core/JamStyleProfile.h"
+#include "core/SectionSequencer.h"
 #include "audio/DrumSamplePlayer.h"
 #include "plugin/HostTransportAdapter.h"
 #include "plugin/JamEngine.h"
@@ -68,6 +69,9 @@ public:
     bool isPhraseBoundary() const noexcept { return phraseBoundary_.load(std::memory_order_relaxed); }
     void setJamStyle(robodrummer::JamStyle style) noexcept { jamStyle_.store(static_cast<int>(style), std::memory_order_relaxed); }
     robodrummer::JamStyle getJamStyle() const noexcept { return static_cast<robodrummer::JamStyle>(jamStyle_.load(std::memory_order_relaxed)); }
+    void setArrangementEnabled(bool enabled) noexcept { arrangementEnabled_.store(enabled, std::memory_order_relaxed); }
+    bool isArrangementEnabled() const noexcept { return arrangementEnabled_.load(std::memory_order_relaxed); }
+    int getCurrentArrangementSection() const noexcept { return currentArrangementSection_.load(std::memory_order_relaxed); }
 
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
@@ -83,6 +87,8 @@ private:
     enum PendingUiBits : std::uint32_t { FillBit = 1u << 0, ResetBit = 1u << 1 };
 
     void installStarterKit(double sampleRate);
+    void installStarterArrangement() noexcept;
+    void applyCurrentArrangementSection() noexcept;
     static int midiNoteFor(robodrummer::DrumInstrument) noexcept;
 
     robodrummer::JamEngine jam_{};
@@ -92,16 +98,21 @@ private:
     robodrummer::PhaseFollower phaseFollower_{};
     robodrummer::ResyncPlanner resyncPlanner_{};
     robodrummer::JamBrain jamBrain_{};
+    robodrummer::SectionSequencer<16> arrangement_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
     double sampleRate_{48000.0};
     bool adaptiveJoined_{false};
     int lastAudioMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
     double jamBrainCooldownSeconds_{0.0};
+    bool lastArrangementEnabled_{false};
+    long long lastArrangementBarIndex_{0};
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
     std::atomic<float> dynamicFollow_{0.60f};
     std::atomic<int> jamStyle_{static_cast<int>(robodrummer::JamStyle::Rock)};
+    std::atomic<bool> arrangementEnabled_{false};
+    std::atomic<int> currentArrangementSection_{0};
     std::atomic<int> leadershipMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
     std::atomic<float> leadership_{0.5f};
     std::atomic<double> followRangeBpm_{15.0};
