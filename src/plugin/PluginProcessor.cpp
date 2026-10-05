@@ -282,9 +282,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             observation.beatConfidence = rhythm.beatConfidence;
             observation.downbeatConfidence = rhythm.downbeatConfidence;
 
-            robodrummer::JamBrainSettings brainSettings;
-            brainSettings.phraseBars = 4;
-            brainSettings.minBarsBeforeFill = 3;
+            const auto styleProfile = robodrummer::JamStyleProfile::forStyle(getJamStyle());
+            const auto brainSettings = styleProfile.toBrainSettings();
             const auto decision = jamBrain_.update(observation, brainSettings);
 
             phraseState_.store(static_cast<int>(decision.phraseState), std::memory_order_relaxed);
@@ -343,6 +342,7 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("bpm", internalBpm_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("intensity", intensity_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("dynamicFollow", dynamicFollow_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("jamStyle", jamStyle_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadershipMode", leadershipMode_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadership", leadership_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("followRange", followRangeBpm_.load(std::memory_order_relaxed), nullptr);
@@ -356,6 +356,8 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
             setInternalBpm(static_cast<double>(state.getProperty("bpm", 120.0)));
             setIntensity(static_cast<float>(state.getProperty("intensity", 0.5f)));
             setDynamicFollow(static_cast<float>(state.getProperty("dynamicFollow", 0.60f)));
+            const int style = juce::jlimit(0, 5, static_cast<int>(state.getProperty("jamStyle", 0)));
+            setJamStyle(static_cast<robodrummer::JamStyle>(style));
             const int mode = juce::jlimit(0, 2, static_cast<int>(state.getProperty("leadershipMode", 0)));
             setLeadershipMode(static_cast<robodrummer::LeadershipMode>(mode));
             setLeadership(static_cast<float>(state.getProperty("leadership", 0.5f)));
