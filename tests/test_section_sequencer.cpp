@@ -11,6 +11,11 @@ int main() {
     assert(seq.add({JamStyle::Funk, 1, 0.70f, true}));
     assert(seq.add({JamStyle::Blues, 4, 0.45f, false}));
     assert(seq.size() == 3);
+    assert(seq.set(1, {JamStyle::Metal, 2, 0.80f, true}));
+    assert(seq.section(1).style == JamStyle::Metal);
+    assert(seq.section(1).bars == 2);
+    assert(!seq.set(7, {JamStyle::Rock, 1, 0.5f, true}));
+    assert(seq.set(1, {JamStyle::Funk, 1, 0.70f, true}));
 
     seq.reset();
     assert(seq.current().style == JamStyle::Rock);
