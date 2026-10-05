@@ -107,24 +107,17 @@ private:
 
     [[nodiscard]] float trend() const noexcept {
         if (historyCount_ < 2) return 0.0f;
-        const int half = std::max(1, historyCount_ / 2);
-        float early = 0.0f;
-        float late = 0.0f;
-        int earlyCount = 0;
-        int lateCount = 0;
+        const int latestIndex = historyCount_ - 1;
+        const float latest = intensityHistory_[static_cast<std::size_t>(latestIndex)];
+        const int baselineCount = std::min(2, latestIndex);
+        if (baselineCount <= 0)
+            return latest - intensityHistory_[0];
 
-        for (int i = 0; i < historyCount_; ++i) {
-            if (i < half) {
-                early += intensityHistory_[static_cast<std::size_t>(i)];
-                ++earlyCount;
-            } else {
-                late += intensityHistory_[static_cast<std::size_t>(i)];
-                ++lateCount;
-            }
-        }
-
-        if (earlyCount == 0 || lateCount == 0) return 0.0f;
-        return (late / lateCount) - (early / earlyCount);
+        float baseline = 0.0f;
+        for (int i = 1; i <= baselineCount; ++i)
+            baseline += intensityHistory_[static_cast<std::size_t>(latestIndex - i)];
+        baseline /= static_cast<float>(baselineCount);
+        return latest - baseline;
     }
 
     int barIndex_{0};
