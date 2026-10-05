@@ -98,6 +98,8 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     performanceAnalyzer_.prepare(sampleRate_);
     timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
     resyncPlanner_.reset();
+    jamBrain_.reset();
+    jamBrainCooldownSeconds_ = 0.0;
     jam_.setTempo(internalBpm_.load(std::memory_order_relaxed));
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
     adaptiveJoined_ = false;
@@ -127,6 +129,11 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         performanceAnalyzer_.reset();
         timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
         resyncPlanner_.reset();
+        jamBrain_.reset();
+        jamBrainCooldownSeconds_ = 0.0;
+        phraseState_.store(static_cast<int>(robodrummer::PhraseState::Stable), std::memory_order_relaxed);
+        phraseFillStrength_.store(0.0f, std::memory_order_relaxed);
+        phraseBoundary_.store(false, std::memory_order_relaxed);
         adaptiveJoined_ = false;
         adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
     }
@@ -197,6 +204,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         adaptiveJoinedVisible_.store(adaptiveJoined_, std::memory_order_relaxed);
         lastAudioMode_ = modeValue;
         resyncPlanner_.reset();
+        jamBrain_.reset();
+        jamBrainCooldownSeconds_ = 0.0;
         if (settings.mode != robodrummer::LeadershipMode::DrummerLeads)
             timingAuthority_.reset(baseBpm);
     }
@@ -253,6 +262,42 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         phaseErrorCycles_.store(0.0, std::memory_order_relaxed);
         hardResyncRecommended_.store(false, std::memory_order_relaxed);
         resyncPlanner_.reset();
+    }
+
+    // Slow musical coordination: evaluate one observation near each trusted guitar downbeat.
+    // This intentionally runs at bar timescale, separate from block-by-block tempo/phase tracking.
+    phraseBoundary_.store(false, std::memory_order_relaxed);
+    jamBrainCooldownSeconds_ = std::max(0.0, jamBrainCooldownSeconds_ - blockSeconds);
+    if (settings.mode != robodrummer::LeadershipMode::DrummerLeads &&
+        adaptiveJoined_ &&
+        authority.effectiveGuitarAuthority >= 0.25f &&
+        jamBrainCooldownSeconds_ <= 0.0) {
+        const bool nearBeatOne = rhythm.beatInBar == 1 &&
+                                 (rhythm.beatPhase <= 0.08 || rhythm.beatPhase >= 0.92) &&
+                                 rhythm.downbeatConfidence >= 0.40f;
+        if (nearBeatOne) {
+            robodrummer::JamBarObservation observation;
+            observation.intensity = performance.intensity;
+            observation.activity = performance.activity;
+            observation.beatConfidence = rhythm.beatConfidence;
+            observation.downbeatConfidence = rhythm.downbeatConfidence;
+
+            robodrummer::JamBrainSettings brainSettings;
+            brainSettings.phraseBars = 4;
+            brainSettings.minBarsBeforeFill = 3;
+            const auto decision = jamBrain_.update(observation, brainSettings);
+
+            phraseState_.store(static_cast<int>(decision.phraseState), std::memory_order_relaxed);
+            phraseFillStrength_.store(decision.fillStrength, std::memory_order_relaxed);
+            phraseBoundary_.store(decision.phraseBoundary, std::memory_order_relaxed);
+
+            if (decision.requestFill && !jam_.state().fillRequested)
+                jam_.apply(robodrummer::MidiCommand::Fill);
+
+            const double barSeconds = (60.0 / std::max(20.0, authority.outputBpm)) *
+                                      numerator * (4.0 / static_cast<double>(denominator));
+            jamBrainCooldownSeconds_ = std::max(0.5, barSeconds * 0.60);
+        }
     }
 
     for (const auto metadata : midi) {
