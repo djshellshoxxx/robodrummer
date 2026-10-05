@@ -6,6 +6,7 @@
 #include "analysis/ResyncPlanner.h"
 #include "analysis/RhythmAnalyzer.h"
 #include "analysis/TimingAuthorityController.h"
+#include "core/JamStyleProfile.h"
 #include "audio/DrumSamplePlayer.h"
 #include "plugin/HostTransportAdapter.h"
 #include "plugin/JamEngine.h"
@@ -65,6 +66,8 @@ public:
     robodrummer::PhraseState getPhraseState() const noexcept { return static_cast<robodrummer::PhraseState>(phraseState_.load(std::memory_order_relaxed)); }
     float getPhraseFillStrength() const noexcept { return phraseFillStrength_.load(std::memory_order_relaxed); }
     bool isPhraseBoundary() const noexcept { return phraseBoundary_.load(std::memory_order_relaxed); }
+    void setJamStyle(robodrummer::JamStyle style) noexcept { jamStyle_.store(static_cast<int>(style), std::memory_order_relaxed); }
+    robodrummer::JamStyle getJamStyle() const noexcept { return static_cast<robodrummer::JamStyle>(jamStyle_.load(std::memory_order_relaxed)); }
 
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
@@ -98,6 +101,7 @@ private:
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
     std::atomic<float> dynamicFollow_{0.60f};
+    std::atomic<int> jamStyle_{static_cast<int>(robodrummer::JamStyle::Rock)};
     std::atomic<int> leadershipMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
     std::atomic<float> leadership_{0.5f};
     std::atomic<double> followRangeBpm_{15.0};
