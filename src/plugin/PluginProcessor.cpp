@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include "analysis/DynamicsFollower.h"
+#include "analysis/PhraseGrooveModifier.h"
 #include "plugin/MidiCommandMapper.h"
 #include <array>
 #include <cmath>
@@ -223,6 +224,9 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         resyncPlanner_.reset();
         jamBrain_.reset();
         jamBrainCooldownSeconds_ = 0.0;
+        phraseState_.store(static_cast<int>(robodrummer::PhraseState::Stable), std::memory_order_relaxed);
+        phraseFillStrength_.store(0.0f, std::memory_order_relaxed);
+        phraseBoundary_.store(false, std::memory_order_relaxed);
         if (settings.mode != robodrummer::LeadershipMode::DrummerLeads)
             timingAuthority_.reset(baseBpm);
     }
@@ -269,7 +273,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     jam_.setTempo(authority.outputBpm);
     jam_.setMeter(numerator, denominator);
     jam_.setIntensity(effectiveIntensity);
-    jam_.setStyle(styleForJamStyle(getJamStyle()));
+    const auto phraseState = getPhraseState();
+    const float phraseAmount = phraseState == robodrummer::PhraseState::Break ? 1.0f : 0.75f;
+    jam_.setStyle(robodrummer::PhraseGrooveModifier::apply(
+        styleForJamStyle(getJamStyle()), phraseState, phraseAmount));
 
     if (hasPpq && settings.mode == robodrummer::LeadershipMode::DrummerLeads)
         jam_.syncToPpq(hostPpq);
