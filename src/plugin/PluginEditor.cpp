@@ -2,7 +2,7 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(720, 610);
+    setSize(740, 675);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -15,7 +15,8 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     leadershipCaption_.setText("Leadership", juce::dontSendNotification);
     followRangeCaption_.setText("Follow range", juce::dontSendNotification);
     dynamicFollowCaption_.setText("Dynamic follow", juce::dontSendNotification);
-    for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_ })
+    styleCaption_.setText("Jam style", juce::dontSendNotification);
+    for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_, &styleCaption_ })
         addAndMakeVisible(*label);
 
     bpm_.setRange(40.0, 240.0, 0.1);
@@ -40,6 +41,18 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
         processor_.setLeadershipMode(static_cast<robodrummer::LeadershipMode>(juce::jlimit(0, 2, leadershipMode_.getSelectedId() - 1)));
     };
     addAndMakeVisible(leadershipMode_);
+
+    jamStyle_.addItem("Rock", 1);
+    jamStyle_.addItem("Blues", 2);
+    jamStyle_.addItem("Funk", 3);
+    jamStyle_.addItem("Punk", 4);
+    jamStyle_.addItem("Metal", 5);
+    jamStyle_.addItem("Shuffle", 6);
+    jamStyle_.setSelectedId(static_cast<int>(processor_.getJamStyle()) + 1, juce::dontSendNotification);
+    jamStyle_.onChange = [this] {
+        processor_.setJamStyle(static_cast<robodrummer::JamStyle>(juce::jlimit(0, 5, jamStyle_.getSelectedId() - 1)));
+    };
+    addAndMakeVisible(jamStyle_);
 
     leadership_.setRange(0.0, 1.0, 0.01);
     leadership_.setValue(processor_.getLeadership(), juce::dontSendNotification);
@@ -69,7 +82,8 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     trackingLabel_.setText("Tracker: acquiring", juce::dontSendNotification);
     authorityLabel_.setText("Guitar authority: 0%", juce::dontSendNotification);
     dynamicsLabel_.setText("Dynamics: listening", juce::dontSendNotification);
-    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_ })
+    phraseLabel_.setText("Phrase: stable", juce::dontSendNotification);
+    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_ })
         addAndMakeVisible(*label);
 
     fillButton_.onClick = [this] { processor_.requestFill(); };
@@ -87,7 +101,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 568, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, 633, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -111,6 +125,11 @@ void RoboDrummerAudioProcessorEditor::resized() {
     area.removeFromTop(5);
 
     row = area.removeFromTop(36);
+    styleCaption_.setBounds(row.removeFromLeft(112));
+    jamStyle_.setBounds(row.removeFromLeft(220));
+    area.removeFromTop(5);
+
+    row = area.removeFromTop(36);
     leadershipCaption_.setBounds(row.removeFromLeft(112));
     leadership_.setBounds(row);
     area.removeFromTop(5);
@@ -131,6 +150,7 @@ void RoboDrummerAudioProcessorEditor::resized() {
     trackingLabel_.setBounds(area.removeFromTop(25));
     authorityLabel_.setBounds(area.removeFromTop(25));
     dynamicsLabel_.setBounds(area.removeFromTop(25));
+    phraseLabel_.setBounds(area.removeFromTop(25));
 
     area.removeFromTop(10);
     auto buttons = area.removeFromTop(42);
@@ -169,5 +189,18 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
     dynamicsLabel_.setText(
         "Dynamics: guitar " + juce::String(processor_.getDetectedGuitarIntensity() * 100.0f, 0) +
             "% | drummer " + juce::String(processor_.getEffectiveDrummerIntensity() * 100.0f, 0) + "%",
+        juce::dontSendNotification);
+
+    juce::String phraseName = "stable";
+    switch (processor_.getPhraseState()) {
+        case robodrummer::PhraseState::Build: phraseName = "BUILD"; break;
+        case robodrummer::PhraseState::Release: phraseName = "RELEASE"; break;
+        case robodrummer::PhraseState::Break: phraseName = "BREAK"; break;
+        case robodrummer::PhraseState::Stable: break;
+    }
+    phraseLabel_.setText(
+        "Phrase: " + phraseName +
+            " | fill strength " + juce::String(processor_.getPhraseFillStrength() * 100.0f, 0) + "%" +
+            (processor_.isPhraseBoundary() ? " | BOUNDARY" : ""),
         juce::dontSendNotification);
 }
