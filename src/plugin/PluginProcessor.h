@@ -11,6 +11,7 @@
 #include "audio/DrumSamplePlayer.h"
 #include "plugin/HostTransportAdapter.h"
 #include "plugin/JamEngine.h"
+#include <array>
 #include <atomic>
 #include <cstdint>
 
@@ -72,6 +73,10 @@ public:
     void setArrangementEnabled(bool enabled) noexcept { arrangementEnabled_.store(enabled, std::memory_order_relaxed); }
     bool isArrangementEnabled() const noexcept { return arrangementEnabled_.load(std::memory_order_relaxed); }
     int getCurrentArrangementSection() const noexcept { return currentArrangementSection_.load(std::memory_order_relaxed); }
+    static constexpr int ArrangementSlotCount = 6;
+    void setArrangementSection(int index, robodrummer::JamStyle style, int bars, float intensity, bool enabled, bool autoAdvance) noexcept;
+    robodrummer::SectionDefinition getArrangementSection(int index) const noexcept;
+    bool isArrangementSectionEnabled(int index) const noexcept;
 
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
@@ -89,6 +94,7 @@ private:
     void installStarterKit(double sampleRate);
     void installStarterArrangement() noexcept;
     void applyCurrentArrangementSection() noexcept;
+    void rebuildArrangementFromSlots() noexcept;
     static int midiNoteFor(robodrummer::DrumInstrument) noexcept;
 
     robodrummer::JamEngine jam_{};
@@ -106,6 +112,7 @@ private:
     double jamBrainCooldownSeconds_{0.0};
     bool lastArrangementEnabled_{false};
     long long lastArrangementBarIndex_{0};
+    std::uint32_t appliedArrangementRevision_{0};
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
@@ -113,6 +120,12 @@ private:
     std::atomic<int> jamStyle_{static_cast<int>(robodrummer::JamStyle::Rock)};
     std::atomic<bool> arrangementEnabled_{false};
     std::atomic<int> currentArrangementSection_{0};
+    std::array<std::atomic<int>, ArrangementSlotCount> arrangementStyle_{};
+    std::array<std::atomic<int>, ArrangementSlotCount> arrangementBars_{};
+    std::array<std::atomic<float>, ArrangementSlotCount> arrangementIntensity_{};
+    std::array<std::atomic<bool>, ArrangementSlotCount> arrangementSlotEnabled_{};
+    std::array<std::atomic<bool>, ArrangementSlotCount> arrangementAutoAdvance_{};
+    std::atomic<std::uint32_t> arrangementRevision_{0};
     std::atomic<int> leadershipMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
     std::atomic<float> leadership_{0.5f};
     std::atomic<double> followRangeBpm_{15.0};
