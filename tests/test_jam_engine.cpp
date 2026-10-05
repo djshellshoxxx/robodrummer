@@ -8,6 +8,7 @@ int main() {
     engine.prepare(48000.0);
     engine.setTempo(120.0);
     engine.setMeter(4,4);
+    assert(engine.currentBarIndex() == 0);
     std::array<DrumEvent, 128> events{};
 
     const auto n = engine.processBlock(96000, events.data(), events.size());
@@ -19,6 +20,7 @@ int main() {
     }
     assert(sawKick0);
     assert(sawSnareBeat2);
+    assert(engine.currentBarIndex() == 1);
 
     engine.resetPhase();
     engine.nudgePhaseSamples(2400); // 0.1 beat at 120 BPM, 48 kHz
