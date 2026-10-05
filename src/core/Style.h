@@ -81,6 +81,8 @@ struct Style {
         s.kickBeat3 = 0.64f;
         s.extraKickProbability = 0.08f;
         s.closedHatProbability = 1.0f;
+        s.openHatProbability = 0.0f;
+        s.rideProbability = 0.0f;
         s.crashOnSectionStart = 0.68f;
         s.swing = 0.33f;
         return s;
