@@ -334,7 +334,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             phraseBoundary_.store(decision.phraseBoundary, std::memory_order_relaxed);
 
             if (decision.requestFill && !jam_.state().fillRequested)
-                jam_.apply(robodrummer::MidiCommand::Fill);
+                jam_.requestFill(decision.fillStrength);
 
             const double barSeconds = (60.0 / std::max(20.0, authority.outputBpm)) *
                                       numerator * (4.0 / static_cast<double>(denominator));
