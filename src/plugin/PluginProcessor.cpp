@@ -102,7 +102,9 @@ robodrummer::Style styleForJamStyle(robodrummer::JamStyle style) {
 RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     : AudioProcessor(BusesProperties()
           .withInput("Guitar / Analysis", juce::AudioChannelSet::stereo(), true)
-          .withOutput("Drums + Monitor", juce::AudioChannelSet::stereo(), true)) {}
+          .withOutput("Drums + Monitor", juce::AudioChannelSet::stereo(), true)) {
+    installStarterArrangement();
+}
 
 void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
@@ -113,7 +115,6 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     resyncPlanner_.reset();
     jamBrain_.reset();
     jamBrainCooldownSeconds_ = 0.0;
-    installStarterArrangement();
     arrangement_.reset();
     lastArrangementEnabled_ = false;
     lastArrangementBarIndex_ = 0;
