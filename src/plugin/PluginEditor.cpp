@@ -2,7 +2,7 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(760, 725);
+    setSize(780, 805);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -58,6 +58,46 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     arrangementToggle_.onClick = [this] { processor_.setArrangementEnabled(arrangementToggle_.getToggleState()); };
     addAndMakeVisible(arrangementToggle_);
 
+    arrangementEditCaption_.setText("Edit section", juce::dontSendNotification);
+    addAndMakeVisible(arrangementEditCaption_);
+
+    for (int i = 0; i < RoboDrummerAudioProcessor::ArrangementSlotCount; ++i)
+        arrangementSlot_.addItem(juce::String(i + 1), i + 1);
+    arrangementSlot_.setSelectedId(1, juce::dontSendNotification);
+    arrangementSlot_.onChange = [this] {
+        editingArrangementSlot_ = juce::jlimit(0, RoboDrummerAudioProcessor::ArrangementSlotCount - 1,
+                                              arrangementSlot_.getSelectedId() - 1);
+        loadArrangementEditorSlot();
+    };
+    addAndMakeVisible(arrangementSlot_);
+
+    arrangementStyle_.addItem("Rock", 1);
+    arrangementStyle_.addItem("Blues", 2);
+    arrangementStyle_.addItem("Funk", 3);
+    arrangementStyle_.addItem("Punk", 4);
+    arrangementStyle_.addItem("Metal", 5);
+    arrangementStyle_.addItem("Shuffle", 6);
+    arrangementStyle_.onChange = [this] { commitArrangementEditorSlot(); };
+    addAndMakeVisible(arrangementStyle_);
+
+    arrangementBars_.setRange(1.0, 64.0, 1.0);
+    arrangementBars_.setSliderStyle(juce::Slider::LinearHorizontal);
+    arrangementBars_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 78, 24);
+    arrangementBars_.setTextValueSuffix(" bars");
+    arrangementBars_.onValueChange = [this] { commitArrangementEditorSlot(); };
+    addAndMakeVisible(arrangementBars_);
+
+    arrangementIntensity_.setRange(0.0, 1.0, 0.01);
+    arrangementIntensity_.setSliderStyle(juce::Slider::LinearHorizontal);
+    arrangementIntensity_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 62, 24);
+    arrangementIntensity_.onValueChange = [this] { commitArrangementEditorSlot(); };
+    addAndMakeVisible(arrangementIntensity_);
+
+    arrangementSlotEnabled_.onClick = [this] { commitArrangementEditorSlot(); };
+    arrangementAutoAdvance_.onClick = [this] { commitArrangementEditorSlot(); };
+    addAndMakeVisible(arrangementSlotEnabled_);
+    addAndMakeVisible(arrangementAutoAdvance_);
+
     leadership_.setRange(0.0, 1.0, 0.01);
     leadership_.setValue(processor_.getLeadership(), juce::dontSendNotification);
     leadership_.setSliderStyle(juce::Slider::LinearHorizontal);
@@ -96,6 +136,7 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     addAndMakeVisible(fillButton_);
     addAndMakeVisible(resetButton_);
 
+    loadArrangementEditorSlot();
     startTimerHz(12);
 }
 
@@ -106,7 +147,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 682, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, 762, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -150,6 +191,22 @@ void RoboDrummerAudioProcessorEditor::resized() {
     dynamicFollowCaption_.setBounds(row.removeFromLeft(112));
     dynamicFollow_.setBounds(row);
 
+    area.removeFromTop(8);
+    row = area.removeFromTop(34);
+    arrangementEditCaption_.setBounds(row.removeFromLeft(112));
+    arrangementSlot_.setBounds(row.removeFromLeft(62));
+    row.removeFromLeft(8);
+    arrangementStyle_.setBounds(row.removeFromLeft(128));
+    row.removeFromLeft(8);
+    arrangementSlotEnabled_.setBounds(row.removeFromLeft(86));
+    arrangementAutoAdvance_.setBounds(row.removeFromLeft(120));
+
+    row = area.removeFromTop(36);
+    row.removeFromLeft(112);
+    arrangementBars_.setBounds(row.removeFromLeft(255));
+    row.removeFromLeft(10);
+    arrangementIntensity_.setBounds(row);
+
     area.removeFromTop(12);
     tempoLabel_.setBounds(area.removeFromTop(25));
     transportLabel_.setBounds(area.removeFromTop(25));
@@ -165,6 +222,29 @@ void RoboDrummerAudioProcessorEditor::resized() {
     fillButton_.setBounds(buttons.removeFromLeft(160));
     buttons.removeFromLeft(12);
     resetButton_.setBounds(buttons.removeFromLeft(190));
+}
+
+void RoboDrummerAudioProcessorEditor::loadArrangementEditorSlot() {
+    loadingArrangementEditor_ = true;
+    const auto section = processor_.getArrangementSection(editingArrangementSlot_);
+    arrangementStyle_.setSelectedId(static_cast<int>(section.style) + 1, juce::dontSendNotification);
+    arrangementBars_.setValue(section.bars, juce::dontSendNotification);
+    arrangementIntensity_.setValue(section.intensityTarget, juce::dontSendNotification);
+    arrangementSlotEnabled_.setToggleState(processor_.isArrangementSectionEnabled(editingArrangementSlot_), juce::dontSendNotification);
+    arrangementAutoAdvance_.setToggleState(section.autoAdvance, juce::dontSendNotification);
+    loadingArrangementEditor_ = false;
+}
+
+void RoboDrummerAudioProcessorEditor::commitArrangementEditorSlot() {
+    if (loadingArrangementEditor_) return;
+    const int styleIndex = juce::jlimit(0, 5, arrangementStyle_.getSelectedId() - 1);
+    processor_.setArrangementSection(
+        editingArrangementSlot_,
+        static_cast<robodrummer::JamStyle>(styleIndex),
+        static_cast<int>(std::lround(arrangementBars_.getValue())),
+        static_cast<float>(arrangementIntensity_.getValue()),
+        arrangementSlotEnabled_.getToggleState(),
+        arrangementAutoAdvance_.getToggleState());
 }
 
 void RoboDrummerAudioProcessorEditor::timerCallback() {
