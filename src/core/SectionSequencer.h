@@ -27,6 +27,19 @@ public:
     [[nodiscard]] std::size_t currentSectionIndex() const noexcept { return currentIndex_; }
     [[nodiscard]] int barsIntoSection() const noexcept { return barsIntoSection_; }
 
+    [[nodiscard]] const SectionDefinition& section(std::size_t index) const noexcept {
+        static constexpr SectionDefinition fallback{};
+        return index < count_ ? sections_[index] : fallback;
+    }
+
+    [[nodiscard]] bool set(std::size_t index, SectionDefinition section) noexcept {
+        if (index >= count_) return false;
+        section.bars = std::max(1, section.bars);
+        section.intensityTarget = std::clamp(section.intensityTarget, 0.0f, 1.0f);
+        sections_[index] = section;
+        return true;
+    }
+
     [[nodiscard]] bool add(SectionDefinition section) noexcept {
         if (count_ >= Capacity) return false;
         section.bars = std::max(1, section.bars);
