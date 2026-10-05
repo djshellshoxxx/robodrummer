@@ -26,6 +26,15 @@ public:
     void nudgePhaseSamples(long long deltaSamples) noexcept {
         sampleCursor_ = std::max<long long>(0, sampleCursor_ + deltaSamples);
     }
+    [[nodiscard]] long long currentBarIndex() const noexcept {
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return 0;
+        const double spq = sampleRate_ * 60.0 / effectiveBpm;
+        const double spb = spq * (4.0 / static_cast<double>(denominator_));
+        const long long barSamples = std::max<long long>(1, static_cast<long long>(std::llround(spb * numerator_)));
+        return sampleCursor_ / barSamples;
+    }
+
     [[nodiscard]] double currentBeatPhase() const noexcept {
         const double effectiveBpm = bpm_ * state_.timeScale;
         if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return 0.0;
