@@ -7,7 +7,7 @@ struct Style {
     float kickBeat1{0.95f};
     float kickBeat3{0.70f};
     float extraKickProbability{0.08f};
-    float snareBackbeat{0.98f};
+    float snareBackbeat{1.0f};
     float closedHatProbability{0.96f};
     float crashOnSectionStart{0.80f};
     float humanizeMs{4.0f};
@@ -80,7 +80,7 @@ struct Style {
         Style s = blues();
         s.kickBeat3 = 0.64f;
         s.extraKickProbability = 0.08f;
-        s.closedHatProbability = 0.90f;
+        s.closedHatProbability = 1.0f;
         s.crashOnSectionStart = 0.68f;
         s.swing = 0.33f;
         return s;
