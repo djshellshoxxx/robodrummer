@@ -22,6 +22,7 @@ private:
     juce::Label authorityLabel_;
     juce::Label dynamicsLabel_;
     juce::Label phraseLabel_;
+    juce::Label sectionLabel_;
     juce::Slider bpm_;
     juce::Slider intensity_;
     juce::Slider leadership_;
@@ -29,6 +30,7 @@ private:
     juce::Slider dynamicFollow_;
     juce::ComboBox leadershipMode_;
     juce::ComboBox jamStyle_;
+    juce::ToggleButton arrangementToggle_{"Programmed arrangement"};
     juce::Label bpmCaption_;
     juce::Label intensityCaption_;
     juce::Label leadershipCaption_;
