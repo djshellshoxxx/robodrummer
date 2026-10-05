@@ -15,6 +15,7 @@ public:
     void setTempo(double bpm) noexcept { bpm_ = std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0); }
     void setMeter(int n, int d) noexcept { numerator_ = std::max(1, n); denominator_ = (d == 1 || d == 2 || d == 4 || d == 8 || d == 16) ? d : 4; }
     void setIntensity(float value) noexcept { state_.intensity = std::clamp(value, 0.0f, 1.0f); }
+    void setStyle(const Style& style) noexcept { style_ = style; }
     void syncToPpq(double ppqPosition) noexcept {
         if (!std::isfinite(ppqPosition)) return;
         const double effectiveBpm = bpm_ * state_.timeScale;
