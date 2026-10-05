@@ -25,6 +25,9 @@ struct JamBrainSettings {
     float trustedBeatConfidence{0.45f};
     float trustedDownbeatConfidence{0.40f};
     float breakActivityThreshold{0.08f};
+    float fillBias{0.0f};
+    float buildThreshold{0.08f};
+    float releaseThreshold{0.08f};
 };
 
 struct JamBrainDecision {
@@ -62,9 +65,9 @@ public:
         if (lowActivityBars_ >= 3) {
             decision.phraseState = PhraseState::Break;
             decision.breakLikely = true;
-        } else if (decision.energyTrend >= 0.08f) {
+        } else if (decision.energyTrend >= std::max(0.0f, settings.buildThreshold)) {
             decision.phraseState = PhraseState::Build;
-        } else if (decision.energyTrend <= -0.08f) {
+        } else if (decision.energyTrend <= -std::max(0.0f, settings.releaseThreshold)) {
             decision.phraseState = PhraseState::Release;
         } else {
             decision.phraseState = PhraseState::Stable;
@@ -79,7 +82,7 @@ public:
         if (decision.phraseBoundary &&
             nextBarNumber >= std::max(1, settings.minBarsBeforeFill) &&
             !decision.breakLikely) {
-            float base = 0.35f;
+            float base = 0.35f + settings.fillBias;
             if (decision.phraseState == PhraseState::Build)
                 base += 0.35f;
             else if (decision.phraseState == PhraseState::Release)
