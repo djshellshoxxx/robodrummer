@@ -45,6 +45,11 @@ public:
         if (phase < 0.0) phase += 1.0;
         return phase;
     }
+    void requestFill(float strength) noexcept {
+        state_.fillRequested = true;
+        state_.fillStrength = std::clamp(strength, 0.0f, 1.0f);
+        fillTargetBar_ = -1;
+    }
     void apply(MidiCommand command) noexcept {
         applyMidiCommand(state_, command);
         if (command == MidiCommand::Fill) fillTargetBar_ = -1;
@@ -95,11 +100,22 @@ public:
             }
             const long long targetStart = fillTargetBar_ * barSamples;
             const long long fillStart = targetStart + static_cast<long long>(std::llround(spb * (numerator_ - 1)));
-            const std::array<DrumInstrument, 4> voices { DrumInstrument::Snare, DrumInstrument::HighTom, DrumInstrument::MidTom, DrumInstrument::FloorTom };
-            for (int step = 0; step < 4 && count < capacity; ++step) {
-                const long long absolute = fillStart + static_cast<long long>(std::llround(spb * 0.25 * step));
-                if (absolute >= blockStart && absolute < blockEnd)
-                    out[count++] = { voices[static_cast<std::size_t>(step)], static_cast<int>(absolute - blockStart), 0.85f + 0.04f * step, static_cast<std::uint32_t>(count) };
+            const std::array<DrumInstrument, 6> voices {
+                DrumInstrument::Snare,
+                DrumInstrument::HighTom,
+                DrumInstrument::MidTom,
+                DrumInstrument::FloorTom,
+                DrumInstrument::MidTom,
+                DrumInstrument::Snare
+            };
+            const int fillSteps = std::clamp(2 + static_cast<int>(std::lround(state_.fillStrength * 4.0f)), 2, 6);
+            const double stepBeats = 1.0 / static_cast<double>(fillSteps);
+            for (int step = 0; step < fillSteps && count < capacity; ++step) {
+                const long long absolute = fillStart + static_cast<long long>(std::llround(spb * stepBeats * step));
+                if (absolute >= blockStart && absolute < blockEnd) {
+                    const float velocity = std::clamp(0.58f + state_.fillStrength * 0.30f + 0.02f * step, 0.0f, 1.0f);
+                    out[count++] = { voices[static_cast<std::size_t>(step)], static_cast<int>(absolute - blockStart), velocity, static_cast<std::uint32_t>(count) };
+                }
             }
             if (blockEnd >= targetStart + barSamples) {
                 state_.fillRequested = false;
