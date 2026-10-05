@@ -1,4 +1,5 @@
 #include "PluginEditor.h"
+#include <cmath>
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
