@@ -6,9 +6,19 @@ The intended product is a VST3/CLAP/AU instrument plus a standalone application.
 
 The design target is roughly 90% autonomous performance with the remaining 10% exposed as optional MIDI intervention: fills, next section, intensity changes, half/double time, crash, break, stop/resume, and listening reset.
 
+## Current development status
+
+Phase 1 established the JUCE-independent C++ core and tests. Phase 2 added the JUCE VST3/Standalone shell, generated starter kit, host transport integration, MIDI intervention, MIDI drum output and the first playable drummer path.
+
+Phase 3 is now active. The branch contains a causal guitar onset detector, competing tempo hypotheses, predictive beat phase, confidence tracking, Drummer Leads / Hybrid / Guitarist Leads timing authority, bounded phase correction and confidence-gated adaptive entry. In adaptive modes RoboDrummer waits for a reliable lock and enters on a beat boundary rather than beginning mid-beat. Large phase disagreements are flagged for a later musical hard-resync path instead of causing an abrupt clock jump.
+
+See [docs/JUCE_BUILD.md](docs/JUCE_BUILD.md) for build instructions and the current MIDI map.
+
 ## Project documents
 
 - [SPEC.md](SPEC.md) — engineering/product specification
+- [docs/PHASE2_SCOPE.md](docs/PHASE2_SCOPE.md) — JUCE shell scope
+- [docs/JUCE_BUILD.md](docs/JUCE_BUILD.md) — build instructions and current behavior
 - [research/jam-session-behavior.md](research/jam-session-behavior.md) — improvisation, entrainment, leader/follower behavior, tempo drift, turn-taking and implications for the engine
 - [research/genre-tempo-drumming.md](research/genre-tempo-drumming.md) — groove, genre, tempo, drum-pattern and song-form research
 - [research/realtime-tracking.md](research/realtime-tracking.md) — causal beat/downbeat/tempo tracking research and proposed tracking architecture
