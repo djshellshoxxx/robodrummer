@@ -145,6 +145,8 @@ private:
     std::uint32_t appliedArrangementRevision_{0};
     bool manualFillSinceMemoryBar_{false};
     float silenceIntensityMultiplierAudio_{1.0f};
+    bool silenceHoldGrooveAudio_{false};
+    long long lastSilenceBarIndex_{-1};
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
