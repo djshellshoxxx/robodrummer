@@ -57,6 +57,7 @@ Large phase disagreement is currently flagged rather than immediately corrected.
 - effective guitar authority
 - Fill
 - Reset Listening
+- Output mode: Internal Drums / MIDI Only / Internal + MIDI
 
 ## MIDI intervention map
 
@@ -78,6 +79,8 @@ RoboDrummer treats MIDI channel 16 as its intervention/control channel. Generate
 | 47 | Reset listening |
 
 Break is implemented as a one-bar musical dropout. The request is consumed once, normal groove generation is suppressed for that bar, and RoboDrummer re-enters automatically on the following bar. If a fill is already queued, it is deferred until after the break rather than discarded.
+
+MIDI intensity up/down updates the persistent live intensity control, so the change remains active across subsequent processing blocks and is reflected in the editor.
 
 Not every higher-level command has a complete arrangement behavior yet; the command model is in place so those behaviors can be added without changing the MIDI contract.
 

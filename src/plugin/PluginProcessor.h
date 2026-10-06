@@ -17,6 +17,7 @@
 #include "analysis/SilenceController.h"
 #include "core/JamStyleProfile.h"
 #include "core/MeterSelection.h"
+#include "core/OutputMode.h"
 #include "core/SectionSequencer.h"
 #include "audio/DrumSamplePlayer.h"
 #include "plugin/HostTransportAdapter.h"
@@ -57,6 +58,8 @@ public:
     double getInternalBpm() const noexcept { return internalBpm_.load(std::memory_order_relaxed); }
     void setIntensity(float value) noexcept;
     float getIntensity() const noexcept { return intensity_.load(std::memory_order_relaxed); }
+    void setOutputMode(robodrummer::OutputMode mode) noexcept { outputMode_.store(static_cast<int>(mode), std::memory_order_relaxed); }
+    robodrummer::OutputMode getOutputMode() const noexcept { return static_cast<robodrummer::OutputMode>(outputMode_.load(std::memory_order_relaxed)); }
 
     void setLeadershipMode(robodrummer::LeadershipMode mode) noexcept { leadershipMode_.store(static_cast<int>(mode), std::memory_order_relaxed); }
     robodrummer::LeadershipMode getLeadershipMode() const noexcept { return static_cast<robodrummer::LeadershipMode>(leadershipMode_.load(std::memory_order_relaxed)); }
@@ -171,6 +174,7 @@ private:
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
+    std::atomic<int> outputMode_{static_cast<int>(robodrummer::OutputMode::InternalAndMidi)};
     std::atomic<float> dynamicFollow_{0.60f};
     std::atomic<int> jamStyle_{static_cast<int>(robodrummer::JamStyle::Rock)};
     std::atomic<bool> arrangementEnabled_{false};
