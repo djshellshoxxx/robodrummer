@@ -34,3 +34,8 @@ RoboDrummer intentionally does **not** attempt multi-guitarist source tracking i
 ## Research status
 
 Initial literature and prior-art research was added on 2026-10-04. The most important finding is that RoboDrummer should treat short-timescale beat synchronization and longer-timescale musical coordination as separate problems. The first layer tracks pulse/phase; the second layer reasons about phrase boundaries, energy, turn-taking, transitions and style.
+
+
+## Required shared plug-in standard
+
+This project follows the [Circuit Drift Labs Shared Audio Plugin Standard](docs/standards/CDL_PLUGIN_BASELINE.md). It is required for the plug-in target; standalone-only requirements apply only when a standalone target is included. The product-specific specification supplements the shared standard and records the applicable profiles, compliance status, and any exceptions.
