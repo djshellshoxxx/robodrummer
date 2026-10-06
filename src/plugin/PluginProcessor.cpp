@@ -175,6 +175,17 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         silenceIntensityMultiplierAudio_ = 1.0f;
         silenceHoldGrooveAudio_ = false;
         lastSilenceBarIndex_ = -1;
+        lastCoordinatorBarIndex_ = -1;
+        coordinatorNextCuePending_ = false;
+        coordinatorSoloCuePending_ = false;
+        coordinatorEndCuePending_ = false;
+        coordinatorProgrammedBoundaryPending_ = false;
+        coordinatorIntensityBiasAudio_ = 0.0f;
+        coordinatorSuppressBusyFillsAudio_ = false;
+        jamCoordinationState_.store(static_cast<int>(robodrummer::JamCoordinationState::EstablishingGroove), std::memory_order_relaxed);
+        transitionProbability_.store(0.0f, std::memory_order_relaxed);
+        endingProbability_.store(0.0f, std::memory_order_relaxed);
+        coordinatorSuppressBusyFillsVisible_.store(false, std::memory_order_relaxed);
         silentBarsVisible_.store(0, std::memory_order_relaxed);
         waitingForResume_.store(false, std::memory_order_relaxed);
         sessionMemory_.reset();
