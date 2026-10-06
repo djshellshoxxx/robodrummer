@@ -51,4 +51,41 @@ int main() {
     s.followRangeBpm = 10.0;
     for (int i = 0; i < 20; ++i) out = c.update(120.0, g, s, 0.1);
     assert(out.outputBpm <= 130.01);
+
+    // Follow Strength scales guitar timing authority independently of leadership.
+    c.reset(120.0);
+    g.tempoBpm = 132.0;
+    g.tempoConfidence = 0.95f;
+    g.beatConfidence = 0.95f;
+    g.locked = true;
+    s.mode = LeadershipMode::GuitaristLeads;
+    s.followRangeBpm = 20.0;
+    s.response = FollowResponse::VeryResponsive;
+    s.followStrength = 0.25f;
+    for (int i = 0; i < 10; ++i) out = c.update(120.0, g, s, 0.1);
+    assert(out.effectiveGuitarAuthority < 0.30f);
+
+    // High inertia should move substantially less than low inertia over the same time.
+    TimingAuthorityController lowInertia;
+    TimingAuthorityController highInertia;
+    lowInertia.reset(120.0);
+    highInertia.reset(120.0);
+    s.followStrength = 1.0f;
+    s.tempoInertia = 0.0f;
+    auto fast = lowInertia.update(120.0, g, s, 0.1);
+    s.tempoInertia = 1.0f;
+    auto slow = highInertia.update(120.0, g, s, 0.1);
+    assert(fast.outputBpm - 120.0 > (slow.outputBpm - 120.0) * 2.0);
+
+    // Higher confidence sensitivity rejects marginal evidence more strongly.
+    g.tempoConfidence = 0.55f;
+    g.beatConfidence = 0.55f;
+    s.tempoInertia = 0.5f;
+    s.confidenceSensitivity = 0.0f;
+    c.reset(120.0);
+    const auto permissive = c.update(120.0, g, s, 0.1);
+    s.confidenceSensitivity = 1.0f;
+    c.reset(120.0);
+    const auto strict = c.update(120.0, g, s, 0.1);
+    assert(permissive.effectiveGuitarAuthority > strict.effectiveGuitarAuthority);
 }
