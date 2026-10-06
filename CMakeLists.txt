@@ -16,6 +16,7 @@ foreach(test_name IN ITEMS
     musical_clock
     event_scheduler
     groove_generator
+    humanization
     midi_commands
     host_transport_adapter
     midi_command_mapper
