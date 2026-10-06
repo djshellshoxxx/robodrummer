@@ -31,4 +31,11 @@ int main() {
     result = follower.update(0.10, guitar, 120.0, 1.0f, FollowResponse::Balanced, 48000.0);
     assert(result.correctionSamples == 0);
     assert(!result.hardResyncRecommended);
+
+    // Beat Correction Speed independently scales bounded phase correction.
+    guitar.locked = true;
+    guitar.beatPhase = 0.16;
+    const auto slowCorrection = follower.update(0.10, guitar, 120.0, 1.0f, FollowResponse::Balanced, 48000.0, 0.0f);
+    const auto fastCorrection = follower.update(0.10, guitar, 120.0, 1.0f, FollowResponse::Balanced, 48000.0, 1.0f);
+    assert(std::abs(fastCorrection.correctionSamples) > std::abs(slowCorrection.correctionSamples));
 }
