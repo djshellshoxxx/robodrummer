@@ -13,6 +13,10 @@ struct TimingAuthoritySettings {
     float leadership{0.5f};
     double followRangeBpm{15.0};
     FollowResponse response{FollowResponse::Balanced};
+    float followStrength{1.0f};
+    float tempoInertia{0.5f};
+    float beatCorrectionSpeed{0.5f};
+    float confidenceSensitivity{0.5f};
 };
 
 struct TimingAuthorityState {
@@ -41,8 +45,13 @@ public:
         if (settings.mode == LeadershipMode::DrummerLeads) leadership = 0.0f;
         if (settings.mode == LeadershipMode::GuitaristLeads) leadership = 1.0f;
 
-        const float confidenceAuthority = confidenceGain(guitar.tempoConfidence, guitar.beatConfidence, guitar.locked);
-        const float effectiveAuthority = leadership * confidenceAuthority;
+        const float confidenceAuthority = confidenceGain(
+            guitar.tempoConfidence,
+            guitar.beatConfidence,
+            guitar.locked,
+            settings.confidenceSensitivity);
+        const float followStrength = std::clamp(settings.followStrength, 0.0f, 1.0f);
+        const float effectiveAuthority = leadership * followStrength * confidenceAuthority;
 
         if (guitar.locked && guitar.tempoConfidence >= 0.60f && guitar.beatConfidence >= 0.50f) {
             trustedGuitarBpm_ = sanitizeBpm(guitar.tempoBpm);
@@ -59,7 +68,9 @@ public:
             initialized_ = true;
         }
 
-        const double maxRate = responseRate(settings.response);
+        const double inertia = std::clamp(static_cast<double>(settings.tempoInertia), 0.0, 1.0);
+        const double inertiaMultiplier = 1.75 - 1.50 * inertia;
+        const double maxRate = responseRate(settings.response) * inertiaMultiplier;
         const double maxStep = maxRate * deltaSeconds;
         if (maxStep > 0.0)
             currentBpm_ += std::clamp(desired - currentBpm_, -maxStep, maxStep);
@@ -75,8 +86,12 @@ private:
         return std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0);
     }
 
-    static float confidenceGain(float tempoConfidence, float beatConfidence, bool locked) noexcept {
-        const float c = std::clamp(std::min(tempoConfidence, beatConfidence), 0.0f, 1.0f);
+    static float confidenceGain(float tempoConfidence,
+                                float beatConfidence,
+                                bool locked,
+                                float sensitivity) noexcept {
+        const float sensitivityOffset = (0.5f - std::clamp(sensitivity, 0.0f, 1.0f)) * 0.20f;
+        const float c = std::clamp(std::min(tempoConfidence, beatConfidence) + sensitivityOffset, 0.0f, 1.0f);
         if (!locked || c < 0.20f) return 0.0f;
         if (c < 0.40f) return 0.15f * (c - 0.20f) / 0.20f;
         if (c < 0.60f) return 0.15f + 0.35f * (c - 0.40f) / 0.20f;
