@@ -3,7 +3,7 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(820, 915);
+    setSize(840, 975);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -18,7 +18,8 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     followRangeCaption_.setText("Follow range", juce::dontSendNotification);
     dynamicFollowCaption_.setText("Dynamic follow", juce::dontSendNotification);
     styleCaption_.setText("Jam style", juce::dontSendNotification);
-    for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &meterCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_, &styleCaption_ })
+    silenceCaption_.setText("Guitar silence", juce::dontSendNotification);
+    for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &meterCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_, &styleCaption_, &silenceCaption_ })
         addAndMakeVisible(*label);
 
     bpm_.setRange(40.0, 240.0, 0.1);
@@ -102,6 +103,26 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     jamMemoryToggle_.onClick = [this] { processor_.setJamMemoryEnabled(jamMemoryToggle_.getToggleState()); };
     addAndMakeVisible(jamMemoryToggle_);
 
+    silenceMode_.addItem("Keep playing", 1);
+    silenceMode_.addItem("Reduce intensity", 2);
+    silenceMode_.addItem("Hold groove", 3);
+    silenceMode_.addItem("Fill during silence", 4);
+    silenceMode_.addItem("Stop after bars", 5);
+    silenceMode_.addItem("Wait for resume", 6);
+    silenceMode_.setSelectedId(static_cast<int>(processor_.getSilenceMode()) + 1, juce::dontSendNotification);
+    silenceMode_.onChange = [this] {
+        processor_.setSilenceMode(static_cast<robodrummer::SilenceMode>(juce::jlimit(0, 5, silenceMode_.getSelectedId() - 1)));
+    };
+    addAndMakeVisible(silenceMode_);
+
+    silenceStopBars_.setRange(1.0, 16.0, 1.0);
+    silenceStopBars_.setValue(processor_.getSilenceStopBars(), juce::dontSendNotification);
+    silenceStopBars_.setSliderStyle(juce::Slider::LinearHorizontal);
+    silenceStopBars_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 82, 24);
+    silenceStopBars_.setTextValueSuffix(" bars");
+    silenceStopBars_.onValueChange = [this] { processor_.setSilenceStopBars(static_cast<int>(std::lround(silenceStopBars_.getValue()))); };
+    addAndMakeVisible(silenceStopBars_);
+
     arrangementEditCaption_.setText("Edit section", juce::dontSendNotification);
     addAndMakeVisible(arrangementEditCaption_);
 
@@ -173,7 +194,8 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     phraseLabel_.setText("Phrase: stable", juce::dontSendNotification);
     sectionLabel_.setText("Arrangement: free jam", juce::dontSendNotification);
     memoryLabel_.setText("Jam memory: learning", juce::dontSendNotification);
-    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_, &memoryLabel_, &sectionLabel_ })
+    silenceLabel_.setText("Silence behavior: active", juce::dontSendNotification);
+    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_, &memoryLabel_, &silenceLabel_, &sectionLabel_ })
         addAndMakeVisible(*label);
 
     fillButton_.onClick = [this] { processor_.requestFill(); };
@@ -192,7 +214,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 872, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, 932, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -250,6 +272,13 @@ void RoboDrummerAudioProcessorEditor::resized() {
     row.removeFromLeft(112);
     jamMemoryToggle_.setBounds(row.removeFromLeft(180));
 
+    area.removeFromTop(5);
+    row = area.removeFromTop(36);
+    silenceCaption_.setBounds(row.removeFromLeft(112));
+    silenceMode_.setBounds(row.removeFromLeft(205));
+    row.removeFromLeft(10);
+    silenceStopBars_.setBounds(row);
+
     area.removeFromTop(8);
     row = area.removeFromTop(34);
     arrangementEditCaption_.setBounds(row.removeFromLeft(112));
@@ -275,6 +304,7 @@ void RoboDrummerAudioProcessorEditor::resized() {
     dynamicsLabel_.setBounds(area.removeFromTop(25));
     phraseLabel_.setBounds(area.removeFromTop(25));
     memoryLabel_.setBounds(area.removeFromTop(25));
+    silenceLabel_.setBounds(area.removeFromTop(25));
     sectionLabel_.setBounds(area.removeFromTop(25));
 
     area.removeFromTop(10);
@@ -310,6 +340,8 @@ void RoboDrummerAudioProcessorEditor::commitArrangementEditorSlot() {
 void RoboDrummerAudioProcessorEditor::timerCallback() {
     arrangementToggle_.setToggleState(processor_.isArrangementEnabled(), juce::dontSendNotification);
     jamMemoryToggle_.setToggleState(processor_.isJamMemoryEnabled(), juce::dontSendNotification);
+    silenceMode_.setSelectedId(static_cast<int>(processor_.getSilenceMode()) + 1, juce::dontSendNotification);
+    silenceStopBars_.setValue(processor_.getSilenceStopBars(), juce::dontSendNotification);
     manualMeterToggle_.setToggleState(processor_.isManualMeterEnabled(), juce::dontSendNotification);
     meterNumerator_.setSelectedId(processor_.getManualMeterNumerator() - 1, juce::dontSendNotification);
     switch (processor_.getManualMeterDenominator()) {
@@ -385,6 +417,20 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
                 juce::String(processor_.getJamMemoryDynamicSensitivity(), 2),
             juce::dontSendNotification);
     }
+
+    juce::String silenceModeName = "keep playing";
+    switch (processor_.getSilenceMode()) {
+        case robodrummer::SilenceMode::ReduceIntensity: silenceModeName = "reduce intensity"; break;
+        case robodrummer::SilenceMode::HoldGroove: silenceModeName = "hold groove"; break;
+        case robodrummer::SilenceMode::FillDuringSilence: silenceModeName = "fill during silence"; break;
+        case robodrummer::SilenceMode::StopAfterBars: silenceModeName = "stop after bars"; break;
+        case robodrummer::SilenceMode::WaitForResume: silenceModeName = "wait for resume"; break;
+        case robodrummer::SilenceMode::KeepPlaying: break;
+    }
+    silenceLabel_.setText(
+        "Silence: " + silenceModeName + " | silent bars " + juce::String(processor_.getSilentBars()) +
+            (processor_.isWaitingForGuitarResume() ? " | WAITING FOR GUITAR" : ""),
+        juce::dontSendNotification);
 
     if (processor_.isArrangementEnabled()) {
         sectionLabel_.setText(
