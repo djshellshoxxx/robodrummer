@@ -27,6 +27,8 @@ inline void applyMidiCommand(JamState& state, MidiCommand command) noexcept {
         case MidiCommand::Stop: state.stopped = true; break;
         case MidiCommand::Resume: state.stopped = false; break;
         case MidiCommand::ResetListening: state.resetListeningRequested = true; break;
+        case MidiCommand::SoloSupport: break;
+        case MidiCommand::EndJam: break;
     }
 }
 }
