@@ -32,9 +32,12 @@ private:
     juce::Slider followRange_;
     juce::Slider dynamicFollow_;
     juce::ComboBox leadershipMode_;
+    juce::ComboBox meterNumerator_;
+    juce::ComboBox meterDenominator_;
     juce::ComboBox jamStyle_;
     juce::ToggleButton arrangementToggle_{"Programmed arrangement"};
     juce::ToggleButton jamMemoryToggle_{"Learn this jam"};
+    juce::ToggleButton manualMeterToggle_{"Manual meter"};
     juce::ComboBox arrangementSlot_;
     juce::ComboBox arrangementStyle_;
     juce::Slider arrangementBars_;
@@ -48,6 +51,7 @@ private:
     juce::Label followRangeCaption_;
     juce::Label dynamicFollowCaption_;
     juce::Label modeCaption_;
+    juce::Label meterCaption_;
     juce::Label styleCaption_;
     juce::TextButton fillButton_{"FILL"};
     juce::TextButton resetButton_{"RESET LISTENING"};
