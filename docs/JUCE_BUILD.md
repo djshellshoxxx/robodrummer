@@ -72,10 +72,12 @@ RoboDrummer treats MIDI channel 16 as its intervention/control channel. Generate
 | 41 | Intensity down |
 | 42 | Half-time |
 | 43 | Double-time |
-| 44 | Break |
+| 44 | Break (one musical bar, then automatic groove re-entry) |
 | 45 | Stop drummer |
 | 46 | Resume drummer |
 | 47 | Reset listening |
+
+Break is implemented as a one-bar musical dropout. The request is consumed once, normal groove generation is suppressed for that bar, and RoboDrummer re-enters automatically on the following bar. If a fill is already queued, it is deferred until after the break rather than discarded.
 
 Not every higher-level command has a complete arrangement behavior yet; the command model is in place so those behaviors can be added without changing the MIDI contract.
 
