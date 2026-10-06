@@ -86,4 +86,27 @@ int main() {
     mix.render(mixOut,2,1);
     assert(std::abs(ml[0]) < 0.0001f);
     assert(std::abs(mr[0] - 0.5f) < 0.0001f);
+    // Tuning changes playback rate without allocation or destructive sample edits.
+    DrumSamplePlayer tuned;
+    DrumSamplePlayer::Sample ramp; ramp.left = {1.0f, 0.75f, 0.5f, 0.25f};
+    tuned.setSample(DrumInstrument::HighTom, ramp);
+    tuned.setInstrumentTuning(DrumInstrument::HighTom, 12.0f);
+    float tl[2]{}; float tr[2]{}; float* tuneOut[2]{tl,tr};
+    tuned.trigger({DrumInstrument::HighTom,0,1.0f,0});
+    tuned.render(tuneOut,2,2);
+    assert(std::abs(tl[0] - 1.0f) < 0.0001f);
+    assert(std::abs(tl[1] - 0.5f) < 0.0001f);
+
+    // Attack/release envelopes are applied per voice.
+    DrumSamplePlayer enveloped;
+    DrumSamplePlayer::Sample flat; flat.left = {1.0f, 1.0f, 1.0f, 1.0f};
+    enveloped.setSample(DrumInstrument::FloorTom, flat);
+    enveloped.setInstrumentEnvelope(DrumInstrument::FloorTom, 2, 2);
+    float el[4]{}; float er[4]{}; float* envOut[2]{el,er};
+    enveloped.trigger({DrumInstrument::FloorTom,0,1.0f,0});
+    enveloped.render(envOut,2,4);
+    assert(std::abs(el[0] - 0.5f) < 0.0001f);
+    assert(std::abs(el[1] - 1.0f) < 0.0001f);
+    assert(std::abs(el[2] - 1.0f) < 0.0001f);
+    assert(std::abs(el[3] - 0.5f) < 0.0001f);
 }
