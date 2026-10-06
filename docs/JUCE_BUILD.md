@@ -43,6 +43,10 @@ The guitar receives full requested timing authority, still subject to confidence
 
 Large phase disagreement is currently flagged rather than immediately corrected. A later stage will turn that flag into a musical hard-resync action such as a short fill/break and re-entry.
 
+## Current style set
+
+The selectable initial style set is: Rock, Blues, Funk, Punk, Metal, Shuffle, Hard Rock, Classic Rock, Alternative, Grunge, Soul, Pop, Indie, Garage Rock, Country, Reggae, Disco, Electronic Rock, Breakbeat, Half-Time, and Experimental. Style definitions carry separate groove probabilities and phrase/fill behavior. Disco and Electronic Rock can use four-on-floor kick anchoring, Half-Time uses a beat-3 backbeat in 4/4, and Reggae uses a one-drop kick/snare anchor.
+
 ## Current live controls
 
 - Internal BPM

@@ -54,13 +54,23 @@ public:
         for (int beat = 0; beat < context.numerator; ++beat) {
             const auto beatIndex = static_cast<std::size_t>(beat);
 
-            if (meter.kickAnchor[beatIndex]) {
+            const bool oneDropAnchor = style.oneDrop && context.numerator == 4 && context.denominator == 4 && beat == 2;
+            const bool kickAnchor = style.oneDrop
+                ? oneDropAnchor
+                : (meter.kickAnchor[beatIndex] || style.fourOnFloorKick);
+            if (kickAnchor) {
                 const float probability = beat == 0 ? style.kickBeat1 : style.kickBeat3;
                 if (chance(probability))
                     add(DrumInstrument::Kick, beat, (beat == 0 ? 0.75f : 0.70f) + 0.2f * context.intensity);
             }
 
-            if (meter.backbeat[beatIndex] && chance(style.snareBackbeat))
+            bool snareAnchor = meter.backbeat[beatIndex];
+            if (style.oneDrop && context.numerator == 4 && context.denominator == 4)
+                snareAnchor = oneDropAnchor;
+            else if (style.halfTimeBackbeat && context.numerator == 4 && context.denominator == 4)
+                snareAnchor = beat == 2;
+
+            if (snareAnchor && chance(style.snareBackbeat))
                 add(DrumInstrument::Snare, beat, 0.78f + 0.18f * context.intensity);
 
             const float extraKick = style.extraKickProbability * (0.25f + 1.5f * context.intensity);

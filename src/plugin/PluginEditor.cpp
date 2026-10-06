@@ -1,6 +1,18 @@
 #include "PluginEditor.h"
 #include <cmath>
 
+namespace {
+void populateStyleBox(juce::ComboBox& box) {
+    const char* names[] = {
+        "Rock", "Blues", "Funk", "Punk", "Metal", "Shuffle", "Hard Rock", "Classic Rock",
+        "Alternative", "Grunge", "Soul", "Pop", "Indie", "Garage Rock", "Country", "Reggae",
+        "Disco", "Electronic Rock", "Breakbeat", "Half-Time", "Experimental"
+    };
+    for (int i = 0; i < robodrummer::JamStyleCount; ++i)
+        box.addItem(names[i], i + 1);
+}
+}
+
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
     setSize(860, 1056);
@@ -93,15 +105,11 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     addAndMakeVisible(meterNumerator_);
     addAndMakeVisible(meterDenominator_);
 
-    jamStyle_.addItem("Rock", 1);
-    jamStyle_.addItem("Blues", 2);
-    jamStyle_.addItem("Funk", 3);
-    jamStyle_.addItem("Punk", 4);
-    jamStyle_.addItem("Metal", 5);
-    jamStyle_.addItem("Shuffle", 6);
+    populateStyleBox(jamStyle_);
     jamStyle_.setSelectedId(static_cast<int>(processor_.getJamStyle()) + 1, juce::dontSendNotification);
     jamStyle_.onChange = [this] {
-        processor_.setJamStyle(static_cast<robodrummer::JamStyle>(juce::jlimit(0, 5, jamStyle_.getSelectedId() - 1)));
+        processor_.setJamStyle(static_cast<robodrummer::JamStyle>(
+            juce::jlimit(0, robodrummer::JamStyleCount - 1, jamStyle_.getSelectedId() - 1)));
     };
     addAndMakeVisible(jamStyle_);
 
@@ -146,12 +154,7 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     };
     addAndMakeVisible(arrangementSlot_);
 
-    arrangementStyle_.addItem("Rock", 1);
-    arrangementStyle_.addItem("Blues", 2);
-    arrangementStyle_.addItem("Funk", 3);
-    arrangementStyle_.addItem("Punk", 4);
-    arrangementStyle_.addItem("Metal", 5);
-    arrangementStyle_.addItem("Shuffle", 6);
+    populateStyleBox(arrangementStyle_);
     arrangementStyle_.onChange = [this] { commitArrangementEditorSlot(); };
     addAndMakeVisible(arrangementStyle_);
 
@@ -344,7 +347,7 @@ void RoboDrummerAudioProcessorEditor::loadArrangementEditorSlot() {
 
 void RoboDrummerAudioProcessorEditor::commitArrangementEditorSlot() {
     if (loadingArrangementEditor_) return;
-    const int styleIndex = juce::jlimit(0, 5, arrangementStyle_.getSelectedId() - 1);
+    const int styleIndex = juce::jlimit(0, robodrummer::JamStyleCount - 1, arrangementStyle_.getSelectedId() - 1);
     processor_.setArrangementSection(
         editingArrangementSlot_,
         static_cast<robodrummer::JamStyle>(styleIndex),
