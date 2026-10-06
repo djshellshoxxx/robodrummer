@@ -8,6 +8,7 @@
 #include "analysis/TimingAuthorityController.h"
 #include "analysis/SessionMemory.h"
 #include "analysis/SessionMemoryPolicy.h"
+#include "analysis/SilenceController.h"
 #include "core/JamStyleProfile.h"
 #include "core/MeterSelection.h"
 #include "core/SectionSequencer.h"
@@ -98,6 +99,13 @@ public:
     float getJamMemoryFillBias() const noexcept { return jamMemoryFillBias_.load(std::memory_order_relaxed); }
     float getJamMemoryDynamicSensitivity() const noexcept { return jamMemoryDynamicSensitivity_.load(std::memory_order_relaxed); }
 
+    void setSilenceMode(robodrummer::SilenceMode mode) noexcept { silenceMode_.store(static_cast<int>(mode), std::memory_order_relaxed); }
+    robodrummer::SilenceMode getSilenceMode() const noexcept { return static_cast<robodrummer::SilenceMode>(silenceMode_.load(std::memory_order_relaxed)); }
+    void setSilenceStopBars(int bars) noexcept { silenceStopBars_.store(juce::jlimit(1, 16, bars), std::memory_order_relaxed); }
+    int getSilenceStopBars() const noexcept { return silenceStopBars_.load(std::memory_order_relaxed); }
+    int getSilentBars() const noexcept { return silentBarsVisible_.load(std::memory_order_relaxed); }
+    bool isWaitingForGuitarResume() const noexcept { return waitingForResume_.load(std::memory_order_relaxed); }
+
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
     float getGuitarTempoConfidence() const noexcept { return guitarTempoConfidence_.load(std::memory_order_relaxed); }
@@ -125,6 +133,7 @@ private:
     robodrummer::ResyncPlanner resyncPlanner_{};
     robodrummer::JamBrain jamBrain_{};
     robodrummer::SessionMemory sessionMemory_{};
+    robodrummer::SilenceController silenceController_{};
     robodrummer::SectionSequencer<16> arrangement_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
     double sampleRate_{48000.0};
@@ -135,6 +144,7 @@ private:
     long long lastArrangementBarIndex_{0};
     std::uint32_t appliedArrangementRevision_{0};
     bool manualFillSinceMemoryBar_{false};
+    float silenceIntensityMultiplierAudio_{1.0f};
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
@@ -147,6 +157,10 @@ private:
     std::atomic<int> effectiveMeterNumerator_{4};
     std::atomic<int> effectiveMeterDenominator_{4};
     std::atomic<bool> jamMemoryEnabled_{true};
+    std::atomic<int> silenceMode_{static_cast<int>(robodrummer::SilenceMode::KeepPlaying)};
+    std::atomic<int> silenceStopBars_{2};
+    std::atomic<int> silentBarsVisible_{0};
+    std::atomic<bool> waitingForResume_{false};
     std::atomic<int> currentArrangementSection_{0};
     std::array<std::atomic<int>, ArrangementSlotCount> arrangementStyle_{};
     std::array<std::atomic<int>, ArrangementSlotCount> arrangementBars_{};
