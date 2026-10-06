@@ -34,7 +34,8 @@ foreach(test_name IN ITEMS
     section_sequencer
     style_grooves
     fill_strength
-    phrase_groove_modifier)
+    phrase_groove_modifier
+    session_memory)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   add_test(NAME ${test_name} COMMAND test_${test_name})
