@@ -6,6 +6,8 @@
 #include "analysis/ResyncPlanner.h"
 #include "analysis/RhythmAnalyzer.h"
 #include "analysis/TimingAuthorityController.h"
+#include "analysis/SessionMemory.h"
+#include "analysis/SessionMemoryPolicy.h"
 #include "core/JamStyleProfile.h"
 #include "core/SectionSequencer.h"
 #include "audio/DrumSamplePlayer.h"
@@ -78,6 +80,15 @@ public:
     robodrummer::SectionDefinition getArrangementSection(int index) const noexcept;
     bool isArrangementSectionEnabled(int index) const noexcept;
 
+    void setJamMemoryEnabled(bool enabled) noexcept { jamMemoryEnabled_.store(enabled, std::memory_order_relaxed); }
+    bool isJamMemoryEnabled() const noexcept { return jamMemoryEnabled_.load(std::memory_order_relaxed); }
+    int getJamMemoryBars() const noexcept { return jamMemoryBars_.load(std::memory_order_relaxed); }
+    float getJamMemoryConfidence() const noexcept { return jamMemoryConfidence_.load(std::memory_order_relaxed); }
+    double getJamMemoryAverageTempo() const noexcept { return jamMemoryAverageTempo_.load(std::memory_order_relaxed); }
+    float getJamMemoryAveragePhraseBars() const noexcept { return jamMemoryAveragePhraseBars_.load(std::memory_order_relaxed); }
+    float getJamMemoryFillBias() const noexcept { return jamMemoryFillBias_.load(std::memory_order_relaxed); }
+    float getJamMemoryDynamicSensitivity() const noexcept { return jamMemoryDynamicSensitivity_.load(std::memory_order_relaxed); }
+
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
     float getGuitarTempoConfidence() const noexcept { return guitarTempoConfidence_.load(std::memory_order_relaxed); }
@@ -104,6 +115,7 @@ private:
     robodrummer::PhaseFollower phaseFollower_{};
     robodrummer::ResyncPlanner resyncPlanner_{};
     robodrummer::JamBrain jamBrain_{};
+    robodrummer::SessionMemory sessionMemory_{};
     robodrummer::SectionSequencer<16> arrangement_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
     double sampleRate_{48000.0};
@@ -113,12 +125,14 @@ private:
     bool lastArrangementEnabled_{false};
     long long lastArrangementBarIndex_{0};
     std::uint32_t appliedArrangementRevision_{0};
+    bool manualFillSinceMemoryBar_{false};
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
     std::atomic<float> dynamicFollow_{0.60f};
     std::atomic<int> jamStyle_{static_cast<int>(robodrummer::JamStyle::Rock)};
     std::atomic<bool> arrangementEnabled_{false};
+    std::atomic<bool> jamMemoryEnabled_{true};
     std::atomic<int> currentArrangementSection_{0};
     std::array<std::atomic<int>, ArrangementSlotCount> arrangementStyle_{};
     std::array<std::atomic<int>, ArrangementSlotCount> arrangementBars_{};
@@ -155,6 +169,12 @@ private:
     std::atomic<float> phraseFillStrength_{0.0f};
     std::atomic<bool> phraseBoundary_{false};
     std::atomic<bool> guitarTrackerLocked_{false};
+    std::atomic<int> jamMemoryBars_{0};
+    std::atomic<float> jamMemoryConfidence_{0.0f};
+    std::atomic<double> jamMemoryAverageTempo_{0.0};
+    std::atomic<float> jamMemoryAveragePhraseBars_{0.0f};
+    std::atomic<float> jamMemoryFillBias_{0.0f};
+    std::atomic<float> jamMemoryDynamicSensitivity_{1.0f};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RoboDrummerAudioProcessor)
 };
