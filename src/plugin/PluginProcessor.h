@@ -9,6 +9,7 @@
 #include "analysis/SessionMemory.h"
 #include "analysis/SessionMemoryPolicy.h"
 #include "core/JamStyleProfile.h"
+#include "core/MeterSelection.h"
 #include "core/SectionSequencer.h"
 #include "audio/DrumSamplePlayer.h"
 #include "plugin/HostTransportAdapter.h"
@@ -80,6 +81,14 @@ public:
     robodrummer::SectionDefinition getArrangementSection(int index) const noexcept;
     bool isArrangementSectionEnabled(int index) const noexcept;
 
+    void setManualMeterEnabled(bool enabled) noexcept { manualMeterEnabled_.store(enabled, std::memory_order_relaxed); }
+    bool isManualMeterEnabled() const noexcept { return manualMeterEnabled_.load(std::memory_order_relaxed); }
+    void setManualMeter(int numerator, int denominator) noexcept;
+    int getManualMeterNumerator() const noexcept { return manualMeterNumerator_.load(std::memory_order_relaxed); }
+    int getManualMeterDenominator() const noexcept { return manualMeterDenominator_.load(std::memory_order_relaxed); }
+    int getEffectiveMeterNumerator() const noexcept { return effectiveMeterNumerator_.load(std::memory_order_relaxed); }
+    int getEffectiveMeterDenominator() const noexcept { return effectiveMeterDenominator_.load(std::memory_order_relaxed); }
+
     void setJamMemoryEnabled(bool enabled) noexcept { jamMemoryEnabled_.store(enabled, std::memory_order_relaxed); }
     bool isJamMemoryEnabled() const noexcept { return jamMemoryEnabled_.load(std::memory_order_relaxed); }
     int getJamMemoryBars() const noexcept { return jamMemoryBars_.load(std::memory_order_relaxed); }
@@ -132,6 +141,11 @@ private:
     std::atomic<float> dynamicFollow_{0.60f};
     std::atomic<int> jamStyle_{static_cast<int>(robodrummer::JamStyle::Rock)};
     std::atomic<bool> arrangementEnabled_{false};
+    std::atomic<bool> manualMeterEnabled_{false};
+    std::atomic<int> manualMeterNumerator_{4};
+    std::atomic<int> manualMeterDenominator_{4};
+    std::atomic<int> effectiveMeterNumerator_{4};
+    std::atomic<int> effectiveMeterDenominator_{4};
     std::atomic<bool> jamMemoryEnabled_{true};
     std::atomic<int> currentArrangementSection_{0};
     std::array<std::atomic<int>, ArrangementSlotCount> arrangementStyle_{};
