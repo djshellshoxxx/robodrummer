@@ -3,7 +3,7 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(800, 865);
+    setSize(820, 915);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -13,11 +13,12 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     bpmCaption_.setText("Internal BPM", juce::dontSendNotification);
     intensityCaption_.setText("Intensity", juce::dontSendNotification);
     modeCaption_.setText("Timing mode", juce::dontSendNotification);
+    meterCaption_.setText("Meter", juce::dontSendNotification);
     leadershipCaption_.setText("Leadership", juce::dontSendNotification);
     followRangeCaption_.setText("Follow range", juce::dontSendNotification);
     dynamicFollowCaption_.setText("Dynamic follow", juce::dontSendNotification);
     styleCaption_.setText("Jam style", juce::dontSendNotification);
-    for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_, &styleCaption_ })
+    for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &meterCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_, &styleCaption_ })
         addAndMakeVisible(*label);
 
     bpm_.setRange(40.0, 240.0, 0.1);
@@ -42,6 +43,44 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
         processor_.setLeadershipMode(static_cast<robodrummer::LeadershipMode>(juce::jlimit(0, 2, leadershipMode_.getSelectedId() - 1)));
     };
     addAndMakeVisible(leadershipMode_);
+
+    manualMeterToggle_.setToggleState(processor_.isManualMeterEnabled(), juce::dontSendNotification);
+    manualMeterToggle_.onClick = [this] { processor_.setManualMeterEnabled(manualMeterToggle_.getToggleState()); };
+    addAndMakeVisible(manualMeterToggle_);
+
+    for (int numerator = 2; numerator <= 12; ++numerator)
+        meterNumerator_.addItem(juce::String(numerator), numerator - 1);
+    meterNumerator_.setSelectedId(processor_.getManualMeterNumerator() - 1, juce::dontSendNotification);
+
+    meterDenominator_.addItem("2", 1);
+    meterDenominator_.addItem("4", 2);
+    meterDenominator_.addItem("8", 3);
+    meterDenominator_.addItem("16", 4);
+    const auto denominatorToId = [](int denominator) {
+        switch (denominator) {
+            case 2: return 1;
+            case 8: return 3;
+            case 16: return 4;
+            case 4:
+            default: return 2;
+        }
+    };
+    meterDenominator_.setSelectedId(denominatorToId(processor_.getManualMeterDenominator()), juce::dontSendNotification);
+
+    const auto commitMeter = [this] {
+        int denominator = 4;
+        switch (meterDenominator_.getSelectedId()) {
+            case 1: denominator = 2; break;
+            case 3: denominator = 8; break;
+            case 4: denominator = 16; break;
+            default: break;
+        }
+        processor_.setManualMeter(juce::jlimit(2, 12, meterNumerator_.getSelectedId() + 1), denominator);
+    };
+    meterNumerator_.onChange = commitMeter;
+    meterDenominator_.onChange = commitMeter;
+    addAndMakeVisible(meterNumerator_);
+    addAndMakeVisible(meterDenominator_);
 
     jamStyle_.addItem("Rock", 1);
     jamStyle_.addItem("Blues", 2);
@@ -153,7 +192,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 822, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, 872, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -174,6 +213,15 @@ void RoboDrummerAudioProcessorEditor::resized() {
     row = area.removeFromTop(36);
     modeCaption_.setBounds(row.removeFromLeft(112));
     leadershipMode_.setBounds(row.removeFromLeft(220));
+    area.removeFromTop(5);
+
+    row = area.removeFromTop(36);
+    meterCaption_.setBounds(row.removeFromLeft(112));
+    manualMeterToggle_.setBounds(row.removeFromLeft(135));
+    row.removeFromLeft(8);
+    meterNumerator_.setBounds(row.removeFromLeft(70));
+    row.removeFromLeft(8);
+    meterDenominator_.setBounds(row.removeFromLeft(70));
     area.removeFromTop(5);
 
     row = area.removeFromTop(36);
@@ -262,6 +310,14 @@ void RoboDrummerAudioProcessorEditor::commitArrangementEditorSlot() {
 void RoboDrummerAudioProcessorEditor::timerCallback() {
     arrangementToggle_.setToggleState(processor_.isArrangementEnabled(), juce::dontSendNotification);
     jamMemoryToggle_.setToggleState(processor_.isJamMemoryEnabled(), juce::dontSendNotification);
+    manualMeterToggle_.setToggleState(processor_.isManualMeterEnabled(), juce::dontSendNotification);
+    meterNumerator_.setSelectedId(processor_.getManualMeterNumerator() - 1, juce::dontSendNotification);
+    switch (processor_.getManualMeterDenominator()) {
+        case 2: meterDenominator_.setSelectedId(1, juce::dontSendNotification); break;
+        case 8: meterDenominator_.setSelectedId(3, juce::dontSendNotification); break;
+        case 16: meterDenominator_.setSelectedId(4, juce::dontSendNotification); break;
+        default: meterDenominator_.setSelectedId(2, juce::dontSendNotification); break;
+    }
     jamStyle_.setSelectedId(static_cast<int>(processor_.getJamStyle()) + 1, juce::dontSendNotification);
     if (processor_.isArrangementEnabled())
         intensity_.setValue(processor_.getIntensity(), juce::dontSendNotification);
@@ -269,8 +325,12 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
     const auto t = processor_.getLastTransport();
     tempoLabel_.setText("Drummer tempo: " + juce::String(processor_.getEffectiveDrummerBpm(), 1) + " BPM", juce::dontSendNotification);
     transportLabel_.setText(
-        t.validTempo ? (juce::String("Transport: host | ") + (t.playing ? "playing" : "stopped"))
-                     : "Transport: internal fallback",
+        t.validTempo
+            ? (juce::String("Transport: host | ") + (t.playing ? "playing" : "stopped") +
+               " | meter " + juce::String(processor_.getEffectiveMeterNumerator()) + "/" +
+               juce::String(processor_.getEffectiveMeterDenominator()))
+            : ("Transport: internal fallback | meter " + juce::String(processor_.getEffectiveMeterNumerator()) + "/" +
+               juce::String(processor_.getEffectiveMeterDenominator())),
         juce::dontSendNotification);
 
     const auto detected = processor_.getDetectedGuitarBpm();
@@ -282,7 +342,8 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
         juce::dontSendNotification);
     trackingLabel_.setText(
         juce::String("Tracker: ") + (processor_.isGuitarTrackerLocked() ? "LOCKED" : "acquiring") +
-            " | beat " + juce::String(processor_.getGuitarBeatInBar()) + "/4" +
+            " | beat " + juce::String(processor_.getGuitarBeatInBar()) + "/" +
+            juce::String(processor_.getEffectiveMeterNumerator()) +
             " | beat conf " + juce::String(beatConfidence * 100.0f, 0) + "%" +
             " | downbeat conf " + juce::String(processor_.getGuitarDownbeatConfidence() * 100.0f, 0) + "%" +
             (processor_.hasAdaptiveJoined() ? " | joined" : " | waiting to join"),
