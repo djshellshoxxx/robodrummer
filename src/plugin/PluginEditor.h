@@ -27,6 +27,7 @@ private:
     juce::Label sectionLabel_;
     juce::Label memoryLabel_;
     juce::Label silenceLabel_;
+    juce::Label coordinatorLabel_;
     juce::Slider bpm_;
     juce::Slider intensity_;
     juce::Slider leadership_;

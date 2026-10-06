@@ -119,10 +119,22 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
     resyncPlanner_.reset();
     jamBrain_.reset();
+    jamCoordinator_.reset();
     silenceController_.reset();
     silenceIntensityMultiplierAudio_ = 1.0f;
     silenceHoldGrooveAudio_ = false;
     lastSilenceBarIndex_ = -1;
+    lastCoordinatorBarIndex_ = -1;
+    coordinatorNextCuePending_ = false;
+    coordinatorSoloCuePending_ = false;
+    coordinatorEndCuePending_ = false;
+    coordinatorProgrammedBoundaryPending_ = false;
+    coordinatorIntensityBiasAudio_ = 0.0f;
+    coordinatorSuppressBusyFillsAudio_ = false;
+    jamCoordinationState_.store(static_cast<int>(robodrummer::JamCoordinationState::EstablishingGroove), std::memory_order_relaxed);
+    transitionProbability_.store(0.0f, std::memory_order_relaxed);
+    endingProbability_.store(0.0f, std::memory_order_relaxed);
+    coordinatorSuppressBusyFillsVisible_.store(false, std::memory_order_relaxed);
     silentBarsVisible_.store(0, std::memory_order_relaxed);
     waitingForResume_.store(false, std::memory_order_relaxed);
     jamBrainCooldownSeconds_ = 0.0;
@@ -163,10 +175,22 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
         resyncPlanner_.reset();
         jamBrain_.reset();
+        jamCoordinator_.reset();
         silenceController_.reset();
         silenceIntensityMultiplierAudio_ = 1.0f;
         silenceHoldGrooveAudio_ = false;
         lastSilenceBarIndex_ = -1;
+        lastCoordinatorBarIndex_ = -1;
+        coordinatorNextCuePending_ = false;
+        coordinatorSoloCuePending_ = false;
+        coordinatorEndCuePending_ = false;
+        coordinatorProgrammedBoundaryPending_ = false;
+        coordinatorIntensityBiasAudio_ = 0.0f;
+        coordinatorSuppressBusyFillsAudio_ = false;
+        jamCoordinationState_.store(static_cast<int>(robodrummer::JamCoordinationState::EstablishingGroove), std::memory_order_relaxed);
+        transitionProbability_.store(0.0f, std::memory_order_relaxed);
+        endingProbability_.store(0.0f, std::memory_order_relaxed);
+        coordinatorSuppressBusyFillsVisible_.store(false, std::memory_order_relaxed);
         silentBarsVisible_.store(0, std::memory_order_relaxed);
         waitingForResume_.store(false, std::memory_order_relaxed);
         sessionMemory_.reset();
@@ -315,6 +339,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             if (step.sectionChanged) {
                 currentArrangementSection_.store(static_cast<int>(step.enteredIndex), std::memory_order_relaxed);
                 applyCurrentArrangementSection();
+                coordinatorProgrammedBoundaryPending_ = true;
                 jam_.apply(robodrummer::MidiCommand::Crash);
             }
         }
@@ -338,7 +363,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         memoryPolicy.dynamicFollow,
         authority.effectiveGuitarAuthority,
         settings.mode);
-    const float effectiveIntensity = std::clamp(followedIntensity * silenceIntensityMultiplierAudio_, 0.0f, 1.0f);
+    const float effectiveIntensity = std::clamp(
+        followedIntensity * silenceIntensityMultiplierAudio_ + coordinatorIntensityBiasAudio_,
+        0.0f,
+        1.0f);
     effectiveDrummerIntensity_.store(effectiveIntensity, std::memory_order_relaxed);
 
     jam_.setTempo(authority.outputBpm);
@@ -443,7 +471,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             phraseFillStrength_.store(decision.fillStrength, std::memory_order_relaxed);
             phraseBoundary_.store(decision.phraseBoundary, std::memory_order_relaxed);
 
-            if (decision.requestFill && !jam_.state().fillRequested)
+            if (decision.requestFill && !coordinatorSuppressBusyFillsAudio_ && !jam_.state().fillRequested)
                 jam_.requestFill(decision.fillStrength);
 
             if (jamMemoryEnabled_.load(std::memory_order_relaxed) && !arrangementEnabled) {
@@ -473,11 +501,58 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         }
     }
 
+    // High-level jam coordination runs once per musical bar and never modifies the clock.
+    const auto coordinatorBarIndex = jam_.currentBarIndex();
+    if (coordinatorBarIndex != lastCoordinatorBarIndex_) {
+        robodrummer::JamCoordinatorSettings coordinatorSettings;
+        if (arrangementEnabled) {
+            coordinatorSettings.mode = arrangement_.empty() || arrangement_.current().autoAdvance
+                ? robodrummer::JamMode::ProgrammedSong
+                : robodrummer::JamMode::SemiStructured;
+        } else {
+            coordinatorSettings.mode = robodrummer::JamMode::FreeJam;
+        }
+
+        robodrummer::JamCoordinatorObservation coordinatorObservation;
+        coordinatorObservation.phraseState = getPhraseState();
+        coordinatorObservation.activity = performance.activity;
+        coordinatorObservation.intensity = performance.intensity;
+        coordinatorObservation.trackingConfidence =
+            settings.mode == robodrummer::LeadershipMode::DrummerLeads
+                ? (hostPositionAvailable ? 1.0f : rhythm.beatConfidence)
+                : std::min(rhythm.beatConfidence, std::max(rhythm.downbeatConfidence, 0.25f));
+        coordinatorObservation.phraseBoundary = phraseBoundary_.load(std::memory_order_relaxed);
+        coordinatorObservation.nextSectionCue = coordinatorNextCuePending_;
+        coordinatorObservation.soloCue = coordinatorSoloCuePending_;
+        coordinatorObservation.endCue = coordinatorEndCuePending_;
+        coordinatorObservation.programmedBoundaryDue = coordinatorProgrammedBoundaryPending_;
+
+        const auto coordinatorDecision = jamCoordinator_.update(coordinatorObservation, coordinatorSettings);
+        coordinatorIntensityBiasAudio_ = coordinatorDecision.intensityBias;
+        coordinatorSuppressBusyFillsAudio_ = coordinatorDecision.suppressBusyFills;
+
+        jamCoordinationState_.store(static_cast<int>(coordinatorDecision.state), std::memory_order_relaxed);
+        transitionProbability_.store(coordinatorDecision.transitionProbability, std::memory_order_relaxed);
+        endingProbability_.store(coordinatorDecision.endingProbability, std::memory_order_relaxed);
+        coordinatorSuppressBusyFillsVisible_.store(coordinatorDecision.suppressBusyFills, std::memory_order_relaxed);
+
+        coordinatorNextCuePending_ = false;
+        coordinatorSoloCuePending_ = false;
+        coordinatorEndCuePending_ = false;
+        coordinatorProgrammedBoundaryPending_ = false;
+        lastCoordinatorBarIndex_ = coordinatorBarIndex;
+    }
+
     for (const auto metadata : midi) {
         const auto msg = metadata.getMessage();
         if (msg.isNoteOn() && msg.getChannel() == 16) {
             if (const auto command = robodrummer::mapNoteOn(msg.getNoteNumber(), msg.getFloatVelocity())) {
-                if (arrangementEnabled && *command == robodrummer::MidiCommand::NextSection) {
+                if (*command == robodrummer::MidiCommand::SoloSupport) {
+                    coordinatorSoloCuePending_ = true;
+                } else if (*command == robodrummer::MidiCommand::EndJam) {
+                    coordinatorEndCuePending_ = true;
+                } else if (arrangementEnabled && *command == robodrummer::MidiCommand::NextSection) {
+                    coordinatorNextCuePending_ = true;
                     if (arrangement_.next()) {
                         currentArrangementSection_.store(static_cast<int>(arrangement_.currentSectionIndex()), std::memory_order_relaxed);
                         applyCurrentArrangementSection();
@@ -492,6 +567,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                 } else {
                     if (*command == robodrummer::MidiCommand::Fill)
                         manualFillSinceMemoryBar_ = true;
+                    if (*command == robodrummer::MidiCommand::NextSection)
+                        coordinatorNextCuePending_ = true;
                     jam_.apply(*command);
                 }
             }
