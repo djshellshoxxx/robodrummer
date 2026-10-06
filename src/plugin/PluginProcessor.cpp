@@ -776,6 +776,8 @@ void RoboDrummerAudioProcessor::installStarterKit(double sampleRate) {
     samplePlayer_.setSample(robodrummer::DrumInstrument::Snare, makeSnare(sampleRate));
     samplePlayer_.setSample(robodrummer::DrumInstrument::ClosedHat, makeHat(sampleRate));
     samplePlayer_.setSample(robodrummer::DrumInstrument::OpenHat, makeHat(sampleRate, 0.24));
+    samplePlayer_.setChokeGroup(robodrummer::DrumInstrument::ClosedHat, 1);
+    samplePlayer_.setChokeGroup(robodrummer::DrumInstrument::OpenHat, 1);
     samplePlayer_.setSample(robodrummer::DrumInstrument::Ride, makeHat(sampleRate, 0.35));
     samplePlayer_.setSample(robodrummer::DrumInstrument::Crash, makeCrash(sampleRate));
     samplePlayer_.setSample(robodrummer::DrumInstrument::HighTom, makeTom(sampleRate, 190.0));
