@@ -2,6 +2,7 @@
 #include "analysis/DownbeatTracker.h"
 #include "analysis/OnsetDetector.h"
 #include "analysis/TempoTracker.h"
+#include "analysis/TempoMovement.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -22,6 +23,7 @@ struct RhythmState {
     float downbeatConfidence{0.0f};
     float meterConfidence{0.0f};
     bool locked{false};
+    TempoMovement tempoMovement{TempoMovement::Stable};
 };
 
 class LiveRhythmAnalyzer {
@@ -41,6 +43,7 @@ public:
         lastOnsetSeconds_ = std::numeric_limits<double>::quiet_NaN();
         lastUpdateSeconds_ = 0.0;
         previousTempo_ = 120.0;
+        tempoMovement_.reset(120.0);
         lastObservedBeatIndex_ = std::numeric_limits<long long>::min();
         state_ = {};
     }
@@ -103,6 +106,7 @@ private:
             : best.bpm;
         const double dt = std::max(1.0e-3, nowSeconds - lastUpdateSeconds_);
         state_.tempoVelocity = (filteredTempo - previousTempo_) / dt;
+        state_.tempoMovement = tempoMovement_.update(filteredTempo, state_.tempoVelocity, dt);
         previousTempo_ = filteredTempo;
         lastUpdateSeconds_ = nowSeconds;
         state_.tempoBpm = filteredTempo;
@@ -144,6 +148,7 @@ private:
     long long lastObservedBeatIndex_{std::numeric_limits<long long>::min()};
     AdaptiveOnsetDetector detector_{};
     TempoTracker tempo_{};
+    TempoMovementClassifier tempoMovement_{};
     DownbeatTracker downbeat_{};
     RhythmState state_{};
 };
