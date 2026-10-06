@@ -139,7 +139,7 @@ public:
             fillContext.strength = state_.fillStrength;
             fillContext.length = fillLength_;
 
-            std::array<DrumEvent, 64> fillEvents{};
+            std::array<DrumEvent, 128> fillEvents{};
             const auto generated = fillGenerator_.generate(fillContext, fillEvents);
             for (std::size_t i = 0; i < generated && count < capacity; ++i) {
                 const long long absolute = fillStart + fillEvents[i].sampleOffset;
