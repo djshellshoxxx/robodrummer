@@ -22,6 +22,7 @@ foreach(test_name IN ITEMS
     drum_sample_player
     jam_engine
     onset_detector
+    input_conditioner
     tempo_tracker
     rhythm_analyzer
     timing_authority
