@@ -18,7 +18,8 @@ public:
                                            double effectiveBpm,
                                            float guitarAuthority,
                                            FollowResponse response,
-                                           double sampleRate) const noexcept {
+                                           double sampleRate,
+                                           float beatCorrectionSpeed = 0.5f) const noexcept {
         if (!guitar.locked || guitarAuthority < 0.10f || !(sampleRate > 0.0) || !(effectiveBpm > 0.0))
             return {};
 
@@ -28,7 +29,10 @@ public:
         if (hard) return {0, error, true};
 
         const double periodSamples = sampleRate * 60.0 / effectiveBpm;
-        const double gain = responseGain(response) * std::clamp(static_cast<double>(guitarAuthority), 0.0, 1.0);
+        const double correctionSpeed = 0.30 + 1.40 * std::clamp(static_cast<double>(beatCorrectionSpeed), 0.0, 1.0);
+        const double gain = responseGain(response)
+            * correctionSpeed
+            * std::clamp(static_cast<double>(guitarAuthority), 0.0, 1.0);
         const double requested = error * periodSamples * gain;
         const double maxCorrection = sampleRate * maxCorrectionSeconds(response);
         const auto bounded = static_cast<long long>(std::llround(std::clamp(requested, -maxCorrection, maxCorrection)));
