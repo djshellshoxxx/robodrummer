@@ -190,6 +190,9 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     double baseBpm = internalBpm_.load(std::memory_order_relaxed);
     int numerator = 4;
     int denominator = 4;
+    bool hostMeterAvailable = false;
+    int hostNumerator = 4;
+    int hostDenominator = 4;
     bool playing = true;
     bool hostPositionAvailable = false;
     bool hasPpq = false;
@@ -205,7 +208,13 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             const auto ppq = pos->getPpqPosition();
             const auto sig = pos->getTimeSignature();
             if (hostBpm.hasValue()) baseBpm = *hostBpm;
-            if (sig.hasValue()) { numerator = sig->numerator; denominator = sig->denominator; }
+            if (sig.hasValue()) {
+                hostMeterAvailable = true;
+                hostNumerator = sig->numerator;
+                hostDenominator = sig->denominator;
+                numerator = hostNumerator;
+                denominator = hostDenominator;
+            }
             playing = pos->getIsPlaying();
             hasPpq = ppq.hasValue();
             hostPpq = hasPpq ? *ppq : 0.0;
@@ -219,6 +228,19 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             lastHostPpqValid_.store(hasPpq, std::memory_order_release);
         }
     }
+
+    robodrummer::MeterSelectionInput meterInput;
+    meterInput.hostAvailable = hostMeterAvailable;
+    meterInput.hostNumerator = hostNumerator;
+    meterInput.hostDenominator = hostDenominator;
+    meterInput.manualEnabled = manualMeterEnabled_.load(std::memory_order_relaxed);
+    meterInput.manualNumerator = manualMeterNumerator_.load(std::memory_order_relaxed);
+    meterInput.manualDenominator = manualMeterDenominator_.load(std::memory_order_relaxed);
+    const auto selectedMeter = robodrummer::MeterSelection::resolve(meterInput);
+    numerator = selectedMeter.numerator;
+    denominator = selectedMeter.denominator;
+    effectiveMeterNumerator_.store(numerator, std::memory_order_relaxed);
+    effectiveMeterDenominator_.store(denominator, std::memory_order_relaxed);
 
     rhythmAnalyzer_.setMeterNumerator(numerator);
 
@@ -462,6 +484,9 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("jamStyle", jamStyle_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("arrangementEnabled", arrangementEnabled_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("jamMemoryEnabled", jamMemoryEnabled_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("manualMeterEnabled", manualMeterEnabled_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("manualMeterNumerator", manualMeterNumerator_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("manualMeterDenominator", manualMeterDenominator_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadershipMode", leadershipMode_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadership", leadership_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("followRange", followRangeBpm_.load(std::memory_order_relaxed), nullptr);
@@ -488,6 +513,10 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
             setJamStyle(static_cast<robodrummer::JamStyle>(style));
             setArrangementEnabled(static_cast<bool>(state.getProperty("arrangementEnabled", false)));
             setJamMemoryEnabled(static_cast<bool>(state.getProperty("jamMemoryEnabled", true)));
+            setManualMeterEnabled(static_cast<bool>(state.getProperty("manualMeterEnabled", false)));
+            setManualMeter(
+                static_cast<int>(state.getProperty("manualMeterNumerator", 4)),
+                static_cast<int>(state.getProperty("manualMeterDenominator", 4)));
             const int mode = juce::jlimit(0, 2, static_cast<int>(state.getProperty("leadershipMode", 0)));
             setLeadershipMode(static_cast<robodrummer::LeadershipMode>(mode));
             setLeadership(static_cast<float>(state.getProperty("leadership", 0.5f)));
@@ -512,6 +541,16 @@ void RoboDrummerAudioProcessor::setInternalBpm(double bpm) noexcept {
 
 void RoboDrummerAudioProcessor::setIntensity(float value) noexcept {
     intensity_.store(juce::jlimit(0.0f, 1.0f, value), std::memory_order_relaxed);
+}
+
+void RoboDrummerAudioProcessor::setManualMeter(int numerator, int denominator) noexcept {
+    robodrummer::MeterSelectionInput input;
+    input.manualEnabled = true;
+    input.manualNumerator = numerator;
+    input.manualDenominator = denominator;
+    const auto meter = robodrummer::MeterSelection::resolve(input);
+    manualMeterNumerator_.store(meter.numerator, std::memory_order_relaxed);
+    manualMeterDenominator_.store(meter.denominator, std::memory_order_relaxed);
 }
 
 void RoboDrummerAudioProcessor::setArrangementSection(int index,
