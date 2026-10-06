@@ -12,6 +12,7 @@ target_include_directories(robodrummer_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR
 
 enable_testing()
 foreach(test_name IN ITEMS
+    assertions_active
     musical_clock
     event_scheduler
     groove_generator
@@ -45,6 +46,11 @@ foreach(test_name IN ITEMS
     live_control_policy)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
+  if(MSVC)
+    target_compile_options(test_${test_name} PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(test_${test_name} PRIVATE -UNDEBUG)
+  endif()
   add_test(NAME ${test_name} COMMAND test_${test_name})
 endforeach()
 
