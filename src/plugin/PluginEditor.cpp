@@ -3,7 +3,7 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(780, 805);
+    setSize(800, 865);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -58,6 +58,10 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     arrangementToggle_.setToggleState(processor_.isArrangementEnabled(), juce::dontSendNotification);
     arrangementToggle_.onClick = [this] { processor_.setArrangementEnabled(arrangementToggle_.getToggleState()); };
     addAndMakeVisible(arrangementToggle_);
+
+    jamMemoryToggle_.setToggleState(processor_.isJamMemoryEnabled(), juce::dontSendNotification);
+    jamMemoryToggle_.onClick = [this] { processor_.setJamMemoryEnabled(jamMemoryToggle_.getToggleState()); };
+    addAndMakeVisible(jamMemoryToggle_);
 
     arrangementEditCaption_.setText("Edit section", juce::dontSendNotification);
     addAndMakeVisible(arrangementEditCaption_);
@@ -129,7 +133,8 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     dynamicsLabel_.setText("Dynamics: listening", juce::dontSendNotification);
     phraseLabel_.setText("Phrase: stable", juce::dontSendNotification);
     sectionLabel_.setText("Arrangement: free jam", juce::dontSendNotification);
-    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_, &sectionLabel_ })
+    memoryLabel_.setText("Jam memory: learning", juce::dontSendNotification);
+    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_, &memoryLabel_, &sectionLabel_ })
         addAndMakeVisible(*label);
 
     fillButton_.onClick = [this] { processor_.requestFill(); };
@@ -148,7 +153,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 762, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, 822, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -192,6 +197,11 @@ void RoboDrummerAudioProcessorEditor::resized() {
     dynamicFollowCaption_.setBounds(row.removeFromLeft(112));
     dynamicFollow_.setBounds(row);
 
+    area.removeFromTop(5);
+    row = area.removeFromTop(32);
+    row.removeFromLeft(112);
+    jamMemoryToggle_.setBounds(row.removeFromLeft(180));
+
     area.removeFromTop(8);
     row = area.removeFromTop(34);
     arrangementEditCaption_.setBounds(row.removeFromLeft(112));
@@ -216,6 +226,7 @@ void RoboDrummerAudioProcessorEditor::resized() {
     authorityLabel_.setBounds(area.removeFromTop(25));
     dynamicsLabel_.setBounds(area.removeFromTop(25));
     phraseLabel_.setBounds(area.removeFromTop(25));
+    memoryLabel_.setBounds(area.removeFromTop(25));
     sectionLabel_.setBounds(area.removeFromTop(25));
 
     area.removeFromTop(10);
@@ -250,6 +261,7 @@ void RoboDrummerAudioProcessorEditor::commitArrangementEditorSlot() {
 
 void RoboDrummerAudioProcessorEditor::timerCallback() {
     arrangementToggle_.setToggleState(processor_.isArrangementEnabled(), juce::dontSendNotification);
+    jamMemoryToggle_.setToggleState(processor_.isJamMemoryEnabled(), juce::dontSendNotification);
     jamStyle_.setSelectedId(static_cast<int>(processor_.getJamStyle()) + 1, juce::dontSendNotification);
     if (processor_.isArrangementEnabled())
         intensity_.setValue(processor_.getIntensity(), juce::dontSendNotification);
@@ -297,6 +309,21 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
             " | fill strength " + juce::String(processor_.getPhraseFillStrength() * 100.0f, 0) + "%" +
             (processor_.isPhraseBoundary() ? " | BOUNDARY" : ""),
         juce::dontSendNotification);
+
+    if (!processor_.isJamMemoryEnabled()) {
+        memoryLabel_.setText("Jam memory: disabled", juce::dontSendNotification);
+    } else if (processor_.isArrangementEnabled()) {
+        memoryLabel_.setText("Jam memory: paused while Programmed Arrangement is active", juce::dontSendNotification);
+    } else {
+        memoryLabel_.setText(
+            "Jam memory: " + juce::String(processor_.getJamMemoryBars()) + " bars | confidence " +
+                juce::String(processor_.getJamMemoryConfidence() * 100.0f, 0) + "% | avg tempo " +
+                juce::String(processor_.getJamMemoryAverageTempo(), 1) + " | phrase " +
+                juce::String(processor_.getJamMemoryAveragePhraseBars(), 1) + " bars | fill bias " +
+                juce::String(processor_.getJamMemoryFillBias(), 2) + " | dyn x" +
+                juce::String(processor_.getJamMemoryDynamicSensitivity(), 2),
+            juce::dontSendNotification);
+    }
 
     if (processor_.isArrangementEnabled()) {
         sectionLabel_.setText(
