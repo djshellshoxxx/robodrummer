@@ -141,7 +141,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     juce::ScopedNoDenormals noDenormals;
 
     const auto pending = pendingUiCommands_.exchange(0, std::memory_order_acquire);
-    if ((pending & FillBit) != 0) jam_.apply(robodrummer::MidiCommand::Fill);
+    if ((pending & FillBit) != 0) {
+        manualFillSinceMemoryBar_ = true;
+        jam_.apply(robodrummer::MidiCommand::Fill);
+    }
     if ((pending & ResetBit) != 0) {
         jam_.apply(robodrummer::MidiCommand::ResetListening);
         rhythmAnalyzer_.reset();
@@ -149,6 +152,14 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
         resyncPlanner_.reset();
         jamBrain_.reset();
+        sessionMemory_.reset();
+        manualFillSinceMemoryBar_ = false;
+        jamMemoryBars_.store(0, std::memory_order_relaxed);
+        jamMemoryConfidence_.store(0.0f, std::memory_order_relaxed);
+        jamMemoryAverageTempo_.store(0.0, std::memory_order_relaxed);
+        jamMemoryAveragePhraseBars_.store(0.0f, std::memory_order_relaxed);
+        jamMemoryFillBias_.store(0.0f, std::memory_order_relaxed);
+        jamMemoryDynamicSensitivity_.store(1.0f, std::memory_order_relaxed);
         jamBrainCooldownSeconds_ = 0.0;
         phraseState_.store(static_cast<int>(robodrummer::PhraseState::Stable), std::memory_order_relaxed);
         phraseFillStrength_.store(0.0f, std::memory_order_relaxed);
@@ -272,11 +283,20 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             lastArrangementBarIndex_ = currentBar;
     }
 
+    const auto styleProfile = robodrummer::JamStyleProfile::forStyle(getJamStyle());
+    const auto memoryRecommendations = sessionMemory_.recommendations();
+    const bool memoryCanAdapt = jamMemoryEnabled_.load(std::memory_order_relaxed) && !arrangementEnabled;
+    const auto memoryPolicy = robodrummer::SessionMemoryPolicy::apply(
+        styleProfile.toBrainSettings(),
+        dynamicFollow_.load(std::memory_order_relaxed),
+        memoryRecommendations,
+        memoryCanAdapt);
+
     const float manualIntensity = intensity_.load(std::memory_order_relaxed);
     const float effectiveIntensity = robodrummer::DynamicsFollower::blend(
         manualIntensity,
         performance.intensity,
-        dynamicFollow_.load(std::memory_order_relaxed),
+        memoryPolicy.dynamicFollow,
         authority.effectiveGuitarAuthority,
         settings.mode);
     effectiveDrummerIntensity_.store(effectiveIntensity, std::memory_order_relaxed);
@@ -343,9 +363,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             observation.beatConfidence = rhythm.beatConfidence;
             observation.downbeatConfidence = rhythm.downbeatConfidence;
 
-            const auto styleProfile = robodrummer::JamStyleProfile::forStyle(getJamStyle());
-            const auto brainSettings = styleProfile.toBrainSettings();
-            const auto decision = jamBrain_.update(observation, brainSettings);
+            const auto decision = jamBrain_.update(observation, memoryPolicy.brainSettings);
 
             phraseState_.store(static_cast<int>(decision.phraseState), std::memory_order_relaxed);
             phraseFillStrength_.store(decision.fillStrength, std::memory_order_relaxed);
@@ -353,6 +371,27 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
             if (decision.requestFill && !jam_.state().fillRequested)
                 jam_.requestFill(decision.fillStrength);
+
+            if (jamMemoryEnabled_.load(std::memory_order_relaxed) && !arrangementEnabled) {
+                robodrummer::SessionBarObservation memoryObservation;
+                memoryObservation.tempoBpm = authority.outputBpm;
+                memoryObservation.intensity = performance.intensity;
+                memoryObservation.activity = performance.activity;
+                memoryObservation.phraseBoundary = decision.phraseBoundary;
+                memoryObservation.manualFillRequested = manualFillSinceMemoryBar_;
+                memoryObservation.fillOccurred = manualFillSinceMemoryBar_ || decision.requestFill;
+                sessionMemory_.observeBar(memoryObservation);
+                manualFillSinceMemoryBar_ = false;
+
+                const auto memoryStats = sessionMemory_.snapshot();
+                const auto updatedMemory = sessionMemory_.recommendations();
+                jamMemoryBars_.store(memoryStats.barCount, std::memory_order_relaxed);
+                jamMemoryConfidence_.store(updatedMemory.confidence, std::memory_order_relaxed);
+                jamMemoryAverageTempo_.store(memoryStats.averageTempoBpm, std::memory_order_relaxed);
+                jamMemoryAveragePhraseBars_.store(memoryStats.averagePhraseBars, std::memory_order_relaxed);
+                jamMemoryFillBias_.store(updatedMemory.fillBiasAdjustment, std::memory_order_relaxed);
+                jamMemoryDynamicSensitivity_.store(updatedMemory.dynamicSensitivity, std::memory_order_relaxed);
+            }
 
             const double barSeconds = (60.0 / std::max(20.0, authority.outputBpm)) *
                                       numerator * (4.0 / static_cast<double>(denominator));
@@ -377,6 +416,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                         jam_.apply(robodrummer::MidiCommand::Crash);
                     }
                 } else {
+                    if (*command == robodrummer::MidiCommand::Fill)
+                        manualFillSinceMemoryBar_ = true;
                     jam_.apply(*command);
                 }
             }
@@ -420,6 +461,7 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("dynamicFollow", dynamicFollow_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("jamStyle", jamStyle_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("arrangementEnabled", arrangementEnabled_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("jamMemoryEnabled", jamMemoryEnabled_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadershipMode", leadershipMode_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadership", leadership_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("followRange", followRangeBpm_.load(std::memory_order_relaxed), nullptr);
@@ -445,6 +487,7 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
             const int style = juce::jlimit(0, 5, static_cast<int>(state.getProperty("jamStyle", 0)));
             setJamStyle(static_cast<robodrummer::JamStyle>(style));
             setArrangementEnabled(static_cast<bool>(state.getProperty("arrangementEnabled", false)));
+            setJamMemoryEnabled(static_cast<bool>(state.getProperty("jamMemoryEnabled", true)));
             const int mode = juce::jlimit(0, 2, static_cast<int>(state.getProperty("leadershipMode", 0)));
             setLeadershipMode(static_cast<robodrummer::LeadershipMode>(mode));
             setLeadership(static_cast<float>(state.getProperty("leadership", 0.5f)));
