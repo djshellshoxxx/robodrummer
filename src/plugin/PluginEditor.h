@@ -26,15 +26,18 @@ private:
     juce::Label phraseLabel_;
     juce::Label sectionLabel_;
     juce::Label memoryLabel_;
+    juce::Label silenceLabel_;
     juce::Slider bpm_;
     juce::Slider intensity_;
     juce::Slider leadership_;
     juce::Slider followRange_;
     juce::Slider dynamicFollow_;
+    juce::Slider silenceStopBars_;
     juce::ComboBox leadershipMode_;
     juce::ComboBox meterNumerator_;
     juce::ComboBox meterDenominator_;
     juce::ComboBox jamStyle_;
+    juce::ComboBox silenceMode_;
     juce::ToggleButton arrangementToggle_{"Programmed arrangement"};
     juce::ToggleButton jamMemoryToggle_{"Learn this jam"};
     juce::ToggleButton manualMeterToggle_{"Manual meter"};
@@ -53,6 +56,7 @@ private:
     juce::Label modeCaption_;
     juce::Label meterCaption_;
     juce::Label styleCaption_;
+    juce::Label silenceCaption_;
     juce::TextButton fillButton_{"FILL"};
     juce::TextButton resetButton_{"RESET LISTENING"};
     int editingArrangementSlot_{0};
