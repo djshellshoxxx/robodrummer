@@ -114,6 +114,10 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
     resyncPlanner_.reset();
     jamBrain_.reset();
+    silenceController_.reset();
+    silenceIntensityMultiplierAudio_ = 1.0f;
+    silentBarsVisible_.store(0, std::memory_order_relaxed);
+    waitingForResume_.store(false, std::memory_order_relaxed);
     jamBrainCooldownSeconds_ = 0.0;
     arrangement_.reset();
     lastArrangementEnabled_ = false;
@@ -152,6 +156,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         timingAuthority_.reset(internalBpm_.load(std::memory_order_relaxed));
         resyncPlanner_.reset();
         jamBrain_.reset();
+        silenceController_.reset();
+        silenceIntensityMultiplierAudio_ = 1.0f;
+        silentBarsVisible_.store(0, std::memory_order_relaxed);
+        waitingForResume_.store(false, std::memory_order_relaxed);
         sessionMemory_.reset();
         manualFillSinceMemoryBar_ = false;
         jamMemoryBars_.store(0, std::memory_order_relaxed);
@@ -315,12 +323,13 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         memoryCanAdapt);
 
     const float manualIntensity = intensity_.load(std::memory_order_relaxed);
-    const float effectiveIntensity = robodrummer::DynamicsFollower::blend(
+    const float followedIntensity = robodrummer::DynamicsFollower::blend(
         manualIntensity,
         performance.intensity,
         memoryPolicy.dynamicFollow,
         authority.effectiveGuitarAuthority,
         settings.mode);
+    const float effectiveIntensity = std::clamp(followedIntensity * silenceIntensityMultiplierAudio_, 0.0f, 1.0f);
     effectiveDrummerIntensity_.store(effectiveIntensity, std::memory_order_relaxed);
 
     jam_.setTempo(authority.outputBpm);
@@ -385,7 +394,30 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             observation.beatConfidence = rhythm.beatConfidence;
             observation.downbeatConfidence = rhythm.downbeatConfidence;
 
-            const auto decision = jamBrain_.update(observation, memoryPolicy.brainSettings);
+            robodrummer::SilenceSettings silenceSettings;
+            silenceSettings.mode = getSilenceMode();
+            silenceSettings.stopAfterBars = silenceStopBars_.load(std::memory_order_relaxed);
+            const auto silenceDecision = silenceController_.update(performance.activity, silenceSettings);
+            silenceIntensityMultiplierAudio_ = silenceDecision.intensityMultiplier;
+            silentBarsVisible_.store(silenceDecision.silentBars, std::memory_order_relaxed);
+            waitingForResume_.store(silenceDecision.waitingForResume, std::memory_order_relaxed);
+
+            if (silenceDecision.requestFill && !jam_.state().fillRequested)
+                jam_.requestFill(0.65f);
+            if (silenceDecision.stopDrums)
+                jam_.apply(robodrummer::MidiCommand::Stop);
+            if (silenceDecision.resumeDrums) {
+                jam_.apply(robodrummer::MidiCommand::Resume);
+                if (silenceDecision.markResumeWithCrash)
+                    jam_.apply(robodrummer::MidiCommand::Crash);
+            }
+
+            robodrummer::JamBrainDecision decision;
+            if (silenceDecision.suppressAdaptiveChanges) {
+                decision.phraseState = getPhraseState();
+            } else {
+                decision = jamBrain_.update(observation, memoryPolicy.brainSettings);
+            }
 
             phraseState_.store(static_cast<int>(decision.phraseState), std::memory_order_relaxed);
             phraseFillStrength_.store(decision.fillStrength, std::memory_order_relaxed);
@@ -401,7 +433,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                 memoryObservation.activity = performance.activity;
                 memoryObservation.phraseBoundary = decision.phraseBoundary;
                 memoryObservation.manualFillRequested = manualFillSinceMemoryBar_;
-                memoryObservation.fillOccurred = manualFillSinceMemoryBar_ || decision.requestFill;
+                memoryObservation.fillOccurred = manualFillSinceMemoryBar_ || decision.requestFill || silenceDecision.requestFill;
                 sessionMemory_.observeBar(memoryObservation);
                 manualFillSinceMemoryBar_ = false;
 
@@ -487,6 +519,8 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("manualMeterEnabled", manualMeterEnabled_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("manualMeterNumerator", manualMeterNumerator_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("manualMeterDenominator", manualMeterDenominator_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("silenceMode", silenceMode_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("silenceStopBars", silenceStopBars_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadershipMode", leadershipMode_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("leadership", leadership_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("followRange", followRangeBpm_.load(std::memory_order_relaxed), nullptr);
@@ -517,6 +551,9 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
             setManualMeter(
                 static_cast<int>(state.getProperty("manualMeterNumerator", 4)),
                 static_cast<int>(state.getProperty("manualMeterDenominator", 4)));
+            const int silenceMode = juce::jlimit(0, 5, static_cast<int>(state.getProperty("silenceMode", 0)));
+            setSilenceMode(static_cast<robodrummer::SilenceMode>(silenceMode));
+            setSilenceStopBars(static_cast<int>(state.getProperty("silenceStopBars", 2)));
             const int mode = juce::jlimit(0, 2, static_cast<int>(state.getProperty("leadershipMode", 0)));
             setLeadershipMode(static_cast<robodrummer::LeadershipMode>(mode));
             setLeadership(static_cast<float>(state.getProperty("leadership", 0.5f)));
