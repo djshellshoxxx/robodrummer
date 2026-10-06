@@ -182,7 +182,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     const auto pending = pendingUiCommands_.exchange(0, std::memory_order_acquire);
     if ((pending & FillBit) != 0) {
         manualFillSinceMemoryBar_ = true;
-        jam_.apply(robodrummer::MidiCommand::Fill);
+        jam_.requestFill(0.75f, getFillLength());
     }
     if ((pending & ResetBit) != 0) {
         jam_.apply(robodrummer::MidiCommand::ResetListening);
@@ -413,7 +413,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         waitingForResume_.store(silenceDecision.waitingForResume, std::memory_order_relaxed);
 
         if (silenceDecision.requestFill && !jam_.state().fillRequested)
-            jam_.requestFill(0.65f);
+            jam_.requestFill(0.65f, getFillLength());
         if (silenceDecision.stopDrums)
             jam_.apply(robodrummer::MidiCommand::Stop);
         if (silenceDecision.resumeDrums) {
@@ -488,7 +488,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             phraseBoundary_.store(decision.phraseBoundary, std::memory_order_relaxed);
 
             if (decision.requestFill && !coordinatorSuppressBusyFillsAudio_ && !jam_.state().fillRequested)
-                jam_.requestFill(decision.fillStrength);
+                jam_.requestFill(decision.fillStrength, getFillLength());
 
             if (jamMemoryEnabled_.load(std::memory_order_relaxed) && !arrangementEnabled) {
                 robodrummer::SessionBarObservation memoryObservation;
@@ -581,8 +581,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                         jam_.apply(robodrummer::MidiCommand::Crash);
                     }
                 } else {
-                    if (*command == robodrummer::MidiCommand::Fill)
+                    if (*command == robodrummer::MidiCommand::Fill) {
                         manualFillSinceMemoryBar_ = true;
+                        jam_.setFillLength(getFillLength());
+                    }
                     if (*command == robodrummer::MidiCommand::NextSection)
                         coordinatorNextCuePending_ = true;
                     if (*command == robodrummer::MidiCommand::IntensityUp ||
@@ -640,6 +642,7 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("bpm", internalBpm_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("intensity", intensity_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("outputMode", outputMode_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("fillLength", fillLength_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("dynamicFollow", dynamicFollow_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("jamStyle", jamStyle_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("arrangementEnabled", arrangementEnabled_.load(std::memory_order_relaxed), nullptr);
@@ -672,6 +675,8 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
             setIntensity(static_cast<float>(state.getProperty("intensity", 0.5f)));
             const int outputMode = juce::jlimit(0, 2, static_cast<int>(state.getProperty("outputMode", 2)));
             setOutputMode(static_cast<robodrummer::OutputMode>(outputMode));
+            const int fillLength = juce::jlimit(0, 4, static_cast<int>(state.getProperty("fillLength", 0)));
+            setFillLength(static_cast<robodrummer::FillLength>(fillLength));
             setDynamicFollow(static_cast<float>(state.getProperty("dynamicFollow", 0.60f)));
             const int style = juce::jlimit(0, robodrummer::JamStyleCount - 1, static_cast<int>(state.getProperty("jamStyle", 0)));
             setJamStyle(static_cast<robodrummer::JamStyle>(style));
