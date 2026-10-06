@@ -63,6 +63,10 @@ The selectable initial style set is: Rock, Blues, Funk, Punk, Metal, Shuffle, Ha
 - Reset Listening
 - Output mode: Internal Drums / MIDI Only / Internal + MIDI
 
+## Fill lengths
+
+The live Fill Length control selects one-beat, two-beat, one-bar, two-bar, or long-transition fills. Manual UI fills, channel-16 MIDI Fill commands, phrase-driven automatic fills, and fills triggered by the configured silence behavior all use the selected length. Long transitions span two bars and finish with a crash accent.
+
 ## MIDI intervention map
 
 RoboDrummer treats MIDI channel 16 as its intervention/control channel. Generated drum MIDI is sent on General MIDI drum channel 10.
