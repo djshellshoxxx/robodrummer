@@ -26,6 +26,7 @@ struct TempoHypothesis {
 
 class TempoTracker {
 public:
+    static constexpr std::size_t HistorySize = 24;
     static constexpr double MinBpm = 40.0;
     static constexpr double MaxBpm = 240.0;
     static constexpr double BinSize = 0.5;
@@ -125,7 +126,7 @@ private:
         const std::size_t count = std::min<std::size_t>(onsetCount_, onsetTimes_.size());
         if (count < 2 || !(bpm > 0.0)) return 0;
 
-        std::array<double, onsetTimes_.size()> ordered{};
+        std::array<double, HistorySize> ordered{};
         const std::size_t start = onsetCount_ <= onsetTimes_.size() ? 0 : writeIndex_;
         for (std::size_t i = 0; i < count; ++i)
             ordered[i] = onsetTimes_[(start + i) % onsetTimes_.size()];
@@ -196,8 +197,8 @@ private:
 
     std::array<float, BinCount> histogram_{};
     std::array<double, BinCount> firstEvidenceSeconds_{};
-    std::array<double, 24> onsetTimes_{};
-    std::array<float, 24> onsetStrengths_{};
+    std::array<double, HistorySize> onsetTimes_{};
+    std::array<float, HistorySize> onsetStrengths_{};
     std::size_t onsetCount_{0};
     std::size_t writeIndex_{0};
     double lastOnsetSeconds_{std::numeric_limits<double>::quiet_NaN()};
