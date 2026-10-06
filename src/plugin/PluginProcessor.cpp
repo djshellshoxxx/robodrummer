@@ -7,6 +7,7 @@
 #include "PluginEditor.h"
 #include "analysis/DynamicsFollower.h"
 #include "analysis/PhraseGrooveModifier.h"
+#include "core/LiveControlPolicy.h"
 #include "plugin/MidiCommandMapper.h"
 #include <array>
 #include <cmath>
@@ -569,6 +570,11 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                         manualFillSinceMemoryBar_ = true;
                     if (*command == robodrummer::MidiCommand::NextSection)
                         coordinatorNextCuePending_ = true;
+                    if (*command == robodrummer::MidiCommand::IntensityUp ||
+                        *command == robodrummer::MidiCommand::IntensityDown) {
+                        setIntensity(robodrummer::applyIntensityCommand(
+                            intensity_.load(std::memory_order_relaxed), *command));
+                    }
                     jam_.apply(*command);
                 }
             }
@@ -580,24 +586,33 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
     std::array<robodrummer::DrumEvent, 128> events{};
     const auto eventCount = jam_.processBlock(buffer.getNumSamples(), events.data(), events.size());
+    const auto outputMode = getOutputMode();
+    const bool renderInternal = robodrummer::rendersInternalAudio(outputMode);
+    const bool writeMidi = robodrummer::writesGeneratedMidi(outputMode);
+    if (!renderInternal)
+        samplePlayer_.clear();
 
     int renderedUntil = 0;
     for (std::size_t i = 0; i < eventCount; ++i) {
         const auto offset = juce::jlimit(0, buffer.getNumSamples(), events[i].sampleOffset);
         const int span = offset - renderedUntil;
-        if (span > 0) {
+        if (renderInternal && span > 0) {
             float* outputs[2] { buffer.getWritePointer(0, renderedUntil), buffer.getWritePointer(1, renderedUntil) };
             samplePlayer_.render(outputs, 2, span);
         }
-        samplePlayer_.trigger(events[i]);
-        const int note = midiNoteFor(events[i].instrument);
-        if (note >= 0 && buffer.getNumSamples() > 0) {
-            midi.addEvent(juce::MidiMessage::noteOn(10, note, events[i].velocity), offset);
-            midi.addEvent(juce::MidiMessage::noteOff(10, note), juce::jmin(buffer.getNumSamples() - 1, offset + 1));
+        if (renderInternal)
+            samplePlayer_.trigger(events[i]);
+
+        if (writeMidi) {
+            const int note = midiNoteFor(events[i].instrument);
+            if (note >= 0 && buffer.getNumSamples() > 0) {
+                midi.addEvent(juce::MidiMessage::noteOn(10, note, events[i].velocity), offset);
+                midi.addEvent(juce::MidiMessage::noteOff(10, note), juce::jmin(buffer.getNumSamples() - 1, offset + 1));
+            }
         }
         renderedUntil = offset;
     }
-    if (renderedUntil < buffer.getNumSamples()) {
+    if (renderInternal && renderedUntil < buffer.getNumSamples()) {
         float* outputs[2] { buffer.getWritePointer(0, renderedUntil), buffer.getWritePointer(1, renderedUntil) };
         samplePlayer_.render(outputs, 2, buffer.getNumSamples() - renderedUntil);
     }
@@ -609,6 +624,7 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     juce::ValueTree state("RoboDrummerState");
     state.setProperty("bpm", internalBpm_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("intensity", intensity_.load(std::memory_order_relaxed), nullptr);
+    state.setProperty("outputMode", outputMode_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("dynamicFollow", dynamicFollow_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("jamStyle", jamStyle_.load(std::memory_order_relaxed), nullptr);
     state.setProperty("arrangementEnabled", arrangementEnabled_.load(std::memory_order_relaxed), nullptr);
@@ -639,6 +655,8 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
         if (state.isValid() && state.hasType("RoboDrummerState")) {
             setInternalBpm(static_cast<double>(state.getProperty("bpm", 120.0)));
             setIntensity(static_cast<float>(state.getProperty("intensity", 0.5f)));
+            const int outputMode = juce::jlimit(0, 2, static_cast<int>(state.getProperty("outputMode", 2)));
+            setOutputMode(static_cast<robodrummer::OutputMode>(outputMode));
             setDynamicFollow(static_cast<float>(state.getProperty("dynamicFollow", 0.60f)));
             const int style = juce::jlimit(0, 5, static_cast<int>(state.getProperty("jamStyle", 0)));
             setJamStyle(static_cast<robodrummer::JamStyle>(style));
