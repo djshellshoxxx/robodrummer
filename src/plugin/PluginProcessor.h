@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "analysis/JamBrain.h"
+#include "analysis/JamCoordinator.h"
 #include "analysis/PerformanceAnalyzer.h"
 #include "analysis/PhaseFollower.h"
 #include "analysis/ResyncPlanner.h"
@@ -106,6 +107,13 @@ public:
     int getSilentBars() const noexcept { return silentBarsVisible_.load(std::memory_order_relaxed); }
     bool isWaitingForGuitarResume() const noexcept { return waitingForResume_.load(std::memory_order_relaxed); }
 
+    robodrummer::JamCoordinationState getJamCoordinationState() const noexcept {
+        return static_cast<robodrummer::JamCoordinationState>(jamCoordinationState_.load(std::memory_order_relaxed));
+    }
+    float getTransitionProbability() const noexcept { return transitionProbability_.load(std::memory_order_relaxed); }
+    float getEndingProbability() const noexcept { return endingProbability_.load(std::memory_order_relaxed); }
+    bool isCoordinatorSuppressingBusyFills() const noexcept { return coordinatorSuppressBusyFillsVisible_.load(std::memory_order_relaxed); }
+
     robodrummer::HostTransportSnapshot getLastTransport() const noexcept;
     double getDetectedGuitarBpm() const noexcept { return detectedGuitarBpm_.load(std::memory_order_relaxed); }
     float getGuitarTempoConfidence() const noexcept { return guitarTempoConfidence_.load(std::memory_order_relaxed); }
@@ -132,6 +140,7 @@ private:
     robodrummer::PhaseFollower phaseFollower_{};
     robodrummer::ResyncPlanner resyncPlanner_{};
     robodrummer::JamBrain jamBrain_{};
+    robodrummer::JamCoordinator jamCoordinator_{};
     robodrummer::SessionMemory sessionMemory_{};
     robodrummer::SilenceController silenceController_{};
     robodrummer::SectionSequencer<16> arrangement_{};
@@ -147,6 +156,13 @@ private:
     float silenceIntensityMultiplierAudio_{1.0f};
     bool silenceHoldGrooveAudio_{false};
     long long lastSilenceBarIndex_{-1};
+    long long lastCoordinatorBarIndex_{-1};
+    bool coordinatorNextCuePending_{false};
+    bool coordinatorSoloCuePending_{false};
+    bool coordinatorEndCuePending_{false};
+    bool coordinatorProgrammedBoundaryPending_{false};
+    float coordinatorIntensityBiasAudio_{0.0f};
+    bool coordinatorSuppressBusyFillsAudio_{false};
 
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
@@ -163,6 +179,10 @@ private:
     std::atomic<int> silenceStopBars_{2};
     std::atomic<int> silentBarsVisible_{0};
     std::atomic<bool> waitingForResume_{false};
+    std::atomic<int> jamCoordinationState_{static_cast<int>(robodrummer::JamCoordinationState::EstablishingGroove)};
+    std::atomic<float> transitionProbability_{0.0f};
+    std::atomic<float> endingProbability_{0.0f};
+    std::atomic<bool> coordinatorSuppressBusyFillsVisible_{false};
     std::atomic<int> currentArrangementSection_{0};
     std::array<std::atomic<int>, ArrangementSlotCount> arrangementStyle_{};
     std::array<std::atomic<int>, ArrangementSlotCount> arrangementBars_{};
