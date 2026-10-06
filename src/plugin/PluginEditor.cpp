@@ -3,7 +3,7 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(840, 975);
+    setSize(860, 1015);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -195,7 +195,8 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     sectionLabel_.setText("Arrangement: free jam", juce::dontSendNotification);
     memoryLabel_.setText("Jam memory: learning", juce::dontSendNotification);
     silenceLabel_.setText("Silence behavior: active", juce::dontSendNotification);
-    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_, &memoryLabel_, &silenceLabel_, &sectionLabel_ })
+    coordinatorLabel_.setText("Jam coordinator: establishing groove", juce::dontSendNotification);
+    for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_, &memoryLabel_, &silenceLabel_, &coordinatorLabel_, &sectionLabel_ })
         addAndMakeVisible(*label);
 
     fillButton_.onClick = [this] { processor_.requestFill(); };
@@ -214,7 +215,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 932, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, 972, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -305,6 +306,7 @@ void RoboDrummerAudioProcessorEditor::resized() {
     phraseLabel_.setBounds(area.removeFromTop(25));
     memoryLabel_.setBounds(area.removeFromTop(25));
     silenceLabel_.setBounds(area.removeFromTop(25));
+    coordinatorLabel_.setBounds(area.removeFromTop(25));
     sectionLabel_.setBounds(area.removeFromTop(25));
 
     area.removeFromTop(10);
@@ -432,12 +434,31 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
             (processor_.isWaitingForGuitarResume() ? " | WAITING FOR GUITAR" : ""),
         juce::dontSendNotification);
 
+    juce::String coordinationName = "establishing groove";
+    switch (processor_.getJamCoordinationState()) {
+        case robodrummer::JamCoordinationState::StableJam: coordinationName = "STABLE JAM"; break;
+        case robodrummer::JamCoordinationState::Building: coordinationName = "BUILDING"; break;
+        case robodrummer::JamCoordinationState::Releasing: coordinationName = "RELEASING"; break;
+        case robodrummer::JamCoordinationState::AwaitingCue: coordinationName = "AWAITING CUE"; break;
+        case robodrummer::JamCoordinationState::TransitionLikely: coordinationName = "TRANSITION LIKELY"; break;
+        case robodrummer::JamCoordinationState::Break: coordinationName = "BREAK"; break;
+        case robodrummer::JamCoordinationState::SoloSupport: coordinationName = "SOLO SUPPORT"; break;
+        case robodrummer::JamCoordinationState::EndingLikely: coordinationName = "ENDING LIKELY"; break;
+        case robodrummer::JamCoordinationState::EstablishingGroove: break;
+    }
+    coordinatorLabel_.setText(
+        "Coordinator: " + coordinationName +
+            " | transition " + juce::String(processor_.getTransitionProbability() * 100.0f, 0) + "%" +
+            " | ending " + juce::String(processor_.getEndingProbability() * 100.0f, 0) + "%" +
+            (processor_.isCoordinatorSuppressingBusyFills() ? " | restrained fills" : ""),
+        juce::dontSendNotification);
+
     if (processor_.isArrangementEnabled()) {
         sectionLabel_.setText(
             "Arrangement: section " + juce::String(processor_.getCurrentArrangementSection() + 1) +
-                " | MIDI 37 next / 38 previous",
+                " | MIDI 37 next / 38 previous | 48 solo / 49 end",
             juce::dontSendNotification);
     } else {
-        sectionLabel_.setText("Arrangement: free jam", juce::dontSendNotification);
+        sectionLabel_.setText("Arrangement: free jam | MIDI 48 solo / 49 end", juce::dontSendNotification);
     }
 }
