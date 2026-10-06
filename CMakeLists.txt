@@ -43,7 +43,8 @@ foreach(test_name IN ITEMS
     jam_coordinator
     output_mode
     live_control_policy
-    fill_generator)
+    fill_generator
+    midi_learn_map)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   add_test(NAME ${test_name} COMMAND test_${test_name})
