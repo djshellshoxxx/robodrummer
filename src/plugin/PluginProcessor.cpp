@@ -116,6 +116,8 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     jamBrain_.reset();
     silenceController_.reset();
     silenceIntensityMultiplierAudio_ = 1.0f;
+    silenceHoldGrooveAudio_ = false;
+    lastSilenceBarIndex_ = -1;
     silentBarsVisible_.store(0, std::memory_order_relaxed);
     waitingForResume_.store(false, std::memory_order_relaxed);
     jamBrainCooldownSeconds_ = 0.0;
@@ -158,6 +160,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         jamBrain_.reset();
         silenceController_.reset();
         silenceIntensityMultiplierAudio_ = 1.0f;
+        silenceHoldGrooveAudio_ = false;
+        lastSilenceBarIndex_ = -1;
         silentBarsVisible_.store(0, std::memory_order_relaxed);
         waitingForResume_.store(false, std::memory_order_relaxed);
         sessionMemory_.reset();
@@ -343,6 +347,35 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     if (hasPpq && settings.mode == robodrummer::LeadershipMode::DrummerLeads)
         jam_.syncToPpq(hostPpq);
 
+    // Silence behavior follows the drummer's musical bar clock in every timing mode.
+    const auto silenceBarIndex = jam_.currentBarIndex();
+    if (lastSilenceBarIndex_ < 0)
+        lastSilenceBarIndex_ = silenceBarIndex;
+
+    if (silenceBarIndex != lastSilenceBarIndex_) {
+        robodrummer::SilenceSettings silenceSettings;
+        silenceSettings.mode = getSilenceMode();
+        silenceSettings.stopAfterBars = silenceStopBars_.load(std::memory_order_relaxed);
+        const auto silenceDecision = silenceController_.update(performance.activity, silenceSettings);
+
+        silenceIntensityMultiplierAudio_ = silenceDecision.intensityMultiplier;
+        silenceHoldGrooveAudio_ = silenceDecision.suppressAdaptiveChanges;
+        silentBarsVisible_.store(silenceDecision.silentBars, std::memory_order_relaxed);
+        waitingForResume_.store(silenceDecision.waitingForResume, std::memory_order_relaxed);
+
+        if (silenceDecision.requestFill && !jam_.state().fillRequested)
+            jam_.requestFill(0.65f);
+        if (silenceDecision.stopDrums)
+            jam_.apply(robodrummer::MidiCommand::Stop);
+        if (silenceDecision.resumeDrums) {
+            jam_.apply(robodrummer::MidiCommand::Resume);
+            if (silenceDecision.markResumeWithCrash)
+                jam_.apply(robodrummer::MidiCommand::Crash);
+        }
+
+        lastSilenceBarIndex_ = silenceBarIndex;
+    }
+
     if (settings.mode != robodrummer::LeadershipMode::DrummerLeads) {
         const auto phase = phaseFollower_.update(jam_.currentBeatPhase(), rhythm, authority.outputBpm,
                                                  authority.effectiveGuitarAuthority, settings.response, sampleRate_);
@@ -394,26 +427,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             observation.beatConfidence = rhythm.beatConfidence;
             observation.downbeatConfidence = rhythm.downbeatConfidence;
 
-            robodrummer::SilenceSettings silenceSettings;
-            silenceSettings.mode = getSilenceMode();
-            silenceSettings.stopAfterBars = silenceStopBars_.load(std::memory_order_relaxed);
-            const auto silenceDecision = silenceController_.update(performance.activity, silenceSettings);
-            silenceIntensityMultiplierAudio_ = silenceDecision.intensityMultiplier;
-            silentBarsVisible_.store(silenceDecision.silentBars, std::memory_order_relaxed);
-            waitingForResume_.store(silenceDecision.waitingForResume, std::memory_order_relaxed);
-
-            if (silenceDecision.requestFill && !jam_.state().fillRequested)
-                jam_.requestFill(0.65f);
-            if (silenceDecision.stopDrums)
-                jam_.apply(robodrummer::MidiCommand::Stop);
-            if (silenceDecision.resumeDrums) {
-                jam_.apply(robodrummer::MidiCommand::Resume);
-                if (silenceDecision.markResumeWithCrash)
-                    jam_.apply(robodrummer::MidiCommand::Crash);
-            }
-
             robodrummer::JamBrainDecision decision;
-            if (silenceDecision.suppressAdaptiveChanges) {
+            if (silenceHoldGrooveAudio_) {
                 decision.phraseState = getPhraseState();
             } else {
                 decision = jamBrain_.update(observation, memoryPolicy.brainSettings);
@@ -433,7 +448,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                 memoryObservation.activity = performance.activity;
                 memoryObservation.phraseBoundary = decision.phraseBoundary;
                 memoryObservation.manualFillRequested = manualFillSinceMemoryBar_;
-                memoryObservation.fillOccurred = manualFillSinceMemoryBar_ || decision.requestFill || silenceDecision.requestFill;
+                memoryObservation.fillOccurred = manualFillSinceMemoryBar_ || decision.requestFill;
                 sessionMemory_.observeBar(memoryObservation);
                 manualFillSinceMemoryBar_ = false;
 
