@@ -47,6 +47,20 @@ int main() {
     assert(sawTom);
     assert(!engine.state().fillRequested);
 
+    engine.resetPhase();
+    engine.requestFill(0.8f, FillLength::OneBar);
+    const auto barFillCount = engine.processBlock(96000, events.data(), events.size());
+    bool sawEarlyTom = false;
+    for (std::size_t i = 0; i < barFillCount; ++i) {
+        const bool isTom = events[i].instrument == DrumInstrument::HighTom ||
+                           events[i].instrument == DrumInstrument::MidTom ||
+                           events[i].instrument == DrumInstrument::FloorTom;
+        if (isTom && events[i].sampleOffset < 72000)
+            sawEarlyTom = true;
+    }
+    assert(sawEarlyTom);
+    assert(!engine.state().fillRequested);
+
     engine.apply(MidiCommand::ResetListening);
     assert(!engine.state().resetListeningRequested);
 
