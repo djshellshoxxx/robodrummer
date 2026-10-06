@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cmath>
 #include <utility>
 #include <vector>
 
@@ -74,6 +75,16 @@ public:
         set.pan = std::clamp(pan, -1.0f, 1.0f);
     }
 
+    void setInstrumentTuning(DrumInstrument instrument, float semitones) noexcept {
+        instruments_[index(instrument)].tuningSemitones = std::clamp(semitones, -24.0f, 24.0f);
+    }
+
+    void setInstrumentEnvelope(DrumInstrument instrument, int attackSamples, int releaseSamples) noexcept {
+        auto& set = instruments_[index(instrument)];
+        set.attackSamples = std::max(0, attackSamples);
+        set.releaseSamples = std::max(0, releaseSamples);
+    }
+
     void clear() noexcept {
         for (auto& voice : voices_)
             voice.active = false;
@@ -113,9 +124,12 @@ public:
                 const float rightPan = instrument.pan < 0.0f ? 1.0f + instrument.pan : 1.0f;
                 voice.active = true;
                 voice.sample = &sample;
-                voice.position = 0;
+                voice.position = 0.0;
+                voice.playbackRate = std::pow(2.0, static_cast<double>(instrument.tuningSemitones) / 12.0);
                 voice.leftGain = velocity * instrument.gain * leftPan;
                 voice.rightGain = velocity * instrument.gain * rightPan;
+                voice.attackSamples = instrument.attackSamples;
+                voice.releaseSamples = instrument.releaseSamples;
                 voice.chokeGroup = instrument.chokeGroup;
                 return;
             }
@@ -131,17 +145,22 @@ public:
                 continue;
 
             const auto& sample = *voice.sample;
-            for (int n = 0; n < numSamples && voice.position < sample.left.size(); ++n, ++voice.position) {
-                const float left = sample.left[voice.position] * voice.leftGain;
-                const float rightSource =
-                    voice.position < sample.right.size() ? sample.right[voice.position] : sample.left[voice.position];
+            const double sampleLength = static_cast<double>(sample.left.size());
+            for (int n = 0; n < numSamples && voice.position < sampleLength; ++n) {
+                const float envelope = envelopeGain(voice, sampleLength);
+                const float left = interpolate(sample.left, voice.position) * voice.leftGain * envelope;
+                const float rightSource = sample.right.empty()
+                    ? interpolate(sample.left, voice.position)
+                    : interpolate(sample.right, voice.position);
 
                 outputs[0][n] += left;
                 if (channels > 1 && outputs[1])
-                    outputs[1][n] += rightSource * voice.rightGain;
+                    outputs[1][n] += rightSource * voice.rightGain * envelope;
+
+                voice.position += voice.playbackRate;
             }
 
-            if (voice.position >= sample.left.size())
+            if (voice.position >= sampleLength)
                 voice.active = false;
         }
     }
@@ -161,19 +180,48 @@ private:
         int chokeGroup{0};
         float gain{1.0f};
         float pan{0.0f};
+        float tuningSemitones{0.0f};
+        int attackSamples{0};
+        int releaseSamples{0};
     };
 
     struct Voice {
         bool active{false};
         const Sample* sample{nullptr};
-        std::size_t position{0};
+        double position{0.0};
+        double playbackRate{1.0};
         float leftGain{1.0f};
         float rightGain{1.0f};
+        int attackSamples{0};
+        int releaseSamples{0};
         int chokeGroup{0};
     };
 
     [[nodiscard]] static constexpr std::size_t index(DrumInstrument instrument) noexcept {
         return static_cast<std::size_t>(instrument);
+    }
+
+    [[nodiscard]] static float interpolate(const std::vector<float>& data, double position) noexcept {
+        if (data.empty())
+            return 0.0f;
+        const auto i0 = static_cast<std::size_t>(position);
+        if (i0 >= data.size())
+            return 0.0f;
+        const auto i1 = std::min(i0 + 1, data.size() - 1);
+        const float fraction = static_cast<float>(position - static_cast<double>(i0));
+        return data[i0] + (data[i1] - data[i0]) * fraction;
+    }
+
+    [[nodiscard]] static float envelopeGain(const Voice& voice, double sampleLength) noexcept {
+        float gain = 1.0f;
+        if (voice.attackSamples > 0) {
+            gain = std::min(gain, static_cast<float>((voice.position + 1.0) / static_cast<double>(voice.attackSamples)));
+        }
+        if (voice.releaseSamples > 0) {
+            const double remaining = std::max(0.0, sampleLength - voice.position);
+            gain = std::min(gain, static_cast<float>(remaining / static_cast<double>(voice.releaseSamples)));
+        }
+        return std::clamp(gain, 0.0f, 1.0f);
     }
 
     [[nodiscard]] static std::size_t findLayer(const InstrumentSet& instrument, float velocity) noexcept {
