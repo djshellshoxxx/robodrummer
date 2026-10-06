@@ -1,5 +1,6 @@
 #pragma once
 #include "DrumEvent.h"
+#include "MeterProfile.h"
 #include "Style.h"
 #include <algorithm>
 #include <array>
@@ -45,29 +46,37 @@ public:
         if (context.sectionStart && chance(style.crashOnSectionStart))
             add(DrumInstrument::Crash, 0.0, 0.9f);
 
-        const int hatHits = std::clamp(style.hatHitsPerBeat, 1, 4);
+        const auto meter = MeterProfile::forMeter(context.numerator, context.denominator);
+        const int hatHits = context.denominator >= 8
+            ? 1
+            : std::clamp(style.hatHitsPerBeat, 1, 4);
+
         for (int beat = 0; beat < context.numerator; ++beat) {
-            if (beat == 0 && chance(style.kickBeat1))
-                add(DrumInstrument::Kick, beat, 0.75f + 0.2f * context.intensity);
+            const auto beatIndex = static_cast<std::size_t>(beat);
 
-            if (beat == 2 && context.numerator >= 4 && chance(style.kickBeat3))
-                add(DrumInstrument::Kick, beat, 0.70f + 0.2f * context.intensity);
+            if (meter.kickAnchor[beatIndex]) {
+                const float probability = beat == 0 ? style.kickBeat1 : style.kickBeat3;
+                if (chance(probability))
+                    add(DrumInstrument::Kick, beat, (beat == 0 ? 0.75f : 0.70f) + 0.2f * context.intensity);
+            }
 
-            if ((beat == 1 || beat == 3) && chance(style.snareBackbeat))
+            if (meter.backbeat[beatIndex] && chance(style.snareBackbeat))
                 add(DrumInstrument::Snare, beat, 0.78f + 0.18f * context.intensity);
 
             const float extraKick = style.extraKickProbability * (0.25f + 1.5f * context.intensity);
             if (chance(extraKick))
                 add(DrumInstrument::Kick, beat + 0.5, 0.55f + 0.3f * context.intensity);
 
-            if ((beat == 1 || beat == 3) && chance(style.ghostSnareProbability * (0.4f + context.intensity)))
+            if (meter.backbeat[beatIndex] && chance(style.ghostSnareProbability * (0.4f + context.intensity)))
                 add(DrumInstrument::Snare, beat + 0.75, 0.28f + 0.18f * context.intensity);
 
             for (int hit = 0; hit < hatHits; ++hit) {
                 double position = static_cast<double>(hit) / static_cast<double>(hatHits);
                 if (hatHits == 2 && hit == 1)
                     position += std::clamp(static_cast<double>(style.swing), 0.0, 0.45) * 0.5;
-                const float accent = hit == 0 ? 0.10f : -0.04f;
+
+                const bool groupAccent = meter.kickAnchor[beatIndex];
+                const float accent = hit == 0 ? (groupAccent ? 0.14f : 0.08f) : -0.04f;
                 addHat(static_cast<double>(beat) + position,
                        0.52f + accent + 0.25f * context.intensity);
             }

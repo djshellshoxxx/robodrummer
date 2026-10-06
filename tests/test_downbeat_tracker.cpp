@@ -39,4 +39,46 @@ int main() {
     assert(state.meterNumerator == 3);
     assert(state.downbeatConfidence > 0.50f);
     assert(state.nextBeatInBar == 1);
+    tracker.reset(6);
+    for (int bar = 0; bar < 8; ++bar) {
+        tracker.observeBeat(1.00f);
+        tracker.observeBeat(0.30f);
+        tracker.observeBeat(0.28f);
+        tracker.observeBeat(0.62f);
+        tracker.observeBeat(0.26f);
+        tracker.observeBeat(0.24f);
+    }
+    state = tracker.state();
+    assert(state.meterNumerator == 6);
+    assert(state.downbeatConfidence > 0.45f);
+    assert(state.nextBeatInBar == 1);
+
+    tracker.reset(5);
+    for (int bar = 0; bar < 8; ++bar) {
+        tracker.observeBeat(0.98f);
+        tracker.observeBeat(0.30f);
+        tracker.observeBeat(0.34f);
+        tracker.observeBeat(0.58f);
+        tracker.observeBeat(0.28f);
+    }
+    state = tracker.state();
+    assert(state.meterNumerator == 5);
+    assert(state.downbeatConfidence > 0.45f);
+    assert(state.nextBeatInBar == 1);
+
+    tracker.reset(7);
+    for (int bar = 0; bar < 8; ++bar) {
+        tracker.observeBeat(1.00f);
+        tracker.observeBeat(0.28f);
+        tracker.observeBeat(0.48f);
+        tracker.observeBeat(0.26f);
+        tracker.observeBeat(0.56f);
+        tracker.observeBeat(0.25f);
+        tracker.observeBeat(0.24f);
+    }
+    state = tracker.state();
+    assert(state.meterNumerator == 7);
+    assert(state.downbeatConfidence > 0.40f);
+    assert(state.nextBeatInBar == 1);
+
 }
