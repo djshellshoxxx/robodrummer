@@ -25,6 +25,7 @@ private:
     juce::Label dynamicsLabel_;
     juce::Label phraseLabel_;
     juce::Label sectionLabel_;
+    juce::Label memoryLabel_;
     juce::Slider bpm_;
     juce::Slider intensity_;
     juce::Slider leadership_;
@@ -33,6 +34,7 @@ private:
     juce::ComboBox leadershipMode_;
     juce::ComboBox jamStyle_;
     juce::ToggleButton arrangementToggle_{"Programmed arrangement"};
+    juce::ToggleButton jamMemoryToggle_{"Learn this jam"};
     juce::ComboBox arrangementSlot_;
     juce::ComboBox arrangementStyle_;
     juce::Slider arrangementBars_;
