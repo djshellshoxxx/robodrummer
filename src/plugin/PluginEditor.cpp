@@ -15,7 +15,7 @@ void populateStyleBox(juce::ComboBox& box) {
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(860, 1056);
+    setSize(860, 1097);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::Font(28.0f, juce::Font::bold));
@@ -26,13 +26,14 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     intensityCaption_.setText("Intensity", juce::dontSendNotification);
     modeCaption_.setText("Timing mode", juce::dontSendNotification);
     outputModeCaption_.setText("Output mode", juce::dontSendNotification);
+    fillLengthCaption_.setText("Fill length", juce::dontSendNotification);
     meterCaption_.setText("Meter", juce::dontSendNotification);
     leadershipCaption_.setText("Leadership", juce::dontSendNotification);
     followRangeCaption_.setText("Follow range", juce::dontSendNotification);
     dynamicFollowCaption_.setText("Dynamic follow", juce::dontSendNotification);
     styleCaption_.setText("Jam style", juce::dontSendNotification);
     silenceCaption_.setText("Guitar silence", juce::dontSendNotification);
-    for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &outputModeCaption_, &meterCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_, &styleCaption_, &silenceCaption_ })
+    for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &outputModeCaption_, &fillLengthCaption_, &meterCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_, &styleCaption_, &silenceCaption_ })
         addAndMakeVisible(*label);
 
     bpm_.setRange(40.0, 240.0, 0.1);
@@ -66,6 +67,17 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
         processor_.setOutputMode(static_cast<robodrummer::OutputMode>(juce::jlimit(0, 2, outputMode_.getSelectedId() - 1)));
     };
     addAndMakeVisible(outputMode_);
+
+    fillLength_.addItem("1 beat", 1);
+    fillLength_.addItem("2 beats", 2);
+    fillLength_.addItem("1 bar", 3);
+    fillLength_.addItem("2 bars", 4);
+    fillLength_.addItem("Long transition", 5);
+    fillLength_.setSelectedId(static_cast<int>(processor_.getFillLength()) + 1, juce::dontSendNotification);
+    fillLength_.onChange = [this] {
+        processor_.setFillLength(static_cast<robodrummer::FillLength>(juce::jlimit(0, 4, fillLength_.getSelectedId() - 1)));
+    };
+    addAndMakeVisible(fillLength_);
 
     manualMeterToggle_.setToggleState(processor_.isManualMeterEnabled(), juce::dontSendNotification);
     manualMeterToggle_.onClick = [this] { processor_.setManualMeterEnabled(manualMeterToggle_.getToggleState()); };
@@ -228,7 +240,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 1013, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, 1054, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -254,6 +266,11 @@ void RoboDrummerAudioProcessorEditor::resized() {
     row = area.removeFromTop(36);
     outputModeCaption_.setBounds(row.removeFromLeft(112));
     outputMode_.setBounds(row.removeFromLeft(220));
+    area.removeFromTop(5);
+
+    row = area.removeFromTop(36);
+    fillLengthCaption_.setBounds(row.removeFromLeft(112));
+    fillLength_.setBounds(row.removeFromLeft(220));
     area.removeFromTop(5);
 
     row = area.removeFromTop(36);
@@ -372,6 +389,7 @@ void RoboDrummerAudioProcessorEditor::timerCallback() {
     }
     jamStyle_.setSelectedId(static_cast<int>(processor_.getJamStyle()) + 1, juce::dontSendNotification);
     outputMode_.setSelectedId(static_cast<int>(processor_.getOutputMode()) + 1, juce::dontSendNotification);
+    fillLength_.setSelectedId(static_cast<int>(processor_.getFillLength()) + 1, juce::dontSendNotification);
     intensity_.setValue(processor_.getIntensity(), juce::dontSendNotification);
 
     const auto t = processor_.getLastTransport();
