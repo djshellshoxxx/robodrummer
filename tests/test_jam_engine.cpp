@@ -50,6 +50,19 @@ int main() {
     engine.apply(MidiCommand::ResetListening);
     assert(!engine.state().resetListeningRequested);
 
+    engine.resetPhase();
+    engine.apply(MidiCommand::Break);
+    const auto breakCount = engine.processBlock(96000, events.data(), events.size());
+    assert(breakCount == 0);
+    assert(!engine.state().breakRequested);
+    const auto postBreakCount = engine.processBlock(512, events.data(), events.size());
+    assert(postBreakCount > 0);
+    bool sawPostBreakKick = false;
+    for (std::size_t i = 0; i < postBreakCount; ++i)
+        if (events[i].instrument == DrumInstrument::Kick && events[i].sampleOffset == 0)
+            sawPostBreakKick = true;
+    assert(sawPostBreakKick);
+
     engine.apply(MidiCommand::Stop);
     assert(engine.processBlock(512, events.data(), events.size()) == 0);
 }

@@ -16,7 +16,7 @@ namespace robodrummer {
 class JamEngine {
 public:
     void prepare(double sampleRate) noexcept { sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0; resetPhase(); }
-    void resetPhase() noexcept { sampleCursor_ = 0; fillTargetBar_ = -1; }
+    void resetPhase() noexcept { sampleCursor_ = 0; fillTargetBar_ = -1; breakUntilBar_ = -1; }
     void setTempo(double bpm) noexcept { bpm_ = std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0); }
     void setMeter(int n, int d) noexcept { numerator_ = std::max(1, n); denominator_ = (d == 1 || d == 2 || d == 4 || d == 8 || d == 16) ? d : 4; }
     void setIntensity(float value) noexcept { state_.intensity = std::clamp(value, 0.0f, 1.0f); }
@@ -74,8 +74,18 @@ public:
         const long long blockEnd = blockStart + numSamples;
         const long long firstBar = blockStart / barSamples;
         const long long lastBar = (blockEnd - 1) / barSamples;
+
+        if (state_.breakRequested) {
+            breakUntilBar_ = std::max(breakUntilBar_, firstBar + 1);
+            state_.breakRequested = false;
+        }
+        if (breakUntilBar_ >= 0 && firstBar >= breakUntilBar_)
+            breakUntilBar_ = -1;
+
         std::size_t count = 0;
         for (long long bar = firstBar; bar <= lastBar && count < capacity; ++bar) {
+            if (breakUntilBar_ >= 0 && bar < breakUntilBar_)
+                continue;
             std::array<DrumEvent, 64> events{};
             GrooveContext ctx;
             ctx.sampleRate = sampleRate_;
@@ -99,7 +109,7 @@ public:
 
         if (state_.fillRequested) {
             if (fillTargetBar_ < 0) {
-                fillTargetBar_ = firstBar;
+                fillTargetBar_ = breakUntilBar_ >= 0 ? std::max(firstBar, breakUntilBar_) : firstBar;
                 const long long fillStart = fillTargetBar_ * barSamples + static_cast<long long>(std::llround(spb * (numerator_ - 1)));
                 if (fillStart < blockStart) ++fillTargetBar_;
             }
@@ -140,6 +150,7 @@ private:
     int denominator_{4};
     long long sampleCursor_{0};
     long long fillTargetBar_{-1};
+    long long breakUntilBar_{-1};
     Style style_{Style::basicRock()};
     GrooveGenerator generator_{};
     JamState state_{};
