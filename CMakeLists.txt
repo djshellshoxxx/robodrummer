@@ -37,7 +37,8 @@ foreach(test_name IN ITEMS
     phrase_groove_modifier
     session_memory
     session_memory_policy
-    meter_profiles)
+    meter_profiles
+    meter_selection)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   add_test(NAME ${test_name} COMMAND test_${test_name})
