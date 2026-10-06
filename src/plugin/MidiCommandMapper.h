@@ -17,6 +17,8 @@ inline std::optional<MidiCommand> mapNoteOn(int note, float velocity) noexcept {
         case 45: return MidiCommand::Stop;
         case 46: return MidiCommand::Resume;
         case 47: return MidiCommand::ResetListening;
+        case 48: return MidiCommand::SoloSupport;
+        case 49: return MidiCommand::EndJam;
         default: return std::nullopt;
     }
 }
