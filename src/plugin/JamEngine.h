@@ -5,6 +5,7 @@
 
 #pragma once
 #include "core/GrooveGenerator.h"
+#include "core/FillGenerator.h"
 #include "core/JamState.h"
 #include "core/Style.h"
 #include <algorithm>
@@ -50,7 +51,10 @@ public:
         if (phase < 0.0) phase += 1.0;
         return phase;
     }
-    void requestFill(float strength) noexcept {
+    void setFillLength(FillLength length) noexcept { fillLength_ = length; }
+    [[nodiscard]] FillLength fillLength() const noexcept { return fillLength_; }
+    void requestFill(float strength, FillLength length = FillLength::OneBeat) noexcept {
+        fillLength_ = length;
         state_.fillRequested = true;
         state_.fillStrength = std::clamp(strength, 0.0f, 1.0f);
         fillTargetBar_ = -1;
@@ -108,31 +112,46 @@ public:
         }
 
         if (state_.fillRequested) {
+            const double durationBeats = fillLengthBeats(fillLength_, numerator_);
+            auto fillStartForBar = [&](long long targetBar) {
+                const long long targetStart = targetBar * barSamples;
+                if (durationBeats <= static_cast<double>(numerator_)) {
+                    return targetStart + static_cast<long long>(
+                        std::llround(spb * (static_cast<double>(numerator_) - durationBeats)));
+                }
+                return targetStart;
+            };
+
             if (fillTargetBar_ < 0) {
                 fillTargetBar_ = breakUntilBar_ >= 0 ? std::max(firstBar, breakUntilBar_) : firstBar;
-                const long long fillStart = fillTargetBar_ * barSamples + static_cast<long long>(std::llround(spb * (numerator_ - 1)));
-                if (fillStart < blockStart) ++fillTargetBar_;
+                if (fillStartForBar(fillTargetBar_) < blockStart)
+                    ++fillTargetBar_;
             }
-            const long long targetStart = fillTargetBar_ * barSamples;
-            const long long fillStart = targetStart + static_cast<long long>(std::llround(spb * (numerator_ - 1)));
-            const std::array<DrumInstrument, 6> voices {
-                DrumInstrument::Snare,
-                DrumInstrument::HighTom,
-                DrumInstrument::MidTom,
-                DrumInstrument::FloorTom,
-                DrumInstrument::MidTom,
-                DrumInstrument::Snare
-            };
-            const int fillSteps = std::clamp(2 + static_cast<int>(std::lround(state_.fillStrength * 4.0f)), 2, 6);
-            const double stepBeats = 1.0 / static_cast<double>(fillSteps);
-            for (int step = 0; step < fillSteps && count < capacity; ++step) {
-                const long long absolute = fillStart + static_cast<long long>(std::llround(spb * stepBeats * step));
+
+            const long long fillStart = fillStartForBar(fillTargetBar_);
+            const long long fillEnd = fillStart + static_cast<long long>(std::llround(spb * durationBeats));
+
+            FillContext fillContext;
+            fillContext.sampleRate = sampleRate_;
+            fillContext.bpm = effectiveBpm;
+            fillContext.numerator = numerator_;
+            fillContext.denominator = denominator_;
+            fillContext.strength = state_.fillStrength;
+            fillContext.length = fillLength_;
+
+            std::array<DrumEvent, 64> fillEvents{};
+            const auto generated = fillGenerator_.generate(fillContext, fillEvents);
+            for (std::size_t i = 0; i < generated && count < capacity; ++i) {
+                const long long absolute = fillStart + fillEvents[i].sampleOffset;
                 if (absolute >= blockStart && absolute < blockEnd) {
-                    const float velocity = std::clamp(0.58f + state_.fillStrength * 0.30f + 0.02f * step, 0.0f, 1.0f);
-                    out[count++] = { voices[static_cast<std::size_t>(step)], static_cast<int>(absolute - blockStart), velocity, static_cast<std::uint32_t>(count) };
+                    auto event = fillEvents[i];
+                    event.sampleOffset = static_cast<int>(absolute - blockStart);
+                    event.sequence = static_cast<std::uint32_t>(count);
+                    out[count++] = event;
                 }
             }
-            if (blockEnd >= targetStart + barSamples) {
+
+            if (blockEnd >= fillEnd) {
                 state_.fillRequested = false;
                 fillTargetBar_ = -1;
             }
@@ -152,7 +171,9 @@ private:
     long long fillTargetBar_{-1};
     long long breakUntilBar_{-1};
     Style style_{Style::basicRock()};
+    FillLength fillLength_{FillLength::OneBeat};
     GrooveGenerator generator_{};
+    FillGenerator fillGenerator_{};
     JamState state_{};
 };
 }
