@@ -39,6 +39,7 @@ private:
     juce::Slider silenceStopBars_;
     juce::ComboBox leadershipMode_;
     juce::ComboBox outputMode_;
+    juce::ComboBox fillLength_;
     juce::ComboBox meterNumerator_;
     juce::ComboBox meterDenominator_;
     juce::ComboBox jamStyle_;
@@ -60,6 +61,7 @@ private:
     juce::Label dynamicFollowCaption_;
     juce::Label modeCaption_;
     juce::Label outputModeCaption_;
+    juce::Label fillLengthCaption_;
     juce::Label meterCaption_;
     juce::Label styleCaption_;
     juce::Label silenceCaption_;
