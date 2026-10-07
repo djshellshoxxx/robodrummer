@@ -65,4 +65,47 @@ int main() {
 
     engine.apply(MidiCommand::Stop);
     assert(engine.processBlock(512, events.data(), events.size()) == 0);
+
+    // Host-synced double/half time must play the same events as the free-running engine (no flams/drops).
+    for (const auto feel : { MidiCommand::DoubleTime, MidiCommand::HalfTime }) {
+        JamEngine synced; synced.prepare(48000.0); synced.setTempo(120.0); synced.setMeter(4, 4); synced.apply(feel);
+        JamEngine free; free.prepare(48000.0); free.setTempo(120.0); free.setMeter(4, 4); free.apply(feel);
+        std::size_t syncedTotal = 0, freeTotal = 0;
+        double ppq = 0.0;
+        for (int block = 0; block < 750; ++block) {
+            synced.syncToPpq(ppq);
+            syncedTotal += synced.processBlock(512, events.data(), events.size());
+            freeTotal += free.processBlock(512, events.data(), events.size());
+            ppq += 512.0 / 24000.0;
+        }
+        assert(syncedTotal == freeTotal);
+    }
+
+    // A host relocation after a break request must not leave the groove silenced.
+    {
+        JamEngine relocated; relocated.prepare(48000.0); relocated.setTempo(120.0); relocated.setMeter(4, 4);
+        double ppq = 0.0;
+        for (int block = 0; block < 300; ++block) {
+            relocated.syncToPpq(ppq);
+            if (block == 290) relocated.apply(MidiCommand::Break);
+            (void) relocated.processBlock(512, events.data(), events.size());
+            ppq += 512.0 / 24000.0;
+        }
+        relocated.syncToPpq(0.0);
+        std::size_t afterRelocate = 0;
+        ppq = 0.0;
+        for (int block = 0; block < 100; ++block) {
+            relocated.syncToPpq(ppq);
+            afterRelocate += relocated.processBlock(512, events.data(), events.size());
+            ppq += 512.0 / 24000.0;
+        }
+        assert(afterRelocate > 0);
+    }
+
+    // Beat phase follows the unscaled pulse in half time, so phase following stays aligned.
+    {
+        JamEngine half; half.prepare(48000.0); half.setTempo(120.0); half.apply(MidiCommand::HalfTime);
+        (void) half.processBlock(24000, events.data(), events.size());
+        assert(half.currentBeatPhase() < 1.0e-6 || half.currentBeatPhase() > 1.0 - 1.0e-6);
+    }
 }

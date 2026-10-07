@@ -18,15 +18,20 @@ public:
     void prepare(double sampleRate) noexcept { sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0; resetPhase(); }
     void resetPhase() noexcept { sampleCursor_ = 0; fillTargetBar_ = -1; breakUntilBar_ = -1; }
     void setTempo(double bpm) noexcept { bpm_ = std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0); }
-    void setMeter(int n, int d) noexcept { numerator_ = std::max(1, n); denominator_ = (d == 1 || d == 2 || d == 4 || d == 8 || d == 16) ? d : 4; }
+    void setMeter(int n, int d) noexcept { numerator_ = std::clamp(n, 1, MeterProfile::MaxBeats); denominator_ = (d == 1 || d == 2 || d == 4 || d == 8 || d == 16) ? d : 4; }
     void setIntensity(float value) noexcept { state_.intensity = std::clamp(value, 0.0f, 1.0f); }
     void setStyle(const Style& style) noexcept { style_ = style; }
     void syncToPpq(double ppqPosition) noexcept {
         if (!std::isfinite(ppqPosition)) return;
-        const double effectiveBpm = bpm_ * state_.timeScale;
-        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return;
-        const double samplesPerQuarter = sampleRate_ * 60.0 / effectiveBpm;
-        sampleCursor_ = static_cast<long long>(std::llround(ppqPosition * samplesPerQuarter));
+        if (!(bpm_ > 0.0) || !(sampleRate_ > 0.0)) return;
+        // The cursor is a real-time sample position; half/double time only changes bar and beat sizes.
+        const double samplesPerQuarter = sampleRate_ * 60.0 / bpm_;
+        const auto target = static_cast<long long>(std::llround(std::max(0.0, ppqPosition) * samplesPerQuarter));
+        // A backwards move or a jump of more than a quarter note is a host seek/loop: pending bar targets
+        // computed on the old timeline would otherwise silence or stall the groove.
+        if (target < sampleCursor_ - 1 || target - sampleCursor_ > static_cast<long long>(samplesPerQuarter))
+            clearBarTargets();
+        sampleCursor_ = target;
     }
     void nudgePhaseSamples(long long deltaSamples) noexcept {
         sampleCursor_ = std::max<long long>(0, sampleCursor_ + deltaSamples);
@@ -40,10 +45,10 @@ public:
         return sampleCursor_ / barSamples;
     }
 
+    // Phase of the unscaled pulse, so half/double-time feels still line up with the guitarist's beat.
     [[nodiscard]] double currentBeatPhase() const noexcept {
-        const double effectiveBpm = bpm_ * state_.timeScale;
-        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return 0.0;
-        const double spq = sampleRate_ * 60.0 / effectiveBpm;
+        if (!(bpm_ > 0.0) || !(sampleRate_ > 0.0)) return 0.0;
+        const double spq = sampleRate_ * 60.0 / bpm_;
         const double spb = spq * (4.0 / static_cast<double>(denominator_));
         if (!(spb > 0.0)) return 0.0;
         double phase = std::fmod(static_cast<double>(sampleCursor_) / spb, 1.0);
@@ -56,7 +61,10 @@ public:
         fillTargetBar_ = -1;
     }
     void apply(MidiCommand command) noexcept {
+        const double previousScale = state_.timeScale;
         applyMidiCommand(state_, command);
+        // Bar indices change meaning when the feel changes; re-target any pending break/fill.
+        if (std::abs(state_.timeScale - previousScale) > 1.0e-9) clearBarTargets();
         if (command == MidiCommand::Fill) fillTargetBar_ = -1;
         if (command == MidiCommand::ResetListening) {
             resetPhase();
@@ -144,6 +152,8 @@ public:
         return count;
     }
 private:
+    void clearBarTargets() noexcept { fillTargetBar_ = -1; breakUntilBar_ = -1; }
+
     double sampleRate_{48000.0};
     double bpm_{120.0};
     int numerator_{4};

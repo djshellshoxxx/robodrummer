@@ -38,4 +38,10 @@ int main() {
     analyzer.processBlock(silence.data(), static_cast<int>(silence.size()));
     const auto afterSilence = analyzer.state();
     assert(afterSilence.beatConfidence < state.beatConfidence);
+
+    // Long silence releases the tracker lock.
+    std::vector<float> longSilence(48000, 0.0f);
+    for (int i = 0; i < 10; ++i)
+        analyzer.processBlock(longSilence.data(), static_cast<int>(longSilence.size()));
+    assert(!analyzer.state().locked);
 }

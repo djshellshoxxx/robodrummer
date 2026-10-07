@@ -17,6 +17,8 @@ public:
         sampleRate_ = (sampleRate > 0.0 && std::isfinite(sampleRate)) ? sampleRate : 48000.0;
         frameSize_ = std::max(32, static_cast<int>(std::llround(sampleRate_ * 0.005333333333333333)));
         refractorySamples_ = std::max(frameSize_, static_cast<int>(std::llround(sampleRate_ * 0.045)));
+        // Accent reference decays with a ~10 s time constant so strength tracks the current playing level.
+        noveltyPeakDecay_ = static_cast<float>(std::exp(-static_cast<double>(frameSize_) / (sampleRate_ * 10.0)));
         reset();
     }
 
@@ -28,6 +30,7 @@ public:
         previousLogEnergy_ = 0.0f;
         noveltyMean_ = 0.0f;
         noveltyDeviation_ = 0.01f;
+        noveltyPeak_ = 0.0f;
         samplesSinceOnset_ = refractorySamples_;
     }
 
@@ -36,7 +39,9 @@ public:
         std::size_t count = 0;
 
         for (int i = 0; i < numSamples; ++i) {
-            const float x = std::isfinite(input[i]) ? input[i] : 0.0f;
+            // Clamp to a sane full-scale range: a single huge finite sample would otherwise make the
+            // log energy infinite and poison the novelty statistics permanently.
+            const float x = std::isfinite(input[i]) ? std::clamp(input[i], -4.0f, 4.0f) : 0.0f;
             frameEnergy_ += static_cast<double>(x) * static_cast<double>(x);
             const float magnitude = std::abs(x);
             if (magnitude > framePeakMagnitude_) {
@@ -52,9 +57,15 @@ public:
             const float logEnergy = std::log1p(rms * 24.0f);
             const float novelty = std::max(0.0f, logEnergy - previousLogEnergy_);
             const float threshold = std::max(0.055f, noveltyMean_ + 2.35f * noveltyDeviation_);
+            noveltyPeak_ *= noveltyPeakDecay_;
 
             if (novelty > threshold && samplesSinceOnset_ >= refractorySamples_ && count < capacity) {
-                const float normalized = std::clamp((novelty - threshold) / std::max(0.05f, threshold * 2.0f), 0.0f, 1.0f);
+                // Strength is relative to the recent strongest onset, so accents stay distinguishable at any
+                // playing level instead of saturating at 1 (which hid downbeat accents from bar tracking).
+                noveltyPeak_ = std::max(noveltyPeak_, novelty);
+                // Novelty is a log-energy difference, which compresses accents; squaring restores contrast.
+                const float ratio = std::clamp(novelty / std::max(noveltyPeak_, 1.0e-4f), 0.0f, 1.0f);
+                const float normalized = ratio * ratio;
                 const int peakOffset = i - (frameSize_ - 1 - framePeakIndex_);
                 out[count++] = {std::max(0, peakOffset), normalized};
                 samplesSinceOnset_ = 0;
@@ -87,6 +98,8 @@ private:
     float previousLogEnergy_{0.0f};
     float noveltyMean_{0.0f};
     float noveltyDeviation_{0.01f};
+    float noveltyPeak_{0.0f};
+    float noveltyPeakDecay_{0.9995f};
     int samplesSinceOnset_{2160};
 };
 

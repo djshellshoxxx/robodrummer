@@ -109,4 +109,17 @@ int main() {
     assert(std::abs(el[1] - 1.0f) < 0.0001f);
     assert(std::abs(el[2] - 1.0f) < 0.0001f);
     assert(std::abs(el[3] - 0.5f) < 0.0001f);
+
+    // A full voice pool steals the most decayed voice instead of dropping the new hit.
+    DrumSamplePlayer full;
+    // Only the first sample is non-zero, so output at the start of a render proves a fresh voice started.
+    DrumSamplePlayer::Sample longSample; longSample.left.assign(48000, 0.0f); longSample.left[0] = 1.0f;
+    full.setSample(DrumInstrument::Kick, longSample);
+    float fl[1]{}; float fr[1]{}; float* fullOut[2]{fl, fr};
+    for (int i = 0; i < 200; ++i) {
+        full.trigger({DrumInstrument::Kick, 0, 1.0f, 0});
+        fl[0] = 0.0f;
+        full.render(fullOut, 2, 1);
+    }
+    assert(fl[0] > 0.5f);
 }

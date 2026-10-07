@@ -118,22 +118,26 @@ public:
             }
         }
 
+        // Use a free voice, otherwise steal the one furthest into its sample (the most decayed hit),
+        // so a new hit is never silently dropped when the pool is full.
+        Voice* target = nullptr;
         for (auto& voice : voices_) {
-            if (!voice.active) {
-                const float leftPan = instrument.pan > 0.0f ? 1.0f - instrument.pan : 1.0f;
-                const float rightPan = instrument.pan < 0.0f ? 1.0f + instrument.pan : 1.0f;
-                voice.active = true;
-                voice.sample = &sample;
-                voice.position = 0.0;
-                voice.playbackRate = std::pow(2.0, static_cast<double>(instrument.tuningSemitones) / 12.0);
-                voice.leftGain = velocity * instrument.gain * leftPan;
-                voice.rightGain = velocity * instrument.gain * rightPan;
-                voice.attackSamples = instrument.attackSamples;
-                voice.releaseSamples = instrument.releaseSamples;
-                voice.chokeGroup = instrument.chokeGroup;
-                return;
-            }
+            if (!voice.active) { target = &voice; break; }
+            if (target == nullptr || voice.position > target->position) target = &voice;
         }
+        if (target == nullptr) return;
+        auto& voice = *target;
+        const float leftPan = instrument.pan > 0.0f ? 1.0f - instrument.pan : 1.0f;
+        const float rightPan = instrument.pan < 0.0f ? 1.0f + instrument.pan : 1.0f;
+        voice.active = true;
+        voice.sample = &sample;
+        voice.position = 0.0;
+        voice.playbackRate = std::pow(2.0, static_cast<double>(instrument.tuningSemitones) / 12.0);
+        voice.leftGain = velocity * instrument.gain * leftPan;
+        voice.rightGain = velocity * instrument.gain * rightPan;
+        voice.attackSamples = instrument.attackSamples;
+        voice.releaseSamples = instrument.releaseSamples;
+        voice.chokeGroup = instrument.chokeGroup;
     }
 
     void render(float** outputs, int channels, int numSamples) noexcept {
