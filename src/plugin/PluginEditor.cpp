@@ -22,6 +22,53 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     title_.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(title_);
 
+    helpButton_.setTooltip("Open the full RoboDrummer help section.");
+    optionsButton_.setTooltip("Open interface options, including the global tooltip switch.");
+    helpButton_.onClick = [this] { showHelp(); };
+    optionsButton_.onClick = [this] { showOptions(); };
+    addAndMakeVisible(helpButton_);
+    addAndMakeVisible(optionsButton_);
+
+    helpText_.setMultiLine(true);
+    helpText_.setReadOnly(true);
+    helpText_.setScrollbarsShown(true);
+    helpText_.setCaretVisible(false);
+    helpText_.setText(
+        "ROBODRUMMER HELP\n\n"
+        "GETTING STARTED\n"
+        "Choose the timing source, output mode, meter and jam style. RoboDrummer can follow host timing or use its internal BPM, "
+        "then adapt its playing to detected guitar tempo, dynamics, phrase state and confidence.\n\n"
+        "TIMING AND LEADERSHIP\n"
+        "Internal BPM is used when host timing is unavailable. Leadership controls how strongly the drummer leads versus follows. "
+        "Follow Range limits tempo movement and Dynamic Follow controls how strongly guitar dynamics affect the drummer.\n\n"
+        "METER AND STYLE\n"
+        "Use Manual Meter when you need a fixed numerator/denominator. Jam Style selects the groove family. Output Mode selects how "
+        "the generated performance is delivered.\n\n"
+        "ARRANGEMENT\n"
+        "Programmed Arrangement enables section-based playback. Select a section slot, style, bar length and intensity, then enable "
+        "or disable that slot and choose whether it auto-advances.\n\n"
+        "JAM MEMORY AND SILENCE\n"
+        "Learn this jam stores recurring tempo, phrase and dynamic tendencies while free-jamming. Guitar Silence determines whether "
+        "the drummer keeps playing, reduces intensity, holds, fills, stops after a number of bars or waits for the guitar to resume.\n\n"
+        "LIVE STATUS\n"
+        "The lower readouts show transport, guitar tempo confidence, beat/downbeat confidence, authority, dynamics, phrase detection, "
+        "jam memory, silence state, coordinator state and current arrangement section. Treat low-confidence estimates as provisional.\n\n"
+        "PERFORMANCE CONTROLS\n"
+        "FILL requests a musical fill. RESET LISTENING clears the current adaptive listening phase so the tracker can reacquire.\n\n"
+        "TOOLTIPS\n"
+        "Hover any control for a description. OPTIONS > Show tooltips globally enables or disables hover help.\n\n"
+        "TROUBLESHOOTING\n"
+        "If tracking is unstable, verify a clean input and wait for confidence to rise before expecting hard synchronization. If the "
+        "host supplies no valid tempo, RoboDrummer reports internal fallback and uses Internal BPM.\n");
+    helpText_.setVisible(false);
+    addChildComponent(helpText_);
+
+    closeHelpButton_.setTooltip("Close the RoboDrummer help section.");
+    closeHelpButton_.onClick = [this] { helpText_.setVisible(false); closeHelpButton_.setVisible(false); };
+    closeHelpButton_.setVisible(false);
+    addChildComponent(closeHelpButton_);
+    applyTooltipSetting();
+
     bpmCaption_.setText("Internal BPM", juce::dontSendNotification);
     intensityCaption_.setText("Intensity", juce::dontSendNotification);
     modeCaption_.setText("Timing mode", juce::dontSendNotification);
@@ -162,7 +209,31 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     arrangementSlot_.onChange = [this] {
         editingArrangementSlot_ = juce::jlimit(0, RoboDrummerAudioProcessor::ArrangementSlotCount - 1,
                                               arrangementSlot_.getSelectedId() - 1);
-        loadArrangementEditorSlot();
+        bpm_.setTooltip("Fallback drummer tempo used when valid host tempo is unavailable.");
+    intensity_.setTooltip("Overall drummer intensity.");
+    leadershipMode_.setTooltip("Choose the timing/leadership behavior.");
+    outputMode_.setTooltip("Choose how RoboDrummer sends its generated performance.");
+    manualMeterToggle_.setTooltip("Override detected/host meter with a manually selected time signature.");
+    meterNumerator_.setTooltip("Manual time-signature numerator.");
+    meterDenominator_.setTooltip("Manual time-signature denominator.");
+    jamStyle_.setTooltip("Select the groove/style family.");
+    arrangementToggle_.setTooltip("Use the programmed section arrangement instead of free-jam structure.");
+    jamMemoryToggle_.setTooltip("Learn recurring tempo, phrase and dynamic tendencies during free jam.");
+    silenceMode_.setTooltip("Choose what the drummer does when guitar input becomes silent.");
+    silenceStopBars_.setTooltip("Number of silent bars before stopping when Stop after bars is selected.");
+    arrangementSlot_.setTooltip("Choose the arrangement section to edit.");
+    arrangementStyle_.setTooltip("Style used by the selected arrangement section.");
+    arrangementBars_.setTooltip("Length of the selected arrangement section in bars.");
+    arrangementIntensity_.setTooltip("Target intensity for the selected arrangement section.");
+    arrangementSlotEnabled_.setTooltip("Include this arrangement section in playback.");
+    arrangementAutoAdvance_.setTooltip("Advance automatically when this section finishes.");
+    leadership_.setTooltip("Balance drummer leadership against following the detected guitar performance.");
+    followRange_.setTooltip("Maximum tempo-following range around the current groove.");
+    dynamicFollow_.setTooltip("How strongly guitar dynamics influence drummer intensity.");
+    fillButton_.setTooltip("Request a musical fill at the next appropriate point.");
+    resetButton_.setTooltip("Reset adaptive listening so tempo, phase and phrase tracking can reacquire.");
+
+    loadArrangementEditorSlot();
     };
     addAndMakeVisible(arrangementSlot_);
 
@@ -245,7 +316,11 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
 
 void RoboDrummerAudioProcessorEditor::resized() {
     auto area = getLocalBounds().reduced(24);
-    title_.setBounds(area.removeFromTop(42));
+    auto titleRow = area.removeFromTop(42);
+    title_.setBounds(titleRow.removeFromLeft(420));
+    helpButton_.setBounds(titleRow.removeFromRight(70).reduced(0, 5));
+    titleRow.removeFromRight(6);
+    optionsButton_.setBounds(titleRow.removeFromRight(84).reduced(0, 5));
     area.removeFromTop(8);
 
     auto row = area.removeFromTop(36);
@@ -349,6 +424,45 @@ void RoboDrummerAudioProcessorEditor::resized() {
     fillButton_.setBounds(buttons.removeFromLeft(160));
     buttons.removeFromLeft(12);
     resetButton_.setBounds(buttons.removeFromLeft(190));
+
+    if (helpText_.isVisible()) {
+        auto helpArea = getLocalBounds().reduced(48, 44);
+        auto closeRow = helpArea.removeFromBottom(40);
+        closeHelpButton_.setBounds(closeRow.withSizeKeepingCentre(130, 30));
+        helpText_.setBounds(helpArea);
+        helpText_.toFront(false);
+        closeHelpButton_.toFront(false);
+    }
+}
+
+void RoboDrummerAudioProcessorEditor::applyTooltipSetting() {
+    if (tooltipsEnabled_) {
+        if (tooltipWindow_ == nullptr)
+            tooltipWindow_ = std::make_unique<juce::TooltipWindow>(this, 600);
+    } else {
+        tooltipWindow_.reset();
+    }
+}
+
+void RoboDrummerAudioProcessorEditor::showOptions() {
+    juce::PopupMenu menu;
+    menu.addSectionHeader("Interface");
+    menu.addItem(1, "Show tooltips", true, tooltipsEnabled_);
+    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&optionsButton_),
+                       [this](int result) {
+                           if (result == 1) {
+                               tooltipsEnabled_ = !tooltipsEnabled_;
+                               applyTooltipSetting();
+                           }
+                       });
+}
+
+void RoboDrummerAudioProcessorEditor::showHelp() {
+    helpText_.setVisible(true);
+    closeHelpButton_.setVisible(true);
+    resized();
+    helpText_.toFront(false);
+    closeHelpButton_.toFront(false);
 }
 
 void RoboDrummerAudioProcessorEditor::loadArrangementEditorSlot() {
