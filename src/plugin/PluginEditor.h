@@ -14,6 +14,9 @@ private:
     void timerCallback() override;
     void loadArrangementEditorSlot();
     void commitArrangementEditorSlot();
+    void showHelp();
+    void showOptions();
+    void applyTooltipSetting();
 
     RoboDrummerAudioProcessor& processor_;
     juce::Label title_;
@@ -64,6 +67,12 @@ private:
     juce::Label silenceCaption_;
     juce::TextButton fillButton_{"FILL"};
     juce::TextButton resetButton_{"RESET LISTENING"};
+    juce::TextButton helpButton_{"HELP"};
+    juce::TextButton optionsButton_{"OPTIONS"};
+    juce::TextButton closeHelpButton_{"CLOSE HELP"};
+    juce::TextEditor helpText_;
+    std::unique_ptr<juce::TooltipWindow> tooltipWindow_;
+    bool tooltipsEnabled_{true};
     int editingArrangementSlot_{0};
     bool loadingArrangementEditor_{false};
 
