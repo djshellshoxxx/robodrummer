@@ -26,6 +26,8 @@ int main() {
 
     int matched = 0;
     for (std::size_t i = 0; i < count; ++i) {
+        assert(events[i].probability >= 0.0f && events[i].probability <= 1.0f);
+        assert(events[i].strength >= 0.0f && events[i].strength <= 1.0f);
         for (int target : {200, 700, 1200, 1700, 2200}) {
             if (std::abs(events[i].sampleOffset - target) <= detector.frameSize() + 20) {
                 ++matched;
@@ -34,4 +36,26 @@ int main() {
         }
     }
     assert(matched >= 4);
+
+    // A sustained tone should not be misread as a stream of repeated attacks.
+    detector.reset();
+    std::vector<float> sustained(3000);
+    for (std::size_t i = 0; i < sustained.size(); ++i)
+        sustained[i] = 0.35f * std::sin(static_cast<float>(i) * 0.08f);
+    const auto sustainedCount = detector.processBlock(
+        sustained.data(), static_cast<int>(sustained.size()), events.data(), events.size());
+    assert(sustainedCount <= 2);
+
+    // Low-level amp-like hiss remains below the adaptive novelty floor.
+    detector.reset();
+    std::vector<float> hiss(3000);
+    std::uint32_t rng = 0x12345678u;
+    for (auto& sample : hiss) {
+        rng = rng * 1664525u + 1013904223u;
+        const float unit = static_cast<float>((rng >> 8) & 0xffffu) / 65535.0f;
+        sample = (unit * 2.0f - 1.0f) * 0.012f;
+    }
+    const auto hissCount = detector.processBlock(
+        hiss.data(), static_cast<int>(hiss.size()), events.data(), events.size());
+    assert(hissCount <= 1);
 }
