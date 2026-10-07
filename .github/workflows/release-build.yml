@@ -1,0 +1,64 @@
+name: RoboDrummer Release Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+concurrency:
+  group: robodrummer-release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: Windows-x64
+          - os: macos-latest
+            name: macOS-Universal
+          - os: ubuntu-latest
+            name: Linux-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux JUCE dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxi-dev libfreetype6-dev libglu1-mesa-dev pkg-config
+
+      - name: Configure
+        shell: bash
+        run: |
+          extra=""
+          if [ "$RUNNER_OS" = "macOS" ]; then extra="-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0"; fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON $extra
+
+      - name: Build and test core
+        run: |
+          cmake --build build --config Release
+          ctest --test-dir build -C Release --output-on-failure
+
+      - name: Stage plug-ins
+        shell: bash
+        run: |
+          src=build/RoboDrummer_artefacts/Release
+          out=dist/RoboDrummer-${{ matrix.name }}
+          mkdir -p "$out"
+          cp -R "$src/VST3/RoboDrummer.vst3" "$out/"
+          cp -R "$src/CLAP/RoboDrummer.clap" "$out/"
+          if [ "$RUNNER_OS" = "Windows" ]; then cp "$src/Standalone/RoboDrummer.exe" "$out/";
+          elif [ "$RUNNER_OS" = "macOS" ]; then cp -R "$src/Standalone/RoboDrummer.app" "$out/";
+          else cp "$src/Standalone/RoboDrummer" "$out/"; fi
+          cp LICENSE COPYRIGHT-TRADEMARK.md docs/INSTALL.md "$out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RoboDrummer-${{ matrix.name }}
+          path: dist/RoboDrummer-${{ matrix.name }}
+          if-no-files-found: error

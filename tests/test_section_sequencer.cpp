@@ -45,6 +45,14 @@ int main() {
     assert(seq.next());
     assert(seq.current().style == JamStyle::Blues);
 
+    seq.reset();
+    assert(seq.next());
+    seq.restorePosition(1, 2);
+    assert(seq.currentSectionIndex() == 1);
+    seq.restorePosition(99, 99);
+    assert(seq.currentSectionIndex() == seq.size() - 1);
+    assert(seq.barsIntoSection() == seq.current().bars - 1);
+
     seq.clear();
     assert(seq.empty());
 }
