@@ -25,6 +25,7 @@ foreach(test_name IN ITEMS
     onset_detector
     input_conditioner
     tempo_tracker
+    tempo_movement
     rhythm_analyzer
     timing_authority
     phase_follower
