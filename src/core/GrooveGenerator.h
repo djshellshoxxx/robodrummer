@@ -25,7 +25,12 @@ public:
             if (count >= Capacity) return;
             const int offset = static_cast<int>(std::llround(beatPos * samplesPerBeat));
             if (offset < 0 || offset >= barSamples) return;
-            out[count++] = {instrument, offset, std::clamp(velocity, 0.0f, 1.0f), static_cast<std::uint32_t>(count - 1)};
+
+            const auto sequence = static_cast<std::uint32_t>(count);
+            DrumEvent event{instrument, offset, std::clamp(velocity, 0.0f, 1.0f), sequence};
+            humanizeEvent(event, style, context, barSamples);
+            out[count] = event;
+            ++count;
         };
 
         auto chance = [&](float probability) {
@@ -99,6 +104,110 @@ private:
     static float next01(std::uint32_t& state) noexcept {
         state = state * 1664525u + 1013904223u;
         return static_cast<float>((state >> 8) & 0x00FFFFFFu) / static_cast<float>(0x01000000u);
+    }
+
+    static std::uint32_t mixHash(std::uint32_t value) noexcept {
+        value ^= value >> 16;
+        value *= 0x7feb352du;
+        value ^= value >> 15;
+        value *= 0x846ca68bu;
+        value ^= value >> 16;
+        return value;
+    }
+
+    static float hash01(std::uint32_t seed, std::uint32_t sequence, std::uint32_t salt) noexcept {
+        const auto value = mixHash(seed ^ (sequence * 0x9e3779b9u) ^ salt);
+        return static_cast<float>(value & 0x00ffffffu) / static_cast<float>(0x01000000u);
+    }
+
+    static float triangularNoise(std::uint32_t seed, std::uint32_t sequence, std::uint32_t salt) noexcept {
+        const float a = hash01(seed, sequence, salt);
+        const float b = hash01(seed, sequence, salt ^ 0xa5a5a5a5u);
+        return (a + b) - 1.0f;
+    }
+
+    static float timingScaleFor(DrumInstrument instrument) noexcept {
+        switch (instrument) {
+            case DrumInstrument::ClosedHat:
+            case DrumInstrument::OpenHat:
+            case DrumInstrument::Ride:
+                return 0.72f;
+            case DrumInstrument::Snare:
+            case DrumInstrument::Rimshot:
+            case DrumInstrument::Sidestick:
+            case DrumInstrument::Clap:
+                return 0.58f;
+            case DrumInstrument::Kick:
+                return 0.42f;
+            case DrumInstrument::HighTom:
+            case DrumInstrument::MidTom:
+            case DrumInstrument::FloorTom:
+                return 0.82f;
+            default:
+                return 0.62f;
+        }
+    }
+
+    static float limbBiasFor(DrumInstrument instrument) noexcept {
+        switch (instrument) {
+            case DrumInstrument::ClosedHat:
+            case DrumInstrument::OpenHat:
+            case DrumInstrument::Ride:
+                return -0.08f;
+            case DrumInstrument::Snare:
+            case DrumInstrument::Rimshot:
+            case DrumInstrument::Sidestick:
+            case DrumInstrument::Clap:
+                return 0.10f;
+            case DrumInstrument::Kick:
+                return 0.02f;
+            default:
+                return 0.0f;
+        }
+    }
+
+    static float velocityScaleFor(DrumInstrument instrument) noexcept {
+        switch (instrument) {
+            case DrumInstrument::ClosedHat:
+            case DrumInstrument::OpenHat:
+            case DrumInstrument::Ride:
+                return 1.0f;
+            case DrumInstrument::Snare:
+            case DrumInstrument::Rimshot:
+            case DrumInstrument::Sidestick:
+                return 0.72f;
+            case DrumInstrument::Kick:
+                return 0.55f;
+            default:
+                return 0.82f;
+        }
+    }
+
+    static void humanizeEvent(DrumEvent& event,
+                              const Style& style,
+                              const GrooveContext& context,
+                              int barSamples) noexcept {
+        const float amountMs = std::clamp(style.humanizeMs, 0.0f, 30.0f);
+        if (amountMs <= 0.0f || !(context.sampleRate > 0.0))
+            return;
+
+        const float normalizedAmount = std::clamp(amountMs / 12.0f, 0.0f, 1.0f);
+        const int maxTimingSamples = std::max(0, static_cast<int>(std::llround(context.sampleRate * amountMs / 1000.0)));
+
+        // Beat one is a structural anchor. Other events receive deterministic,
+        // triangular microtiming with limb-family bias rather than uniform jitter.
+        if (event.sampleOffset > 0 && maxTimingSamples > 0) {
+            const float random = triangularNoise(context.seed, event.sequence, 0x31415926u);
+            const float shaped = random * timingScaleFor(event.instrument) + limbBiasFor(event.instrument);
+            const int delta = static_cast<int>(std::llround(
+                std::clamp(shaped, -1.0f, 1.0f) * static_cast<float>(maxTimingSamples)));
+            event.sampleOffset = std::clamp(event.sampleOffset + delta, 0, std::max(0, barSamples - 1));
+        }
+
+        const float velocityNoise = triangularNoise(context.seed, event.sequence, 0x27182818u);
+        const float velocityDelta = velocityNoise * (0.035f + 0.025f * normalizedAmount)
+            * velocityScaleFor(event.instrument);
+        event.velocity = std::clamp(event.velocity + velocityDelta, 0.0f, 1.0f);
     }
 };
 
