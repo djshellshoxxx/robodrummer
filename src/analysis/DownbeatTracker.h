@@ -23,6 +23,15 @@ public:
         confidence_ = 0.0f;
     }
 
+    // Records the accent of a specific beat on the tracker's beat grid. Using the grid position (rather than
+    // counting observed onsets) keeps bar slots aligned when the player rests on some beats.
+    void observeBeatAt(long long beatNumber, float accentStrength) noexcept {
+        const long long m = meter_;
+        const int slot = static_cast<int>(((beatNumber % m) + m) % m);
+        beatIndex_ = slot + meter_; // Kept small and positive; only the slot (modulo meter) matters.
+        observeBeat(accentStrength);
+    }
+
     void observeBeat(float accentStrength) noexcept {
         accentStrength = std::clamp(std::isfinite(accentStrength) ? accentStrength : 0.0f, 0.0f, 1.0f);
 

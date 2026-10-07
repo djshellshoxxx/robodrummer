@@ -85,6 +85,13 @@ public:
         return result;
     }
 
+    // Restores a playback position after the section list was rebuilt; clamps to the new list.
+    void restorePosition(std::size_t index, int barsIntoSection) noexcept {
+        if (count_ == 0) { reset(); return; }
+        currentIndex_ = std::min(index, count_ - 1);
+        barsIntoSection_ = std::clamp(barsIntoSection, 0, std::max(0, sections_[currentIndex_].bars - 1));
+    }
+
     [[nodiscard]] bool next() noexcept {
         if (count_ == 0 || currentIndex_ + 1 >= count_) return false;
         ++currentIndex_;

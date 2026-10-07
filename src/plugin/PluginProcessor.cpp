@@ -277,7 +277,7 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     arrangement_.reset();
     lastArrangementEnabled_ = false;
     lastArrangementBarIndex_ = 0;
-    currentArrangementSection_.store(0, std::memory_order_relaxed);
+    publishArrangementSection();
     jam_.setTempo(internalBpm_.load(std::memory_order_relaxed));
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
     adaptiveJoined_ = false;
@@ -412,10 +412,13 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     const bool arrangementEnabled = arrangementEnabled_.load(std::memory_order_relaxed);
     const auto arrangementRevision = arrangementRevision_.load(std::memory_order_acquire);
     if (arrangementRevision != appliedArrangementRevision_) {
+        // Editing a slot must not restart playback: keep the current position (clamped to the new list).
+        const auto playingIndex = arrangement_.currentSectionIndex();
+        const auto barsIntoSection = arrangement_.barsIntoSection();
         rebuildArrangementFromSlots();
+        arrangement_.restorePosition(playingIndex, barsIntoSection);
+        publishArrangementSection();
         appliedArrangementRevision_ = arrangementRevision;
-        lastArrangementBarIndex_ = jam_.currentBarIndex();
-        currentArrangementSection_.store(0, std::memory_order_relaxed);
         if (arrangementEnabled)
             applyCurrentArrangementSection();
     }
@@ -423,7 +426,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     if (arrangementEnabled != lastArrangementEnabled_) {
         arrangement_.reset();
         lastArrangementBarIndex_ = jam_.currentBarIndex();
-        currentArrangementSection_.store(0, std::memory_order_relaxed);
+        publishArrangementSection();
         lastArrangementEnabled_ = arrangementEnabled;
         if (arrangementEnabled)
             applyCurrentArrangementSection();
@@ -435,7 +438,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             const auto step = arrangement_.advanceBar();
             ++lastArrangementBarIndex_;
             if (step.sectionChanged) {
-                currentArrangementSection_.store(static_cast<int>(step.enteredIndex), std::memory_order_relaxed);
+                publishArrangementSection();
                 applyCurrentArrangementSection();
                 coordinatorProgrammedBoundaryPending_ = true;
                 jam_.apply(robodrummer::MidiCommand::Crash);
@@ -715,7 +718,7 @@ void RoboDrummerAudioProcessor::handleCommand(robodrummer::MidiCommand command, 
             coordinatorNextCuePending_ = true;
             if (!arrangementEnabled) break;
             if (arrangement_.next()) {
-                currentArrangementSection_.store(static_cast<int>(arrangement_.currentSectionIndex()), std::memory_order_relaxed);
+                publishArrangementSection();
                 applyCurrentArrangementSection();
                 jam_.apply(C::Crash);
             }
@@ -723,7 +726,7 @@ void RoboDrummerAudioProcessor::handleCommand(robodrummer::MidiCommand command, 
         case C::PreviousSection:
             if (!arrangementEnabled) break;
             if (arrangement_.previous()) {
-                currentArrangementSection_.store(static_cast<int>(arrangement_.currentSectionIndex()), std::memory_order_relaxed);
+                publishArrangementSection();
                 applyCurrentArrangementSection();
                 jam_.apply(C::Crash);
             }
@@ -945,10 +948,18 @@ void RoboDrummerAudioProcessor::rebuildArrangementFromSlots() noexcept {
     for (int i = 0; i < ArrangementSlotCount; ++i) {
         if (!arrangementSlotEnabled_[static_cast<std::size_t>(i)].load(std::memory_order_relaxed))
             continue;
-        (void) arrangement_.add(getArrangementSection(i));
+        if (arrangement_.add(getArrangementSection(i)))
+            arrangementSlotForIndex_[arrangement_.size() - 1] = i;
     }
     arrangement_.reset();
-    currentArrangementSection_.store(0, std::memory_order_relaxed);
+    publishArrangementSection();
+}
+
+void RoboDrummerAudioProcessor::publishArrangementSection() noexcept {
+    // The UI numbers sections by slot, so report the slot that the playing (enabled) section came from.
+    const auto index = arrangement_.currentSectionIndex();
+    const int slot = arrangement_.empty() || index >= arrangementSlotForIndex_.size() ? 0 : arrangementSlotForIndex_[index];
+    currentArrangementSection_.store(slot, std::memory_order_relaxed);
 }
 
 void RoboDrummerAudioProcessor::applyCurrentArrangementSection() noexcept {

@@ -88,7 +88,7 @@ private:
             if (std::abs(error) <= period * 0.22) {
                 phaseAnchorSeconds_ += std::clamp(error * 0.25, -0.020, 0.020);
                 if (best.confidence >= 0.30f && nearestBeat != lastObservedBeatIndex_) {
-                    downbeat_.observeBeat(std::clamp(strength, 0.0f, 1.0f));
+                    downbeat_.observeBeatAt(nearestBeat, std::clamp(strength, 0.0f, 1.0f));
                     lastObservedBeatIndex_ = nearestBeat;
                 }
             }
@@ -132,7 +132,8 @@ private:
             recency = static_cast<float>(std::clamp(1.0 - silence / (period * 3.0), 0.0, 1.0));
         }
         state_.beatConfidence = std::clamp(state_.tempoConfidence * (0.45f + 0.55f * recency), 0.0f, 1.0f);
-        state_.locked = state_.tempoConfidence >= 0.38f && state_.beatConfidence >= 0.30f;
+        // A lock needs recent onsets; the tempo histogram alone would keep a stale lock through silence.
+        state_.locked = recency > 0.0f && state_.tempoConfidence >= 0.38f && state_.beatConfidence >= 0.30f;
     }
 
     double sampleRate_{48000.0};

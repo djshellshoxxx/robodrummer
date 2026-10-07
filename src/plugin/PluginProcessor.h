@@ -177,6 +177,7 @@ private:
     void installStarterArrangement() noexcept;
     void applyCurrentArrangementSection() noexcept;
     void rebuildArrangementFromSlots() noexcept;
+    void publishArrangementSection() noexcept;
     static int midiNoteFor(robodrummer::DrumInstrument) noexcept;
 
     juce::AudioProcessorValueTreeState parameters_;
@@ -192,6 +193,7 @@ private:
     robodrummer::SessionMemory sessionMemory_{};
     robodrummer::SilenceController silenceController_{};
     robodrummer::SectionSequencer<16> arrangement_{};
+    std::array<int, ArrangementSlotCount> arrangementSlotForIndex_{};
     robodrummer::DrumSamplePlayer samplePlayer_{};
     double sampleRate_{48000.0};
     bool adaptiveJoined_{false};
