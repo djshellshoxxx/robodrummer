@@ -17,6 +17,7 @@ private:
     void showHelp();
     void showOptions();
     void applyTooltipSetting();
+    void setupPerformanceButton(juce::TextButton& button, robodrummer::MidiCommand command, const juce::String& tooltip);
 
     RoboDrummerAudioProcessor& processor_;
     juce::Label title_;
@@ -64,6 +65,16 @@ private:
     juce::Label styleCaption_;
     juce::Label silenceCaption_;
     juce::TextButton fillButton_{"FILL"};
+    juce::TextButton crashButton_{"CRASH"};
+    juce::TextButton breakButton_{"BREAK"};
+    juce::TextButton halfTimeButton_{"HALF-TIME"};
+    juce::TextButton doubleTimeButton_{"DOUBLE-TIME"};
+    juce::TextButton stopButton_{"STOP"};
+    juce::TextButton resumeButton_{"RESUME"};
+    juce::TextButton previousSectionButton_{"PREV SECTION"};
+    juce::TextButton nextSectionButton_{"NEXT SECTION"};
+    juce::TextButton soloButton_{"SOLO"};
+    juce::TextButton endJamButton_{"END JAM"};
     juce::TextButton resetButton_{"RESET LISTENING"};
     juce::TextButton helpButton_{"HELP"};
     juce::TextButton optionsButton_{"OPTIONS"};
@@ -71,6 +82,16 @@ private:
     juce::TextEditor helpText_;
     std::unique_ptr<juce::TooltipWindow> tooltipWindow_;
     bool tooltipsEnabled_{true};
+    using SliderAttachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    using ComboBoxAttachment = juce::AudioProcessorValueTreeState::ComboBoxAttachment;
+    using ButtonAttachment = juce::AudioProcessorValueTreeState::ButtonAttachment;
+    // Declared after the controls so they are destroyed first.
+    std::unique_ptr<SliderAttachment> bpmAttachment_, intensityAttachment_, leadershipAttachment_,
+        followRangeAttachment_, dynamicFollowAttachment_, silenceStopBarsAttachment_;
+    std::unique_ptr<ComboBoxAttachment> leadershipModeAttachment_, outputModeAttachment_, meterNumeratorAttachment_,
+        meterDenominatorAttachment_, jamStyleAttachment_, silenceModeAttachment_;
+    std::unique_ptr<ButtonAttachment> arrangementAttachment_, jamMemoryAttachment_, manualMeterAttachment_;
+    std::uint32_t seenArrangementRevision_{0};
     int editingArrangementSlot_{0};
     bool loadingArrangementEditor_{false};
 

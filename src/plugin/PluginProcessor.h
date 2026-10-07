@@ -26,10 +26,34 @@
 #include <atomic>
 #include <cstdint>
 
-class RoboDrummerAudioProcessor final : public juce::AudioProcessor {
+namespace robodrummer::ParamIDs {
+// Stable host parameter IDs. Never reuse an ID for a different meaning once released.
+inline constexpr const char* bpm = "bpm";
+inline constexpr const char* intensity = "intensity";
+inline constexpr const char* outputMode = "outputMode";
+inline constexpr const char* leadershipMode = "leadershipMode";
+inline constexpr const char* leadership = "leadership";
+inline constexpr const char* followRange = "followRange";
+inline constexpr const char* dynamicFollow = "dynamicFollow";
+inline constexpr const char* jamStyle = "jamStyle";
+inline constexpr const char* arrangementEnabled = "arrangementEnabled";
+inline constexpr const char* jamMemoryEnabled = "jamMemoryEnabled";
+inline constexpr const char* manualMeterEnabled = "manualMeterEnabled";
+inline constexpr const char* meterNumerator = "meterNumerator";
+inline constexpr const char* meterDenominator = "meterDenominator";
+inline constexpr const char* silenceMode = "silenceMode";
+inline constexpr const char* silenceStopBars = "silenceStopBars";
+}
+
+class RoboDrummerAudioProcessor final : public juce::AudioProcessor,
+                                        private juce::AudioProcessorValueTreeState::Listener,
+                                        private juce::Timer {
 public:
     RoboDrummerAudioProcessor();
-    ~RoboDrummerAudioProcessor() override = default;
+    ~RoboDrummerAudioProcessor() override;
+
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+    juce::AudioProcessorValueTreeState& getParameters() noexcept { return parameters_; }
 
     void prepareToPlay(double sampleRate, int samplesPerBlock) override;
     void releaseResources() override;
@@ -129,18 +153,34 @@ public:
     double getGuitarBeatPhase() const noexcept { return guitarBeatPhase_.load(std::memory_order_relaxed); }
     double getPredictedNextGuitarBeatSeconds() const noexcept { return predictedNextGuitarBeatSeconds_.load(std::memory_order_relaxed); }
     bool isGuitarTrackerLocked() const noexcept { return guitarTrackerLocked_.load(std::memory_order_acquire); }
-    void requestFill() noexcept { pendingUiCommands_.fetch_or(FillBit, std::memory_order_release); }
-    void resetJamPhase() noexcept { pendingUiCommands_.fetch_or(ResetBit, std::memory_order_release); }
+    // Queues a performance command from the UI; it is executed on the audio thread exactly like
+    // the matching channel-16 MIDI intervention note.
+    void requestCommand(robodrummer::MidiCommand command) noexcept {
+        pendingUiCommands_.fetch_or(1u << static_cast<unsigned>(command), std::memory_order_release);
+    }
+    void requestFill() noexcept { requestCommand(robodrummer::MidiCommand::Fill); }
+    void resetJamPhase() noexcept { requestCommand(robodrummer::MidiCommand::ResetListening); }
+    bool isDrummerStopped() const noexcept { return drummerStopped_.load(std::memory_order_relaxed); }
+    double getTimeScale() const noexcept { return timeScale_.load(std::memory_order_relaxed); }
+    std::uint32_t getArrangementRevision() const noexcept { return arrangementRevision_.load(std::memory_order_acquire); }
 
 private:
-    enum PendingUiBits : std::uint32_t { FillBit = 1u << 0, ResetBit = 1u << 1 };
+    static constexpr int StateVersion = 2;
 
+    void parameterChanged(const juce::String& parameterID, float newValue) override;
+    void timerCallback() override;
+    void syncAllParametersToAtomics();
+    void setParameterFromState(const char* id, float plainValue);
+    void handleCommand(robodrummer::MidiCommand command, bool arrangementEnabled) noexcept;
+    void resetListeningState() noexcept;
     void installStarterKit(double sampleRate);
     void installStarterArrangement() noexcept;
     void applyCurrentArrangementSection() noexcept;
     void rebuildArrangementFromSlots() noexcept;
     static int midiNoteFor(robodrummer::DrumInstrument) noexcept;
 
+    juce::AudioProcessorValueTreeState parameters_;
+    juce::MidiBuffer midiOut_;
     robodrummer::JamEngine jam_{};
     robodrummer::LiveRhythmAnalyzer rhythmAnalyzer_{};
     robodrummer::PerformanceAnalyzer performanceAnalyzer_{};
@@ -210,6 +250,12 @@ private:
     std::atomic<bool> hardResyncRecommended_{false};
     std::atomic<bool> adaptiveJoinedVisible_{false};
     std::atomic<std::uint32_t> pendingUiCommands_{0};
+    // Set by the audio thread when MIDI/arrangement changes a host-visible value; the message-thread
+    // timer then publishes the new value to the host parameter.
+    std::atomic<bool> intensityNeedsHostSync_{false};
+    std::atomic<bool> jamStyleNeedsHostSync_{false};
+    std::atomic<bool> drummerStopped_{false};
+    std::atomic<double> timeScale_{1.0};
     std::atomic<double> lastHostBpm_{120.0};
     std::atomic<double> lastHostPpq_{0.0};
     std::atomic<int> lastHostNumerator_{4};

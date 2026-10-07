@@ -21,8 +21,8 @@ inline void applyMidiCommand(JamState& state, MidiCommand command) noexcept {
         case MidiCommand::Crash: state.crashRequested = true; break;
         case MidiCommand::IntensityUp: state.intensity = std::clamp(state.intensity + 0.1f, 0.0f, 1.0f); break;
         case MidiCommand::IntensityDown: state.intensity = std::clamp(state.intensity - 0.1f, 0.0f, 1.0f); break;
-        case MidiCommand::HalfTime: state.timeScale = 0.5; break;
-        case MidiCommand::DoubleTime: state.timeScale = 2.0; break;
+        case MidiCommand::HalfTime: state.timeScale = state.timeScale < 0.75 ? 1.0 : 0.5; break;
+        case MidiCommand::DoubleTime: state.timeScale = state.timeScale > 1.5 ? 1.0 : 2.0; break;
         case MidiCommand::Break: state.breakRequested = true; break;
         case MidiCommand::Stop: state.stopped = true; break;
         case MidiCommand::Resume: state.stopped = false; break;
