@@ -17,7 +17,9 @@
 #include "analysis/SilenceController.h"
 #include "core/JamStyleProfile.h"
 #include "core/MeterSelection.h"
+#include "core/MidiLearnMap.h"
 #include "core/OutputMode.h"
+#include "core/FillGenerator.h"
 #include "core/SectionSequencer.h"
 #include "audio/DrumSamplePlayer.h"
 #include "plugin/HostTransportAdapter.h"
@@ -60,6 +62,8 @@ public:
     float getIntensity() const noexcept { return intensity_.load(std::memory_order_relaxed); }
     void setOutputMode(robodrummer::OutputMode mode) noexcept { outputMode_.store(static_cast<int>(mode), std::memory_order_relaxed); }
     robodrummer::OutputMode getOutputMode() const noexcept { return static_cast<robodrummer::OutputMode>(outputMode_.load(std::memory_order_relaxed)); }
+    void setFillLength(robodrummer::FillLength length) noexcept { fillLength_.store(static_cast<int>(length), std::memory_order_relaxed); }
+    robodrummer::FillLength getFillLength() const noexcept { return static_cast<robodrummer::FillLength>(fillLength_.load(std::memory_order_relaxed)); }
 
     void setLeadershipMode(robodrummer::LeadershipMode mode) noexcept { leadershipMode_.store(static_cast<int>(mode), std::memory_order_relaxed); }
     robodrummer::LeadershipMode getLeadershipMode() const noexcept { return static_cast<robodrummer::LeadershipMode>(leadershipMode_.load(std::memory_order_relaxed)); }
@@ -131,6 +135,12 @@ public:
     bool isGuitarTrackerLocked() const noexcept { return guitarTrackerLocked_.load(std::memory_order_acquire); }
     void requestFill() noexcept { pendingUiCommands_.fetch_or(FillBit, std::memory_order_release); }
     void resetJamPhase() noexcept { pendingUiCommands_.fetch_or(ResetBit, std::memory_order_release); }
+    void beginMidiLearn(robodrummer::MidiCommand command) noexcept { midiLearnTarget_.store(robodrummer::midiCommandIndex(command), std::memory_order_release); }
+    void cancelMidiLearn() noexcept { midiLearnTarget_.store(-1, std::memory_order_release); }
+    bool isMidiLearning() const noexcept { return midiLearnTarget_.load(std::memory_order_acquire) >= 0; }
+    int getMidiLearnTargetIndex() const noexcept { return midiLearnTarget_.load(std::memory_order_acquire); }
+    int getMidiNoteForCommand(robodrummer::MidiCommand command) const noexcept { return midiLearnMap_.noteForCommand(command); }
+    void resetMidiLearnDefaults() noexcept { midiLearnMap_.resetDefaults(); }
 
 private:
     enum PendingUiBits : std::uint32_t { FillBit = 1u << 0, ResetBit = 1u << 1 };
@@ -142,6 +152,7 @@ private:
     static int midiNoteFor(robodrummer::DrumInstrument) noexcept;
 
     robodrummer::JamEngine jam_{};
+    robodrummer::MidiLearnMap midiLearnMap_{};
     robodrummer::LiveRhythmAnalyzer rhythmAnalyzer_{};
     robodrummer::PerformanceAnalyzer performanceAnalyzer_{};
     robodrummer::TimingAuthorityController timingAuthority_{};
@@ -175,6 +186,7 @@ private:
     std::atomic<double> internalBpm_{120.0};
     std::atomic<float> intensity_{0.5f};
     std::atomic<int> outputMode_{static_cast<int>(robodrummer::OutputMode::InternalAndMidi)};
+    std::atomic<int> fillLength_{static_cast<int>(robodrummer::FillLength::OneBeat)};
     std::atomic<float> dynamicFollow_{0.60f};
     std::atomic<int> jamStyle_{static_cast<int>(robodrummer::JamStyle::Rock)};
     std::atomic<bool> arrangementEnabled_{false};
@@ -210,6 +222,7 @@ private:
     std::atomic<bool> hardResyncRecommended_{false};
     std::atomic<bool> adaptiveJoinedVisible_{false};
     std::atomic<std::uint32_t> pendingUiCommands_{0};
+    std::atomic<int> midiLearnTarget_{-1};
     std::atomic<double> lastHostBpm_{120.0};
     std::atomic<double> lastHostPpq_{0.0};
     std::atomic<int> lastHostNumerator_{4};
