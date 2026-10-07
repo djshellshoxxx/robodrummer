@@ -74,7 +74,13 @@ private:
         }
 
         if (secondMean < 0.0f) secondMean = 0.0f;
-        const float separation = std::clamp((bestMean - secondMean) / std::max(0.15f, bestMean), 0.0f, 1.0f);
+        // Normalize contrast against a musically meaningful fraction of the leading accent.
+        // Using the full peak as the denominator systematically under-reported confidence
+        // even after many perfectly repeated bars (and kept recovery logic needlessly timid).
+        const float separation = std::clamp(
+            (bestMean - secondMean) / std::max(0.15f, bestMean * 0.75f),
+            0.0f,
+            1.0f);
         const float evidence = std::clamp(totalEvidence / static_cast<float>(meter_ * 4), 0.0f, 1.0f);
         const float proposedConfidence = separation * evidence;
 
