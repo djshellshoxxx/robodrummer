@@ -92,6 +92,10 @@ MIDI intensity up/down updates the persistent live intensity control, so the cha
 
 Not every higher-level command has a complete arrangement behavior yet; the command model is in place so those behaviors can be added without changing the MIDI contract.
 
+## Internal sampler status
+
+The core sampler now supports velocity layers, up to four round-robin variants per layer, per-instrument choke groups, gain/pan, tuning from -24 to +24 semitones, and basic attack/release envelopes. Sample configuration occurs outside the audio callback; trigger and render paths use fixed voice/layer storage and do not allocate. The generated starter kit uses a shared choke group for open and closed hi-hats.
+
 ## Real-time notes
 
 The audio thread does not perform disk I/O or network I/O. The current generated starter kit is created during `prepareToPlay`. The event scheduler, sampler trigger path, timing-authority controller and phase follower use fixed/preallocated state in the processing path.
