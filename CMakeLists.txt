@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(ROBODRUMMER_BUILD_JUCE "Build VST3 and Standalone targets" ON)
+option(ROBODRUMMER_BUILD_CLAP "Also build the CLAP target (requires ROBODRUMMER_BUILD_JUCE)" ON)
 
 add_library(robodrummer_core INTERFACE)
 target_include_directories(robodrummer_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -70,6 +71,7 @@ if(ROBODRUMMER_BUILD_JUCE)
     PLUGIN_MANUFACTURER_CODE CDrf
     PLUGIN_CODE RDrm
     FORMATS VST3 Standalone
+    VST3_CATEGORIES Instrument Drum
     PRODUCT_NAME "RoboDrummer"
     IS_SYNTH FALSE
     NEEDS_MIDI_INPUT TRUE
@@ -91,9 +93,28 @@ if(ROBODRUMMER_BUILD_JUCE)
     juce::juce_audio_utils
     juce::juce_dsp
   )
+  target_link_libraries(RoboDrummer PUBLIC
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+  )
   target_compile_definitions(RoboDrummer PUBLIC
     JUCE_WEB_BROWSER=0
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
   )
+
+  if(ROBODRUMMER_BUILD_CLAP)
+    FetchContent_Declare(
+      clap_juce_extensions
+      GIT_REPOSITORY https://github.com/free-audio/clap-juce-extensions.git
+      GIT_TAG 7adee3a1bd4684d4caa5601100e364abccff4b4d
+      GIT_SUBMODULES_RECURSE TRUE
+    )
+    FetchContent_MakeAvailable(clap_juce_extensions)
+    clap_juce_extensions_plugin(
+      TARGET RoboDrummer
+      CLAP_ID "com.circuitdriftlabs.robodrummer"
+      CLAP_FEATURES instrument drum-machine stereo
+    )
+  endif()
 endif()

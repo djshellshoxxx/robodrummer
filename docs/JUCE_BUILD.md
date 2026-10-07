@@ -1,6 +1,6 @@
 # RoboDrummer JUCE Build
 
-RoboDrummer uses JUCE 9.0.3 through CMake FetchContent. The JUCE shell is deliberately thin: musical logic, timing, groove generation and tests remain in JUCE-independent C++ where practical.
+RoboDrummer uses JUCE 9.0.3 and free-audio/clap-juce-extensions (pinned commit) through CMake FetchContent. The JUCE shell is deliberately thin: musical logic, timing, groove generation and tests remain in JUCE-independent C++ where practical.
 
 ## Requirements
 
@@ -8,7 +8,7 @@ RoboDrummer uses JUCE 9.0.3 through CMake FetchContent. The JUCE shell is delibe
 - C++20 compiler
 - Git
 - Windows: Visual Studio with Desktop C++ workload
-- Linux: ALSA/X11/Freetype/WebKit development packages used by JUCE
+- Linux: ALSA/X11 (including libxi-dev)/Freetype development packages used by JUCE
 
 ## Core-only build
 
@@ -18,14 +18,38 @@ cmake --build build-core --config Release
 ctest --test-dir build-core -C Release --output-on-failure
 ```
 
-## VST3 + Standalone
+## VST3 + CLAP + Standalone
 
 ```bash
 cmake -S . -B build -DROBODRUMMER_BUILD_JUCE=ON -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release --target RoboDrummer_VST3 RoboDrummer_Standalone
+cmake --build build --config Release --target RoboDrummer_VST3 RoboDrummer_CLAP RoboDrummer_Standalone
 ```
 
-CMake downloads the pinned JUCE release during configuration.
+CMake downloads the pinned JUCE release and clap-juce-extensions during configuration. Pass `-DROBODRUMMER_BUILD_CLAP=OFF` to skip CLAP. Outputs land in `build/RoboDrummer_artefacts/Release/{VST3,CLAP,Standalone}`.
+
+## Host parameters
+
+All main controls are host-automatable parameters (stable IDs, version 1). The GUI uses JUCE parameter attachments, so host automation, generic host editors and the RoboDrummer editor always agree.
+
+| ID | Name | Range / choices | Default |
+|---|---|---|---|
+| `bpm` | Internal BPM | 40–240 BPM | 120 |
+| `intensity` | Intensity | 0–100 % | 50 % |
+| `outputMode` | Output Mode | Internal Drums / MIDI Only / Internal + MIDI | Internal + MIDI |
+| `leadershipMode` | Timing Mode | Drummer Leads / Hybrid / Guitarist Leads | Drummer Leads |
+| `leadership` | Leadership | 0–100 % | 50 % |
+| `followRange` | Follow Range | 0–80 BPM | 15 |
+| `dynamicFollow` | Dynamic Follow | 0–100 % | 60 % |
+| `jamStyle` | Jam Style | Rock / Blues / Funk / Punk / Metal / Shuffle | Rock |
+| `arrangementEnabled` | Programmed Arrangement | off / on | off |
+| `jamMemoryEnabled` | Learn This Jam | off / on | on |
+| `manualMeterEnabled` | Manual Meter | off / on | off |
+| `meterNumerator` | Meter Numerator | 2–12 | 4 |
+| `meterDenominator` | Meter Denominator | 2 / 4 / 8 / 16 | 4 |
+| `silenceMode` | Guitar Silence | Keep playing / Reduce intensity / Hold groove / Fill during silence / Stop after bars / Wait for resume | Keep playing |
+| `silenceStopBars` | Silence Stop Bars | 1–16 bars | 2 |
+
+Intensity and Jam Style can also be changed by the audio thread (MIDI intensity notes, programmed arrangement sections). Those changes are published back to the host from the message thread, so automation lanes and saved state follow what is playing. Arrangement slot contents are non-parameter state saved alongside the parameters. Saved state carries `stateVersion` 2; version-1 sessions (plain properties on a `RoboDrummerState` root) are migrated on load.
 
 ## Current timing modes
 
@@ -55,13 +79,12 @@ Large phase disagreement is currently flagged rather than immediately corrected.
 - beat confidence
 - tracker lock state
 - effective guitar authority
-- Fill
-- Reset Listening
+- Performance buttons: Fill, Crash, Break, Half-time, Double-time, Stop, Resume, Previous/Next Section, Solo, End Jam, Reset Listening (each mirrors the matching channel-16 MIDI note)
 - Output mode: Internal Drums / MIDI Only / Internal + MIDI
 
 ## MIDI intervention map
 
-RoboDrummer treats MIDI channel 16 as its intervention/control channel. Generated drum MIDI is sent on General MIDI drum channel 10.
+RoboDrummer treats MIDI channel 16 as its intervention/control channel. Channel-16 messages are consumed and not forwarded to the MIDI output; all other incoming MIDI passes through. Generated drum MIDI is sent on General MIDI drum channel 10.
 
 | Note | Action |
 |---:|---|
@@ -71,12 +94,14 @@ RoboDrummer treats MIDI channel 16 as its intervention/control channel. Generate
 | 39 | Crash |
 | 40 | Intensity up |
 | 41 | Intensity down |
-| 42 | Half-time |
-| 43 | Double-time |
+| 42 | Half-time (toggle; again returns to normal time) |
+| 43 | Double-time (toggle; again returns to normal time) |
 | 44 | Break (one musical bar, then automatic groove re-entry) |
 | 45 | Stop drummer |
 | 46 | Resume drummer |
-| 47 | Reset listening |
+| 47 | Reset listening (clears tempo, phase, phrase, silence, coordinator and jam-memory tracking) |
+| 48 | Solo support cue |
+| 49 | End jam cue |
 
 Break is implemented as a one-bar musical dropout. The request is consumed once, normal groove generation is suppressed for that bar, and RoboDrummer re-enters automatically on the following bar. If a fill is already queued, it is deferred until after the break rather than discarded.
 

@@ -35,8 +35,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libfreetype6-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev pkg-config
+          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxi-dev libfreetype6-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev pkg-config
       - name: Configure JUCE shell
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DROBODRUMMER_BUILD_JUCE=ON
-      - name: Build VST3 and Standalone
-        run: cmake --build build --config Release --target RoboDrummer_VST3 RoboDrummer_Standalone
+      - name: Build VST3, CLAP and Standalone
+        run: cmake --build build --config Release --target RoboDrummer_VST3 RoboDrummer_CLAP RoboDrummer_Standalone

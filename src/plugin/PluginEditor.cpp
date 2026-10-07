@@ -3,10 +3,10 @@
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
-    setSize(860, 1056);
+    setSize(860, 972);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
-    title_.setFont(juce::Font(28.0f, juce::Font::bold));
+    title_.setFont(juce::FontOptions(28.0f, juce::Font::bold));
     title_.setJustificationType(juce::Justification::centredLeft);
     addAndMakeVisible(title_);
 
@@ -42,7 +42,17 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
         "The lower readouts show transport, guitar tempo confidence, beat/downbeat confidence, authority, dynamics, phrase detection, "
         "jam memory, silence state, coordinator state and current arrangement section. Treat low-confidence estimates as provisional.\n\n"
         "PERFORMANCE CONTROLS\n"
-        "FILL requests a musical fill. RESET LISTENING clears the current adaptive listening phase so the tracker can reacquire.\n\n"
+        "FILL plays a fill into the next bar. CRASH hits a crash now. BREAK drops out for one bar and re-enters. HALF-TIME and "
+        "DOUBLE-TIME toggle the feel (press again for normal time). STOP silences the drummer until RESUME. PREV/NEXT SECTION move "
+        "through the programmed arrangement (NEXT also cues a transition in free jam). SOLO cues solo support and END JAM cues an "
+        "ending. RESET LISTENING clears tempo, phase, phrase, silence and jam-memory tracking so the tracker can reacquire.\n\n"
+        "MIDI CONTROL (channel 16 note-ons; consumed, not forwarded)\n"
+        "36 Fill | 37 Next section | 38 Previous section | 39 Crash | 40 Intensity up | 41 Intensity down | 42 Half-time | "
+        "43 Double-time | 44 Break | 45 Stop | 46 Resume | 47 Reset listening | 48 Solo support | 49 End jam\n"
+        "Generated drum MIDI is sent on channel 10 (GM drum map). Other MIDI passes through unchanged.\n\n"
+        "HOST AUTOMATION\n"
+        "All main controls are host parameters and can be automated. Intensity and Jam Style also move when MIDI intensity notes "
+        "or arrangement sections change them, and the host is informed. Double-click a slider to reset it to its default.\n\n"
         "TOOLTIPS\n"
         "Hover any control for a description. OPTIONS > Show tooltips globally enables or disables hover help.\n\n"
         "TROUBLESHOOTING\n"
@@ -70,115 +80,51 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     for (auto* label : { &bpmCaption_, &intensityCaption_, &modeCaption_, &outputModeCaption_, &meterCaption_, &leadershipCaption_, &followRangeCaption_, &dynamicFollowCaption_, &styleCaption_, &silenceCaption_ })
         addAndMakeVisible(*label);
 
-    bpm_.setRange(40.0, 240.0, 0.1);
-    bpm_.setValue(processor_.getInternalBpm(), juce::dontSendNotification);
-    bpm_.setSliderStyle(juce::Slider::LinearHorizontal);
-    bpm_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 24);
-    bpm_.onValueChange = [this] { processor_.setInternalBpm(bpm_.getValue()); };
-    addAndMakeVisible(bpm_);
+    auto& params = processor_.getParameters();
+    namespace ids = robodrummer::ParamIDs;
+    for (auto* slider : { &bpm_, &intensity_, &leadership_, &followRange_, &dynamicFollow_, &silenceStopBars_ }) {
+        slider->setSliderStyle(juce::Slider::LinearHorizontal);
+        slider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 82, 24);
+        addAndMakeVisible(*slider);
+    }
+    bpm_.setTextValueSuffix(" BPM");
+    followRange_.setTextValueSuffix(" BPM");
+    silenceStopBars_.setTextValueSuffix(" bars");
+    bpmAttachment_ = std::make_unique<SliderAttachment>(params, ids::bpm, bpm_);
+    intensityAttachment_ = std::make_unique<SliderAttachment>(params, ids::intensity, intensity_);
+    leadershipAttachment_ = std::make_unique<SliderAttachment>(params, ids::leadership, leadership_);
+    followRangeAttachment_ = std::make_unique<SliderAttachment>(params, ids::followRange, followRange_);
+    dynamicFollowAttachment_ = std::make_unique<SliderAttachment>(params, ids::dynamicFollow, dynamicFollow_);
+    silenceStopBarsAttachment_ = std::make_unique<SliderAttachment>(params, ids::silenceStopBars, silenceStopBars_);
+    bpm_.setDoubleClickReturnValue(true, 120.0);
+    intensity_.setDoubleClickReturnValue(true, 0.5);
+    leadership_.setDoubleClickReturnValue(true, 0.5);
+    followRange_.setDoubleClickReturnValue(true, 15.0);
+    dynamicFollow_.setDoubleClickReturnValue(true, 0.6);
+    silenceStopBars_.setDoubleClickReturnValue(true, 2.0);
 
-    intensity_.setRange(0.0, 1.0, 0.01);
-    intensity_.setValue(processor_.getIntensity(), juce::dontSendNotification);
-    intensity_.setSliderStyle(juce::Slider::LinearHorizontal);
-    intensity_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 24);
-    intensity_.onValueChange = [this] { processor_.setIntensity(static_cast<float>(intensity_.getValue())); };
-    addAndMakeVisible(intensity_);
-
-    leadershipMode_.addItem("Drummer Leads", 1);
-    leadershipMode_.addItem("Hybrid", 2);
-    leadershipMode_.addItem("Guitarist Leads", 3);
-    leadershipMode_.setSelectedId(static_cast<int>(processor_.getLeadershipMode()) + 1, juce::dontSendNotification);
-    leadershipMode_.onChange = [this] {
-        processor_.setLeadershipMode(static_cast<robodrummer::LeadershipMode>(juce::jlimit(0, 2, leadershipMode_.getSelectedId() - 1)));
-    };
-    addAndMakeVisible(leadershipMode_);
-
-    outputMode_.addItem("Internal Drums", 1);
-    outputMode_.addItem("MIDI Only", 2);
-    outputMode_.addItem("Internal + MIDI", 3);
-    outputMode_.setSelectedId(static_cast<int>(processor_.getOutputMode()) + 1, juce::dontSendNotification);
-    outputMode_.onChange = [this] {
-        processor_.setOutputMode(static_cast<robodrummer::OutputMode>(juce::jlimit(0, 2, outputMode_.getSelectedId() - 1)));
-    };
-    addAndMakeVisible(outputMode_);
-
-    manualMeterToggle_.setToggleState(processor_.isManualMeterEnabled(), juce::dontSendNotification);
-    manualMeterToggle_.onClick = [this] { processor_.setManualMeterEnabled(manualMeterToggle_.getToggleState()); };
-    addAndMakeVisible(manualMeterToggle_);
-
+    // Combo box item IDs are choice index + 1, which is what ComboBoxAttachment expects.
+    leadershipMode_.addItemList({ "Drummer Leads", "Hybrid", "Guitarist Leads" }, 1);
+    outputMode_.addItemList({ "Internal Drums", "MIDI Only", "Internal + MIDI" }, 1);
     for (int numerator = 2; numerator <= 12; ++numerator)
         meterNumerator_.addItem(juce::String(numerator), numerator - 1);
-    meterNumerator_.setSelectedId(processor_.getManualMeterNumerator() - 1, juce::dontSendNotification);
+    meterDenominator_.addItemList({ "2", "4", "8", "16" }, 1);
+    jamStyle_.addItemList({ "Rock", "Blues", "Funk", "Punk", "Metal", "Shuffle" }, 1);
+    silenceMode_.addItemList({ "Keep playing", "Reduce intensity", "Hold groove", "Fill during silence", "Stop after bars", "Wait for resume" }, 1);
+    for (auto* box : { &leadershipMode_, &outputMode_, &meterNumerator_, &meterDenominator_, &jamStyle_, &silenceMode_ })
+        addAndMakeVisible(*box);
+    leadershipModeAttachment_ = std::make_unique<ComboBoxAttachment>(params, ids::leadershipMode, leadershipMode_);
+    outputModeAttachment_ = std::make_unique<ComboBoxAttachment>(params, ids::outputMode, outputMode_);
+    meterNumeratorAttachment_ = std::make_unique<ComboBoxAttachment>(params, ids::meterNumerator, meterNumerator_);
+    meterDenominatorAttachment_ = std::make_unique<ComboBoxAttachment>(params, ids::meterDenominator, meterDenominator_);
+    jamStyleAttachment_ = std::make_unique<ComboBoxAttachment>(params, ids::jamStyle, jamStyle_);
+    silenceModeAttachment_ = std::make_unique<ComboBoxAttachment>(params, ids::silenceMode, silenceMode_);
 
-    meterDenominator_.addItem("2", 1);
-    meterDenominator_.addItem("4", 2);
-    meterDenominator_.addItem("8", 3);
-    meterDenominator_.addItem("16", 4);
-    const auto denominatorToId = [](int denominator) {
-        switch (denominator) {
-            case 2: return 1;
-            case 8: return 3;
-            case 16: return 4;
-            case 4:
-            default: return 2;
-        }
-    };
-    meterDenominator_.setSelectedId(denominatorToId(processor_.getManualMeterDenominator()), juce::dontSendNotification);
-
-    const auto commitMeter = [this] {
-        int denominator = 4;
-        switch (meterDenominator_.getSelectedId()) {
-            case 1: denominator = 2; break;
-            case 3: denominator = 8; break;
-            case 4: denominator = 16; break;
-            default: break;
-        }
-        processor_.setManualMeter(juce::jlimit(2, 12, meterNumerator_.getSelectedId() + 1), denominator);
-    };
-    meterNumerator_.onChange = commitMeter;
-    meterDenominator_.onChange = commitMeter;
-    addAndMakeVisible(meterNumerator_);
-    addAndMakeVisible(meterDenominator_);
-
-    jamStyle_.addItem("Rock", 1);
-    jamStyle_.addItem("Blues", 2);
-    jamStyle_.addItem("Funk", 3);
-    jamStyle_.addItem("Punk", 4);
-    jamStyle_.addItem("Metal", 5);
-    jamStyle_.addItem("Shuffle", 6);
-    jamStyle_.setSelectedId(static_cast<int>(processor_.getJamStyle()) + 1, juce::dontSendNotification);
-    jamStyle_.onChange = [this] {
-        processor_.setJamStyle(static_cast<robodrummer::JamStyle>(juce::jlimit(0, 5, jamStyle_.getSelectedId() - 1)));
-    };
-    addAndMakeVisible(jamStyle_);
-
-    arrangementToggle_.setToggleState(processor_.isArrangementEnabled(), juce::dontSendNotification);
-    arrangementToggle_.onClick = [this] { processor_.setArrangementEnabled(arrangementToggle_.getToggleState()); };
-    addAndMakeVisible(arrangementToggle_);
-
-    jamMemoryToggle_.setToggleState(processor_.isJamMemoryEnabled(), juce::dontSendNotification);
-    jamMemoryToggle_.onClick = [this] { processor_.setJamMemoryEnabled(jamMemoryToggle_.getToggleState()); };
-    addAndMakeVisible(jamMemoryToggle_);
-
-    silenceMode_.addItem("Keep playing", 1);
-    silenceMode_.addItem("Reduce intensity", 2);
-    silenceMode_.addItem("Hold groove", 3);
-    silenceMode_.addItem("Fill during silence", 4);
-    silenceMode_.addItem("Stop after bars", 5);
-    silenceMode_.addItem("Wait for resume", 6);
-    silenceMode_.setSelectedId(static_cast<int>(processor_.getSilenceMode()) + 1, juce::dontSendNotification);
-    silenceMode_.onChange = [this] {
-        processor_.setSilenceMode(static_cast<robodrummer::SilenceMode>(juce::jlimit(0, 5, silenceMode_.getSelectedId() - 1)));
-    };
-    addAndMakeVisible(silenceMode_);
-
-    silenceStopBars_.setRange(1.0, 16.0, 1.0);
-    silenceStopBars_.setValue(processor_.getSilenceStopBars(), juce::dontSendNotification);
-    silenceStopBars_.setSliderStyle(juce::Slider::LinearHorizontal);
-    silenceStopBars_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 82, 24);
-    silenceStopBars_.setTextValueSuffix(" bars");
-    silenceStopBars_.onValueChange = [this] { processor_.setSilenceStopBars(static_cast<int>(std::lround(silenceStopBars_.getValue()))); };
-    addAndMakeVisible(silenceStopBars_);
+    for (auto* toggle : { &arrangementToggle_, &jamMemoryToggle_, &manualMeterToggle_ })
+        addAndMakeVisible(*toggle);
+    arrangementAttachment_ = std::make_unique<ButtonAttachment>(params, ids::arrangementEnabled, arrangementToggle_);
+    jamMemoryAttachment_ = std::make_unique<ButtonAttachment>(params, ids::jamMemoryEnabled, jamMemoryToggle_);
+    manualMeterAttachment_ = std::make_unique<ButtonAttachment>(params, ids::manualMeterEnabled, manualMeterToggle_);
 
     arrangementEditCaption_.setText("Edit section", juce::dontSendNotification);
     addAndMakeVisible(arrangementEditCaption_);
@@ -189,40 +135,11 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     arrangementSlot_.onChange = [this] {
         editingArrangementSlot_ = juce::jlimit(0, RoboDrummerAudioProcessor::ArrangementSlotCount - 1,
                                               arrangementSlot_.getSelectedId() - 1);
-        bpm_.setTooltip("Fallback drummer tempo used when valid host tempo is unavailable.");
-    intensity_.setTooltip("Overall drummer intensity.");
-    leadershipMode_.setTooltip("Choose the timing/leadership behavior.");
-    outputMode_.setTooltip("Choose how RoboDrummer sends its generated performance.");
-    manualMeterToggle_.setTooltip("Override detected/host meter with a manually selected time signature.");
-    meterNumerator_.setTooltip("Manual time-signature numerator.");
-    meterDenominator_.setTooltip("Manual time-signature denominator.");
-    jamStyle_.setTooltip("Select the groove/style family.");
-    arrangementToggle_.setTooltip("Use the programmed section arrangement instead of free-jam structure.");
-    jamMemoryToggle_.setTooltip("Learn recurring tempo, phrase and dynamic tendencies during free jam.");
-    silenceMode_.setTooltip("Choose what the drummer does when guitar input becomes silent.");
-    silenceStopBars_.setTooltip("Number of silent bars before stopping when Stop after bars is selected.");
-    arrangementSlot_.setTooltip("Choose the arrangement section to edit.");
-    arrangementStyle_.setTooltip("Style used by the selected arrangement section.");
-    arrangementBars_.setTooltip("Length of the selected arrangement section in bars.");
-    arrangementIntensity_.setTooltip("Target intensity for the selected arrangement section.");
-    arrangementSlotEnabled_.setTooltip("Include this arrangement section in playback.");
-    arrangementAutoAdvance_.setTooltip("Advance automatically when this section finishes.");
-    leadership_.setTooltip("Balance drummer leadership against following the detected guitar performance.");
-    followRange_.setTooltip("Maximum tempo-following range around the current groove.");
-    dynamicFollow_.setTooltip("How strongly guitar dynamics influence drummer intensity.");
-    fillButton_.setTooltip("Request a musical fill at the next appropriate point.");
-    resetButton_.setTooltip("Reset adaptive listening so tempo, phase and phrase tracking can reacquire.");
-
-    loadArrangementEditorSlot();
+        loadArrangementEditorSlot();
     };
     addAndMakeVisible(arrangementSlot_);
 
-    arrangementStyle_.addItem("Rock", 1);
-    arrangementStyle_.addItem("Blues", 2);
-    arrangementStyle_.addItem("Funk", 3);
-    arrangementStyle_.addItem("Punk", 4);
-    arrangementStyle_.addItem("Metal", 5);
-    arrangementStyle_.addItem("Shuffle", 6);
+    arrangementStyle_.addItemList({ "Rock", "Blues", "Funk", "Punk", "Metal", "Shuffle" }, 1);
     arrangementStyle_.onChange = [this] { commitArrangementEditorSlot(); };
     addAndMakeVisible(arrangementStyle_);
 
@@ -244,27 +161,27 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     addAndMakeVisible(arrangementSlotEnabled_);
     addAndMakeVisible(arrangementAutoAdvance_);
 
-    leadership_.setRange(0.0, 1.0, 0.01);
-    leadership_.setValue(processor_.getLeadership(), juce::dontSendNotification);
-    leadership_.setSliderStyle(juce::Slider::LinearHorizontal);
-    leadership_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 24);
-    leadership_.onValueChange = [this] { processor_.setLeadership(static_cast<float>(leadership_.getValue())); };
-    addAndMakeVisible(leadership_);
-
-    followRange_.setRange(0.0, 80.0, 1.0);
-    followRange_.setValue(processor_.getFollowRange(), juce::dontSendNotification);
-    followRange_.setSliderStyle(juce::Slider::LinearHorizontal);
-    followRange_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 24);
-    followRange_.setTextValueSuffix(" BPM");
-    followRange_.onValueChange = [this] { processor_.setFollowRange(followRange_.getValue()); };
-    addAndMakeVisible(followRange_);
-
-    dynamicFollow_.setRange(0.0, 1.0, 0.01);
-    dynamicFollow_.setValue(processor_.getDynamicFollow(), juce::dontSendNotification);
-    dynamicFollow_.setSliderStyle(juce::Slider::LinearHorizontal);
-    dynamicFollow_.setTextBoxStyle(juce::Slider::TextBoxRight, false, 80, 24);
-    dynamicFollow_.onValueChange = [this] { processor_.setDynamicFollow(static_cast<float>(dynamicFollow_.getValue())); };
-    addAndMakeVisible(dynamicFollow_);
+    bpm_.setTooltip("Fallback drummer tempo used when valid host tempo is unavailable (40-240 BPM). Double-click resets to 120.");
+    intensity_.setTooltip("Base drummer intensity before dynamic follow, silence and coordinator adjustments.");
+    leadershipMode_.setTooltip("Choose who owns the clock: host/internal tempo, a blend, or the detected guitar.");
+    outputMode_.setTooltip("Internal drum audio, generated MIDI on channel 10, or both.");
+    manualMeterToggle_.setTooltip("Override the host time signature with the manually selected meter.");
+    meterNumerator_.setTooltip("Manual time-signature numerator (beats per bar).");
+    meterDenominator_.setTooltip("Manual time-signature denominator (beat unit).");
+    jamStyle_.setTooltip("Groove family used in free jam. Programmed arrangement sections set this automatically.");
+    arrangementToggle_.setTooltip("Use the programmed section arrangement instead of free-jam structure.");
+    jamMemoryToggle_.setTooltip("Learn recurring tempo, phrase and dynamic tendencies during free jam.");
+    silenceMode_.setTooltip("Choose what the drummer does when guitar input becomes silent.");
+    silenceStopBars_.setTooltip("Number of silent bars before stopping when Stop after bars is selected.");
+    arrangementSlot_.setTooltip("Choose the arrangement section to edit.");
+    arrangementStyle_.setTooltip("Style used by the selected arrangement section.");
+    arrangementBars_.setTooltip("Length of the selected arrangement section in bars.");
+    arrangementIntensity_.setTooltip("Target intensity for the selected arrangement section.");
+    arrangementSlotEnabled_.setTooltip("Include this arrangement section in playback.");
+    arrangementAutoAdvance_.setTooltip("Advance automatically when this section finishes; otherwise wait for a NEXT SECTION cue.");
+    leadership_.setTooltip("Balance drummer leadership against following the detected guitar performance (Hybrid/Guitarist Leads).");
+    followRange_.setTooltip("Maximum tempo-following range around the base tempo, in BPM.");
+    dynamicFollow_.setTooltip("How strongly guitar dynamics influence drummer intensity.");
 
     tempoLabel_.setText("Drummer tempo: --", juce::dontSendNotification);
     transportLabel_.setText("Transport: internal", juce::dontSendNotification);
@@ -280,13 +197,32 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     for (auto* label : { &tempoLabel_, &transportLabel_, &guitarLabel_, &trackingLabel_, &authorityLabel_, &dynamicsLabel_, &phraseLabel_, &memoryLabel_, &silenceLabel_, &coordinatorLabel_, &sectionLabel_ })
         addAndMakeVisible(*label);
 
-    fillButton_.onClick = [this] { processor_.requestFill(); };
-    resetButton_.onClick = [this] { processor_.resetJamPhase(); };
-    addAndMakeVisible(fillButton_);
-    addAndMakeVisible(resetButton_);
+    using C = robodrummer::MidiCommand;
+    setupPerformanceButton(fillButton_, C::Fill, "Play a fill leading into the next bar (MIDI ch16 note 36).");
+    setupPerformanceButton(crashButton_, C::Crash, "Hit a crash cymbal now (MIDI ch16 note 39).");
+    setupPerformanceButton(breakButton_, C::Break, "Drop out for one bar, then re-enter automatically (MIDI ch16 note 44).");
+    setupPerformanceButton(halfTimeButton_, C::HalfTime, "Toggle half-time feel; press again to return to normal time (MIDI ch16 note 42).");
+    setupPerformanceButton(doubleTimeButton_, C::DoubleTime, "Toggle double-time feel; press again to return to normal time (MIDI ch16 note 43).");
+    setupPerformanceButton(stopButton_, C::Stop, "Stop the drummer until RESUME (MIDI ch16 note 45).");
+    setupPerformanceButton(resumeButton_, C::Resume, "Resume the drummer after STOP (MIDI ch16 note 46).");
+    setupPerformanceButton(previousSectionButton_, C::PreviousSection, "Jump to the previous arrangement section (MIDI ch16 note 38).");
+    setupPerformanceButton(nextSectionButton_, C::NextSection, "Advance to the next arrangement section, or cue a transition in free jam (MIDI ch16 note 37).");
+    setupPerformanceButton(soloButton_, C::SoloSupport, "Cue solo support: the drummer settles and restrains busy fills (MIDI ch16 note 48).");
+    setupPerformanceButton(endJamButton_, C::EndJam, "Cue the end of the jam (MIDI ch16 note 49).");
+    setupPerformanceButton(resetButton_, C::ResetListening,
+                           "Clear tempo, phase, phrase, silence and jam-memory tracking so listening can reacquire (MIDI ch16 note 47).");
 
+    seenArrangementRevision_ = processor_.getArrangementRevision();
     loadArrangementEditorSlot();
     startTimerHz(12);
+}
+
+void RoboDrummerAudioProcessorEditor::setupPerformanceButton(juce::TextButton& button,
+                                                             robodrummer::MidiCommand command,
+                                                             const juce::String& tooltip) {
+    button.setTooltip(tooltip);
+    button.onClick = [this, command] { processor_.requestCommand(command); };
+    addAndMakeVisible(button);
 }
 
 void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
@@ -296,7 +232,7 @@ void RoboDrummerAudioProcessorEditor::paint(juce::Graphics& g) {
     g.setColour(juce::Colour::fromRGB(190, 198, 205));
     g.setFont(13.0f);
     g.drawText("Adaptive tempo, phase, bar position and dynamics are confidence-gated. Hard resync waits for a reliable beat 1.",
-               24, 1013, getWidth() - 48, 24, juce::Justification::centredLeft);
+               24, getHeight() - 43, getWidth() - 48, 24, juce::Justification::centredLeft);
 }
 
 void RoboDrummerAudioProcessorEditor::resized() {
@@ -308,63 +244,63 @@ void RoboDrummerAudioProcessorEditor::resized() {
     optionsButton_.setBounds(titleRow.removeFromRight(84).reduced(0, 5));
     area.removeFromTop(8);
 
-    auto row = area.removeFromTop(36);
+    auto row = area.removeFromTop(32);
     bpmCaption_.setBounds(row.removeFromLeft(112));
     bpm_.setBounds(row);
-    area.removeFromTop(5);
+    area.removeFromTop(4);
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     intensityCaption_.setBounds(row.removeFromLeft(112));
     intensity_.setBounds(row);
-    area.removeFromTop(5);
+    area.removeFromTop(4);
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     modeCaption_.setBounds(row.removeFromLeft(112));
     leadershipMode_.setBounds(row.removeFromLeft(220));
-    area.removeFromTop(5);
+    area.removeFromTop(4);
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     outputModeCaption_.setBounds(row.removeFromLeft(112));
     outputMode_.setBounds(row.removeFromLeft(220));
-    area.removeFromTop(5);
+    area.removeFromTop(4);
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     meterCaption_.setBounds(row.removeFromLeft(112));
     manualMeterToggle_.setBounds(row.removeFromLeft(135));
     row.removeFromLeft(8);
     meterNumerator_.setBounds(row.removeFromLeft(70));
     row.removeFromLeft(8);
     meterDenominator_.setBounds(row.removeFromLeft(70));
-    area.removeFromTop(5);
+    area.removeFromTop(4);
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     styleCaption_.setBounds(row.removeFromLeft(112));
     jamStyle_.setBounds(row.removeFromLeft(220));
     row.removeFromLeft(14);
     arrangementToggle_.setBounds(row.removeFromLeft(220));
-    area.removeFromTop(5);
+    area.removeFromTop(4);
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     leadershipCaption_.setBounds(row.removeFromLeft(112));
     leadership_.setBounds(row);
-    area.removeFromTop(5);
+    area.removeFromTop(4);
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     followRangeCaption_.setBounds(row.removeFromLeft(112));
     followRange_.setBounds(row);
-    area.removeFromTop(5);
+    area.removeFromTop(4);
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     dynamicFollowCaption_.setBounds(row.removeFromLeft(112));
     dynamicFollow_.setBounds(row);
 
-    area.removeFromTop(5);
+    area.removeFromTop(4);
     row = area.removeFromTop(32);
     row.removeFromLeft(112);
     jamMemoryToggle_.setBounds(row.removeFromLeft(180));
 
-    area.removeFromTop(5);
-    row = area.removeFromTop(36);
+    area.removeFromTop(4);
+    row = area.removeFromTop(32);
     silenceCaption_.setBounds(row.removeFromLeft(112));
     silenceMode_.setBounds(row.removeFromLeft(205));
     row.removeFromLeft(10);
@@ -380,30 +316,38 @@ void RoboDrummerAudioProcessorEditor::resized() {
     arrangementSlotEnabled_.setBounds(row.removeFromLeft(86));
     arrangementAutoAdvance_.setBounds(row.removeFromLeft(120));
 
-    row = area.removeFromTop(36);
+    row = area.removeFromTop(32);
     row.removeFromLeft(112);
     arrangementBars_.setBounds(row.removeFromLeft(255));
     row.removeFromLeft(10);
     arrangementIntensity_.setBounds(row);
 
     area.removeFromTop(12);
-    tempoLabel_.setBounds(area.removeFromTop(25));
-    transportLabel_.setBounds(area.removeFromTop(25));
-    guitarLabel_.setBounds(area.removeFromTop(25));
-    trackingLabel_.setBounds(area.removeFromTop(25));
-    authorityLabel_.setBounds(area.removeFromTop(25));
-    dynamicsLabel_.setBounds(area.removeFromTop(25));
-    phraseLabel_.setBounds(area.removeFromTop(25));
-    memoryLabel_.setBounds(area.removeFromTop(25));
-    silenceLabel_.setBounds(area.removeFromTop(25));
-    coordinatorLabel_.setBounds(area.removeFromTop(25));
-    sectionLabel_.setBounds(area.removeFromTop(25));
+    tempoLabel_.setBounds(area.removeFromTop(23));
+    transportLabel_.setBounds(area.removeFromTop(23));
+    guitarLabel_.setBounds(area.removeFromTop(23));
+    trackingLabel_.setBounds(area.removeFromTop(23));
+    authorityLabel_.setBounds(area.removeFromTop(23));
+    dynamicsLabel_.setBounds(area.removeFromTop(23));
+    phraseLabel_.setBounds(area.removeFromTop(23));
+    memoryLabel_.setBounds(area.removeFromTop(23));
+    silenceLabel_.setBounds(area.removeFromTop(23));
+    coordinatorLabel_.setBounds(area.removeFromTop(23));
+    sectionLabel_.setBounds(area.removeFromTop(23));
 
+    const auto layoutButtonRow = [](juce::Rectangle<int> buttonRow, std::initializer_list<juce::Component*> buttons) {
+        const int gap = 8;
+        const int count = static_cast<int>(buttons.size());
+        const int width = (buttonRow.getWidth() - gap * (count - 1)) / count;
+        for (auto* button : buttons) {
+            button->setBounds(buttonRow.removeFromLeft(width));
+            buttonRow.removeFromLeft(gap);
+        }
+    };
     area.removeFromTop(10);
-    auto buttons = area.removeFromTop(42);
-    fillButton_.setBounds(buttons.removeFromLeft(160));
-    buttons.removeFromLeft(12);
-    resetButton_.setBounds(buttons.removeFromLeft(190));
+    layoutButtonRow(area.removeFromTop(36), { &fillButton_, &crashButton_, &breakButton_, &halfTimeButton_, &doubleTimeButton_, &stopButton_, &resumeButton_ });
+    area.removeFromTop(8);
+    layoutButtonRow(area.removeFromTop(36), { &previousSectionButton_, &nextSectionButton_, &soloButton_, &endJamButton_, &resetButton_ });
 
     if (helpText_.isVisible()) {
         auto helpArea = getLocalBounds().reduced(48, 44);
@@ -469,24 +413,26 @@ void RoboDrummerAudioProcessorEditor::commitArrangementEditorSlot() {
 }
 
 void RoboDrummerAudioProcessorEditor::timerCallback() {
-    arrangementToggle_.setToggleState(processor_.isArrangementEnabled(), juce::dontSendNotification);
-    jamMemoryToggle_.setToggleState(processor_.isJamMemoryEnabled(), juce::dontSendNotification);
-    silenceMode_.setSelectedId(static_cast<int>(processor_.getSilenceMode()) + 1, juce::dontSendNotification);
-    silenceStopBars_.setValue(processor_.getSilenceStopBars(), juce::dontSendNotification);
-    manualMeterToggle_.setToggleState(processor_.isManualMeterEnabled(), juce::dontSendNotification);
-    meterNumerator_.setSelectedId(processor_.getManualMeterNumerator() - 1, juce::dontSendNotification);
-    switch (processor_.getManualMeterDenominator()) {
-        case 2: meterDenominator_.setSelectedId(1, juce::dontSendNotification); break;
-        case 8: meterDenominator_.setSelectedId(3, juce::dontSendNotification); break;
-        case 16: meterDenominator_.setSelectedId(4, juce::dontSendNotification); break;
-        default: meterDenominator_.setSelectedId(2, juce::dontSendNotification); break;
+    // Host parameters are kept in sync by the attachments; the arrangement slots are plain state and
+    // can change underneath the editor (session recall), so reload the visible slot when they do.
+    const auto arrangementRevision = processor_.getArrangementRevision();
+    if (arrangementRevision != seenArrangementRevision_) {
+        seenArrangementRevision_ = arrangementRevision;
+        if (!arrangementBars_.isMouseButtonDown() && !arrangementIntensity_.isMouseButtonDown())
+            loadArrangementEditorSlot();
     }
-    jamStyle_.setSelectedId(static_cast<int>(processor_.getJamStyle()) + 1, juce::dontSendNotification);
-    outputMode_.setSelectedId(static_cast<int>(processor_.getOutputMode()) + 1, juce::dontSendNotification);
-    intensity_.setValue(processor_.getIntensity(), juce::dontSendNotification);
+    stopButton_.setToggleState(processor_.isDrummerStopped(), juce::dontSendNotification);
+    const auto timeScale = processor_.getTimeScale();
+    halfTimeButton_.setToggleState(timeScale < 0.75, juce::dontSendNotification);
+    doubleTimeButton_.setToggleState(timeScale > 1.5, juce::dontSendNotification);
 
     const auto t = processor_.getLastTransport();
-    tempoLabel_.setText("Drummer tempo: " + juce::String(processor_.getEffectiveDrummerBpm(), 1) + " BPM", juce::dontSendNotification);
+    juce::String feel;
+    if (timeScale < 0.75) feel = " | HALF-TIME";
+    else if (timeScale > 1.5) feel = " | DOUBLE-TIME";
+    tempoLabel_.setText("Drummer tempo: " + juce::String(processor_.getEffectiveDrummerBpm(), 1) + " BPM" + feel +
+                            (processor_.isDrummerStopped() ? " | STOPPED (press RESUME)" : ""),
+                        juce::dontSendNotification);
     transportLabel_.setText(
         t.validTempo
             ? (juce::String("Transport: host | ") + (t.playing ? "playing" : "stopped") +
