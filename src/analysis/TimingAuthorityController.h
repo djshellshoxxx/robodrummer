@@ -1,4 +1,5 @@
 #pragma once
+#include "analysis/FollowResponseProfile.h"
 #include "analysis/RhythmAnalyzer.h"
 #include <algorithm>
 #include <cmath>
@@ -6,7 +7,6 @@
 namespace robodrummer {
 
 enum class LeadershipMode { DrummerLeads, Hybrid, GuitaristLeads };
-enum class FollowResponse { VeryStable, Stable, Balanced, Responsive, VeryResponsive };
 
 struct TimingAuthoritySettings {
     LeadershipMode mode{LeadershipMode::DrummerLeads};
@@ -28,7 +28,13 @@ public:
         trustedGuitarBpm_ = currentBpm_;
         hasTrustedGuitar_ = false;
         initialized_ = false;
+        smoothedVelocity_ = 0.0;
+        pendingBpm_ = 0.0;
+        pendingCount_ = 0;
     }
+
+    // Low-passed guitar tempo velocity in BPM/s (positive = accelerating).
+    [[nodiscard]] double smoothedTempoVelocity() const noexcept { return smoothedVelocity_; }
 
     [[nodiscard]] TimingAuthorityState update(double baseBpm,
                                                const RhythmState& guitar,
@@ -44,9 +50,29 @@ public:
         const float confidenceAuthority = confidenceGain(guitar.tempoConfidence, guitar.beatConfidence, guitar.locked);
         const float effectiveAuthority = leadership * confidenceAuthority;
 
+        const auto profile = followResponseProfile(settings.response);
+
         if (guitar.locked && guitar.tempoConfidence >= 0.60f && guitar.beatConfidence >= 0.50f) {
-            trustedGuitarBpm_ = sanitizeBpm(guitar.tempoBpm);
-            hasTrustedGuitar_ = true;
+            const double candidate = sanitizeBpm(guitar.tempoBpm);
+            if (!hasTrustedGuitar_ || std::abs(candidate - trustedGuitarBpm_) <= profile.outlierRejectionBpm) {
+                trustedGuitarBpm_ = candidate;
+                hasTrustedGuitar_ = true;
+                pendingCount_ = 0;
+            } else {
+                // Outlier: only accept once several consecutive updates agree on the new tempo.
+                if (pendingCount_ > 0 && std::abs(candidate - pendingBpm_) <= 3.0) ++pendingCount_;
+                else { pendingBpm_ = candidate; pendingCount_ = 1; }
+                if (pendingCount_ >= profile.outlierPersistUpdates) {
+                    trustedGuitarBpm_ = candidate;
+                    pendingCount_ = 0;
+                }
+            }
+        }
+
+        const double velocity = std::isfinite(guitar.tempoVelocity) ? std::clamp(guitar.tempoVelocity, -50.0, 50.0) : 0.0;
+        if (deltaSeconds > 0.0) {
+            const double a = 1.0 - std::exp(-deltaSeconds / 1.0);
+            smoothedVelocity_ += (velocity - smoothedVelocity_) * a;
         }
 
         double guitarTarget = hasTrustedGuitar_ ? trustedGuitarBpm_ : sanitizeBpm(guitar.tempoBpm);
@@ -59,7 +85,12 @@ public:
             initialized_ = true;
         }
 
-        const double maxRate = responseRate(settings.response);
+        double maxRate = profile.smoothingRateBpmPerSecond;
+        if (profile.accelerationSensitivity > 0.0 && guitar.locked) {
+            const double gap = desired - currentBpm_;
+            if (gap * smoothedVelocity_ > 0.0 && std::abs(smoothedVelocity_) > 0.5)
+                maxRate *= 1.0 + profile.accelerationSensitivity * std::min(1.0, std::abs(smoothedVelocity_) / 4.0);
+        }
         const double maxStep = maxRate * deltaSeconds;
         if (maxStep > 0.0)
             currentBpm_ += std::clamp(desired - currentBpm_, -maxStep, maxStep);
@@ -84,21 +115,13 @@ private:
         return 0.80f + 0.20f * (c - 0.80f) / 0.20f;
     }
 
-    static double responseRate(FollowResponse response) noexcept {
-        switch (response) {
-            case FollowResponse::VeryStable: return 1.5;
-            case FollowResponse::Stable: return 3.0;
-            case FollowResponse::Balanced: return 6.0;
-            case FollowResponse::Responsive: return 12.0;
-            case FollowResponse::VeryResponsive: return 24.0;
-        }
-        return 6.0;
-    }
-
     double currentBpm_{120.0};
     double trustedGuitarBpm_{120.0};
     bool hasTrustedGuitar_{false};
     bool initialized_{false};
+    double smoothedVelocity_{0.0};
+    double pendingBpm_{0.0};
+    int pendingCount_{0};
 };
 
 } // namespace robodrummer

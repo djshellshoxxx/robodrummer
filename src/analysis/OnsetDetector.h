@@ -56,7 +56,7 @@ public:
             const float rms = static_cast<float>(std::sqrt(frameEnergy_ / static_cast<double>(frameSamples_)));
             const float logEnergy = std::log1p(rms * 24.0f);
             const float novelty = std::max(0.0f, logEnergy - previousLogEnergy_);
-            const float threshold = std::max(0.055f, noveltyMean_ + 2.35f * noveltyDeviation_);
+            const float threshold = std::max(0.055f * thresholdScale_, noveltyMean_ + 2.35f * thresholdScale_ * noveltyDeviation_);
             noveltyPeak_ *= noveltyPeakDecay_;
 
             if (novelty > threshold && samplesSinceOnset_ >= refractorySamples_ && count < capacity) {
@@ -85,6 +85,13 @@ public:
         return count;
     }
 
+    // Onset sensitivity 0.25..4 (1 = default). Higher detects softer onsets. Survives reset().
+    void setSensitivity(float sensitivity) noexcept {
+        sensitivity_ = std::isfinite(sensitivity) ? std::clamp(sensitivity, 0.25f, 4.0f) : 1.0f;
+        thresholdScale_ = 1.0f / sensitivity_;
+    }
+    [[nodiscard]] float sensitivity() const noexcept { return sensitivity_; }
+
     [[nodiscard]] int frameSize() const noexcept { return frameSize_; }
 
 private:
@@ -101,6 +108,8 @@ private:
     float noveltyPeak_{0.0f};
     float noveltyPeakDecay_{0.9995f};
     int samplesSinceOnset_{2160};
+    float sensitivity_{1.0f};
+    float thresholdScale_{1.0f};
 };
 
 } // namespace robodrummer
