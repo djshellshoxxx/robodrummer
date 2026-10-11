@@ -89,7 +89,7 @@ public:
 
             float extraKick = style.extraKickProbability * (0.25f + 1.5f * context.intensity);
             if (complexityActive && d < 0.0f) extraKick *= 1.0f + 0.8f * d;
-            if (chance(extraKick))
+            if (!style.jazzRide && chance(extraKick))
                 add(DrumInstrument::Kick, beat + 0.5, 0.55f + 0.3f * context.intensity);
 
             if (syncopation > 0.0f && !style.jazzRide && chance(syncopation * 0.30f * (0.4f + context.intensity)))
