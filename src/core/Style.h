@@ -201,7 +201,7 @@ struct Style {
     static Style reggae() noexcept {
         Style s;
         s.kickBeat1 = 0.10f; s.kickBeat3 = 1.0f; s.extraKickProbability = 0.02f;
-        s.snareBackbeat = 0.0f; s.closedHatProbability = 0.97f; s.crashOnSectionStart = 0.30f;
+        s.snareBackbeat = 1.0f; s.closedHatProbability = 0.97f; s.crashOnSectionStart = 0.30f;
         s.humanizeMs = 6.0f; s.openHatProbability = 0.0f; s.ghostSnareProbability = 0.0f;
         s.oneDrop = true; s.sidestickProbability = 0.70f; s.swing = 0.10f;
         s.snareLaybackMs = 8.0f; s.kickLaybackMs = 5.0f; s.hatLaybackMs = 3.0f; s.hatTightness = 0.5f;
