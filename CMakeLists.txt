@@ -16,6 +16,7 @@ option(ROBODRUMMER_BUILD_CLAP "Also build the CLAP target (requires ROBODRUMMER_
 add_library(robodrummer_core INTERFACE)
 target_include_directories(robodrummer_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+find_package(Threads REQUIRED)
 enable_testing()
 # Every tests/test_*.cpp is a standalone assert-based test executable.
 file(GLOB ROBODRUMMER_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp)
@@ -23,7 +24,7 @@ foreach(test_source IN LISTS ROBODRUMMER_TEST_SOURCES)
   get_filename_component(test_file ${test_source} NAME_WE)
   string(REGEX REPLACE "^test_" "" test_name ${test_file})
   add_executable(test_${test_name} ${test_source})
-  target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
+  target_link_libraries(test_${test_name} PRIVATE robodrummer_core Threads::Threads)
   if(MSVC)
     target_compile_options(test_${test_name} PRIVATE /UNDEBUG)
   else()
