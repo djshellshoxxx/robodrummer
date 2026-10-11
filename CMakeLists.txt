@@ -12,40 +12,12 @@ add_library(robodrummer_core INTERFACE)
 target_include_directories(robodrummer_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 enable_testing()
-foreach(test_name IN ITEMS
-    assertions_active
-    musical_clock
-    event_scheduler
-    groove_generator
-    midi_commands
-    host_transport_adapter
-    midi_command_mapper
-    drum_sample_player
-    jam_engine
-    onset_detector
-    tempo_tracker
-    rhythm_analyzer
-    timing_authority
-    phase_follower
-    performance_analyzer
-    dynamics_follower
-    downbeat_tracker
-    resync_planner
-    jam_brain
-    jam_style_profile
-    section_sequencer
-    style_grooves
-    fill_strength
-    phrase_groove_modifier
-    session_memory
-    session_memory_policy
-    meter_profiles
-    meter_selection
-    silence_controller
-    jam_coordinator
-    output_mode
-    live_control_policy)
-  add_executable(test_${test_name} tests/test_${test_name}.cpp)
+# Every tests/test_*.cpp is a standalone assert-based test executable.
+file(GLOB ROBODRUMMER_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp)
+foreach(test_source IN LISTS ROBODRUMMER_TEST_SOURCES)
+  get_filename_component(test_file ${test_source} NAME_WE)
+  string(REGEX REPLACE "^test_" "" test_name ${test_file})
+  add_executable(test_${test_name} ${test_source})
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   if(MSVC)
     target_compile_options(test_${test_name} PRIVATE /UNDEBUG)
