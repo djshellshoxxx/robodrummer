@@ -57,6 +57,9 @@ public:
         }
     }
 
+    void setOnsetSensitivity(float sensitivity) noexcept { detector_.setSensitivity(sensitivity); }
+    [[nodiscard]] float onsetSensitivity() const noexcept { return detector_.sensitivity(); }
+
     void processBlock(const float* mono, int numSamples) noexcept {
         if (mono == nullptr || numSamples <= 0) return;
         std::array<OnsetEvent, 32> events{};
