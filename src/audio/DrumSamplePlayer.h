@@ -1,4 +1,5 @@
 #pragma once
+#include "audio/DrumKit.h"
 #include "audio/DrumMixer.h"
 #include "audio/RoomAmbience.h"
 #include "core/DrumEvent.h"
@@ -21,10 +22,7 @@ public:
 
     DrumSamplePlayer() { resizeScratch(1024); }
 
-    struct Sample {
-        std::vector<float> left;
-        std::vector<float> right;
-    };
+    using Sample = DrumSample;
 
     void setSample(DrumInstrument instrument, Sample sample) {
         auto& set = instruments_[index(instrument)];
@@ -95,6 +93,19 @@ public:
             voice.active = false;
     }
 
+    // Use samples/gain/pan/tune/choke from a user kit (DrumKit.h) for every instrument the kit
+    // defines; other instruments keep the built-in (starter) samples. nullptr = starter only.
+    // The kit must outlive its use (see KitHandoff). Voices still reading the previous kit are
+    // stopped. Audio-thread safe (no allocation).
+    void useKit(const DrumKit* kit) noexcept {
+        if (kit == kit_) return;
+        for (auto& voice : voices_)
+            if (voice.fromKit) voice.active = false;
+        kit_ = kit;
+        kitRoundRobin_ = {};
+    }
+    [[nodiscard]] const DrumKit* kit() const noexcept { return kit_; }
+
     void trigger(const DrumEvent& event) noexcept {
         const auto instrumentIndex = index(event.instrument);
         if (instrumentIndex >= InstrumentCount)
@@ -102,23 +113,45 @@ public:
 
         auto& instrument = instruments_[instrumentIndex];
         const float velocity = std::clamp(event.velocity, 0.0f, 1.0f);
-        const auto layerIndex = findLayer(instrument, velocity);
-        if (layerIndex >= MaxVelocityLayers)
-            return;
 
-        auto& layer = instrument.layers[layerIndex];
-        if (layer.variantCount == 0)
-            return;
+        const Sample* samplePtr = nullptr;
+        float gain = instrument.gain, pan = instrument.pan, tune = instrument.tuningSemitones;
+        int choke = instrument.chokeGroup;
+        bool fromKit = false;
 
-        const std::size_t variantIndex =
-            instrument.roundRobinCounters[layerIndex]++ % layer.variantCount;
-        const auto& sample = layer.variants[variantIndex];
+        if (kit_ != nullptr && kit_->instruments[instrumentIndex].layerCount > 0) {
+            const auto& ki = kit_->instruments[instrumentIndex];
+            std::size_t li = 0;
+            for (std::size_t i = 0; i < ki.layerCount; ++i) {
+                if (velocity >= ki.layers[i].minVelocity && velocity <= ki.layers[i].maxVelocity) { li = i; break; }
+            }
+            const auto& layer = ki.layers[li];
+            if (layer.variantCount == 0)
+                return;
+            samplePtr = &layer.variants[kitRoundRobin_[instrumentIndex][li]++ % layer.variantCount];
+            gain = ki.gain;
+            pan = ki.pan;
+            tune = ki.tuneSemitones;
+            choke = ki.chokeGroup;
+            fromKit = true;
+        } else {
+            const auto layerIndex = findLayer(instrument, velocity);
+            if (layerIndex >= MaxVelocityLayers)
+                return;
+            auto& layer = instrument.layers[layerIndex];
+            if (layer.variantCount == 0)
+                return;
+            const std::size_t variantIndex =
+                instrument.roundRobinCounters[layerIndex]++ % layer.variantCount;
+            samplePtr = &layer.variants[variantIndex];
+        }
+        const auto& sample = *samplePtr;
         if (sample.left.empty())
             return;
 
-        if (instrument.chokeGroup > 0) {
+        if (choke > 0) {
             for (auto& voice : voices_) {
-                if (voice.active && voice.chokeGroup == instrument.chokeGroup)
+                if (voice.active && voice.chokeGroup == choke)
                     voice.active = false;
             }
         }
@@ -132,17 +165,18 @@ public:
         }
         if (target == nullptr) return;
         auto& voice = *target;
-        const float leftPan = instrument.pan > 0.0f ? 1.0f - instrument.pan : 1.0f;
-        const float rightPan = instrument.pan < 0.0f ? 1.0f + instrument.pan : 1.0f;
+        const float leftPan = pan > 0.0f ? 1.0f - pan : 1.0f;
+        const float rightPan = pan < 0.0f ? 1.0f + pan : 1.0f;
         voice.active = true;
         voice.sample = &sample;
         voice.position = 0.0;
-        voice.playbackRate = std::pow(2.0, static_cast<double>(instrument.tuningSemitones) / 12.0);
-        voice.leftGain = velocity * instrument.gain * leftPan;
-        voice.rightGain = velocity * instrument.gain * rightPan;
+        voice.playbackRate = std::pow(2.0, static_cast<double>(tune) / 12.0);
+        voice.leftGain = velocity * gain * leftPan;
+        voice.rightGain = velocity * gain * rightPan;
         voice.attackSamples = instrument.attackSamples;
         voice.releaseSamples = instrument.releaseSamples;
-        voice.chokeGroup = instrument.chokeGroup;
+        voice.chokeGroup = choke;
+        voice.fromKit = fromKit;
         voice.channel = static_cast<std::uint8_t>(DrumMixer::channelFor(event.instrument));
     }
 
@@ -236,6 +270,7 @@ private:
         int releaseSamples{0};
         int chokeGroup{0};
         std::uint8_t channel{0};
+        bool fromKit{false};
     };
 
     [[nodiscard]] static constexpr std::size_t index(DrumInstrument instrument) noexcept {
@@ -360,6 +395,8 @@ private:
         else if (roomIdle_ < roomTailSamples_) roomIdle_ += len;
     }
 
+    const DrumKit* kit_{nullptr};
+    std::array<std::array<std::size_t, 4>, InstrumentCount> kitRoundRobin_{};
     std::size_t blockCap_{1024};
     std::array<std::vector<float>, DrumMixer::DryChannelCount> stemL_{}, stemR_{};
     std::vector<float> roomL_, roomR_, mixL_, mixR_;

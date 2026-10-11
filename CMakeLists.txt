@@ -47,7 +47,8 @@ foreach(test_name IN ITEMS
     live_control_policy
     drum_mixer
     drum_midi_map
-    midi_learn)
+    midi_learn
+    drum_kit)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   if(MSVC)
