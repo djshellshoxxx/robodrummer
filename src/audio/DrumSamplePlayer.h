@@ -1,9 +1,12 @@
 #pragma once
+#include "audio/DrumMixer.h"
+#include "audio/RoomAmbience.h"
 #include "core/DrumEvent.h"
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cmath>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -15,6 +18,8 @@ public:
     static constexpr std::size_t MaxVoices = 64;
     static constexpr std::size_t MaxVelocityLayers = 4;
     static constexpr std::size_t MaxRoundRobinVariants = 4;
+
+    DrumSamplePlayer() { resizeScratch(1024); }
 
     struct Sample {
         std::vector<float> left;
@@ -138,34 +143,65 @@ public:
         voice.attackSamples = instrument.attackSamples;
         voice.releaseSamples = instrument.releaseSamples;
         voice.chokeGroup = instrument.chokeGroup;
+        voice.channel = static_cast<std::uint8_t>(DrumMixer::channelFor(event.instrument));
     }
 
+    // Mixer (SPEC §29): per-channel gain/pan/mute/solo and room send. Parameter changes are
+    // smoothed; call from the audio thread (or while not rendering).
+    [[nodiscard]] DrumMixer& mixer() noexcept { return mixer_; }
+    [[nodiscard]] const DrumMixer& mixer() const noexcept { return mixer_; }
+    [[nodiscard]] RoomAmbience& room() noexcept { return room_; }
+
+    // Not realtime-safe: sizes scratch stems (maxBlockSize) and the room buffers.
+    void prepare(double sampleRate, int maxBlockSize) {
+        mixer_.prepare(sampleRate);
+        room_.prepare(sampleRate);
+        roomTailSamples_ = static_cast<long long>(room_.tailSeconds() * (sampleRate > 8000.0 ? sampleRate : 44100.0));
+        roomIdle_ = roomTailSamples_;
+        resizeScratch(static_cast<std::size_t>(std::max(16, maxBlockSize)));
+    }
+
+    // Sum render: voices -> dry channel stems (per-instrument gain/pan, then mixer channel
+    // fader/pan/mute/solo) + room return, scaled by the Master channel, ADDED to outputs[0..1].
+    // Any block size is accepted (internally chunked). No allocation.
     void render(float** outputs, int channels, int numSamples) noexcept {
         if (!outputs || !outputs[0] || channels <= 0 || numSamples <= 0)
             return;
-
-        for (auto& voice : voices_) {
-            if (!voice.active || voice.sample == nullptr)
-                continue;
-
-            const auto& sample = *voice.sample;
-            const double sampleLength = static_cast<double>(sample.left.size());
-            for (int n = 0; n < numSamples && voice.position < sampleLength; ++n) {
-                const float envelope = envelopeGain(voice, sampleLength);
-                const float left = interpolate(sample.left, voice.position) * voice.leftGain * envelope;
-                const float rightSource = sample.right.empty()
-                    ? interpolate(sample.left, voice.position)
-                    : interpolate(sample.right, voice.position);
-
-                outputs[0][n] += left;
-                if (channels > 1 && outputs[1])
-                    outputs[1][n] += rightSource * voice.rightGain * envelope;
-
-                voice.position += voice.playbackRate;
+        for (int offset = 0; offset < numSamples; offset += static_cast<int>(blockCap_)) {
+            const int len = std::min<int>(numSamples - offset, static_cast<int>(blockCap_));
+            renderChunk(len);
+            float* l = outputs[0] + offset;
+            float* r = (channels > 1 && outputs[1]) ? outputs[1] + offset : nullptr;
+            for (int n = 0; n < len; ++n) {
+                const auto m = MixerChannel::Master;
+                const float mg = mixer_.faderGain(m);
+                const float ml = mg * mixer_.leftGain(m), mr = mg * mixer_.rightGain(m);
+                l[n] += mixL_[static_cast<std::size_t>(n)] * ml;
+                if (r) r[n] += mixR_[static_cast<std::size_t>(n)] * mr;
             }
+        }
+    }
 
-            if (voice.position >= sampleLength)
-                voice.active = false;
+    // Multi-output render (future multi-out): `stems` holds 2 pointers (L,R) per bus in order
+    // Kick, Snare, Toms, HiHat, Ride, Cymbals, Room => StemBusCount*2 = 14 pointers. Post-fader,
+    // pre-Master; ADDED to the buffers. Null pointers are skipped.
+    static constexpr int StemBusCount = 7;
+    void renderStems(float** stems, int numSamples) noexcept {
+        if (!stems || numSamples <= 0)
+            return;
+        for (int offset = 0; offset < numSamples; offset += static_cast<int>(blockCap_)) {
+            const int len = std::min<int>(numSamples - offset, static_cast<int>(blockCap_));
+            renderChunk(len);
+            for (std::size_t b = 0; b < StemBusCount; ++b) {
+                float* l = stems[2 * b];
+                float* r = stems[2 * b + 1];
+                const auto& sl = b < DrumMixer::DryChannelCount ? stemL_[b] : roomL_;
+                const auto& sr = b < DrumMixer::DryChannelCount ? stemR_[b] : roomR_;
+                for (int n = 0; n < len; ++n) {
+                    if (l) l[offset + n] += sl[static_cast<std::size_t>(n)];
+                    if (r) r[offset + n] += sr[static_cast<std::size_t>(n)];
+                }
+            }
         }
     }
 
@@ -199,6 +235,7 @@ private:
         int attackSamples{0};
         int releaseSamples{0};
         int chokeGroup{0};
+        std::uint8_t channel{0};
     };
 
     [[nodiscard]] static constexpr std::size_t index(DrumInstrument instrument) noexcept {
@@ -242,6 +279,94 @@ private:
         return firstConfigured;
     }
 
+    void resizeScratch(std::size_t cap) {
+        blockCap_ = cap;
+        for (auto& v : stemL_) v.assign(cap, 0.0f);
+        for (auto& v : stemR_) v.assign(cap, 0.0f);
+        roomL_.assign(cap, 0.0f);
+        roomR_.assign(cap, 0.0f);
+        mixL_.assign(cap, 0.0f);
+        mixR_.assign(cap, 0.0f);
+    }
+
+    // Renders `len` (<= blockCap_) samples into stemL_/stemR_ (post-fader), roomL_/roomR_
+    // (post-fader room return) and mixL_/mixR_ (sum of all, pre-Master).
+    void renderChunk(int len, void* = nullptr) noexcept {
+        constexpr std::size_t Dry = DrumMixer::DryChannelCount;
+        const auto count = static_cast<std::size_t>(len);
+        std::array<bool, Dry> dirty{};
+        for (std::size_t c = 0; c < Dry; ++c) {
+            std::fill_n(stemL_[c].begin(), count, 0.0f);
+            std::fill_n(stemR_[c].begin(), count, 0.0f);
+        }
+
+        for (auto& voice : voices_) {
+            if (!voice.active || voice.sample == nullptr)
+                continue;
+            const auto& sample = *voice.sample;
+            const std::size_t c = std::min<std::size_t>(voice.channel, Dry - 1);
+            float* outL = stemL_[c].data();
+            float* outR = stemR_[c].data();
+            dirty[c] = true;
+            const double sampleLength = static_cast<double>(sample.left.size());
+            for (int n = 0; n < len && voice.position < sampleLength; ++n) {
+                const float envelope = envelopeGain(voice, sampleLength);
+                const float left = interpolate(sample.left, voice.position) * voice.leftGain * envelope;
+                const float rightSource = sample.right.empty()
+                    ? interpolate(sample.left, voice.position)
+                    : interpolate(sample.right, voice.position);
+                outL[n] += left;
+                outR[n] += rightSource * voice.rightGain * envelope;
+                voice.position += voice.playbackRate;
+            }
+            if (voice.position >= sampleLength)
+                voice.active = false;
+        }
+
+        const bool roomOn = mixer_.anySendActive() || roomIdle_ < roomTailSamples_;
+        for (int n = 0; n < len; ++n) {
+            const auto i = static_cast<std::size_t>(n);
+            mixer_.advance();
+            float sumL = 0.0f, sumR = 0.0f, sendL = 0.0f, sendR = 0.0f;
+            for (std::size_t c = 0; c < Dry; ++c) {
+                if (!dirty[c]) continue;
+                const auto ch = static_cast<MixerChannel>(c);
+                const float dl = stemL_[c][i], dr = stemR_[c][i];
+                const float send = mixer_.sendGain(ch);
+                sendL += dl * send;
+                sendR += dr * send;
+                const float f = mixer_.faderGain(ch);
+                const float l = dl * f * mixer_.leftGain(ch);
+                const float r = dr * f * mixer_.rightGain(ch);
+                stemL_[c][i] = l;
+                stemR_[c][i] = r;
+                sumL += l;
+                sumR += r;
+            }
+            float wl = 0.0f, wr = 0.0f;
+            if (roomOn) {
+                room_.process(sendL, sendR, wl, wr);
+                const auto rc = MixerChannel::Room;
+                const float f = mixer_.faderGain(rc);
+                wl *= f * mixer_.leftGain(rc);
+                wr *= f * mixer_.rightGain(rc);
+            }
+            roomL_[i] = wl;
+            roomR_[i] = wr;
+            mixL_[i] = sumL + wl;
+            mixR_[i] = sumR + wr;
+        }
+        if (mixer_.anySendActive()) roomIdle_ = 0;
+        else if (roomIdle_ < roomTailSamples_) roomIdle_ += len;
+    }
+
+    std::size_t blockCap_{1024};
+    std::array<std::vector<float>, DrumMixer::DryChannelCount> stemL_{}, stemR_{};
+    std::vector<float> roomL_, roomR_, mixL_, mixR_;
+    DrumMixer mixer_;
+    RoomAmbience room_;
+    long long roomTailSamples_{44100 * 3};
+    long long roomIdle_{44100 * 3};
     std::array<InstrumentSet, InstrumentCount> instruments_{};
     std::array<Voice, MaxVoices> voices_{};
 };
