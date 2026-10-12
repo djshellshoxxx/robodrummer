@@ -18,4 +18,17 @@ int main() {
     const auto rockSettings = rock.toBrainSettings();
     assert(rockSettings.phraseBars == rock.phraseBars);
     assert(rockSettings.fillBias == rock.fillBias);
+
+    // Regression: the plugin must use the full style mapping, not the old
+    // six-style fallback.  All appended host parameter values must resolve.
+    for (int i = 0; i < JamStyleCount; ++i) {
+        const auto selection = static_cast<JamStyle>(i);
+        assert(jamStyleName(selection)[0] != '\0');
+        const auto groove = styleForJamStyle(selection);
+        assert(groove.hatHitsPerBeat > 0);
+    }
+    assert(styleForJamStyle(JamStyle::Reggae).oneDrop);
+    assert(styleForJamStyle(JamStyle::Disco).fourOnFloor);
+    assert(styleForJamStyle(JamStyle::HalfTime).halfTimeSnare);
+    assert(styleForJamStyle(JamStyle::JazzSwing).jazzRide);
 }
