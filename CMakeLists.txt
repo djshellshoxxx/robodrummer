@@ -90,11 +90,14 @@ if(ROBODRUMMER_BUILD_JUCE)
     src/plugin/PluginProcessor.h
     src/plugin/PluginEditor.cpp
     src/plugin/PluginEditor.h
+    src/plugin/KitLoader.cpp
+    src/plugin/KitLoader.h
   )
   target_include_directories(RoboDrummer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(RoboDrummer PRIVATE
     robodrummer_core
     juce::juce_audio_utils
+    juce::juce_audio_formats
     juce::juce_dsp
   )
   target_link_libraries(RoboDrummer PUBLIC
