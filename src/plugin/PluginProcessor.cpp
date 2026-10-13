@@ -121,17 +121,6 @@ int denominatorToIndex(int denominator) noexcept {
     return 1;
 }
 
-robodrummer::Style styleForJamStyle(robodrummer::JamStyle style) {
-    switch (style) {
-        case robodrummer::JamStyle::Blues: return robodrummer::Style::blues();
-        case robodrummer::JamStyle::Funk: return robodrummer::Style::funk();
-        case robodrummer::JamStyle::Punk: return robodrummer::Style::punk();
-        case robodrummer::JamStyle::Metal: return robodrummer::Style::metal();
-        case robodrummer::JamStyle::Shuffle: return robodrummer::Style::shuffle();
-        case robodrummer::JamStyle::Rock: return robodrummer::Style::basicRock();
-    }
-    return robodrummer::Style::basicRock();
-}
 }
 
 RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
@@ -476,7 +465,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     const auto phraseState = getPhraseState();
     const float phraseAmount = phraseState == robodrummer::PhraseState::Break ? 1.0f : 0.75f;
     jam_.setStyle(robodrummer::PhraseGrooveModifier::apply(
-        styleForJamStyle(getJamStyle()), phraseState, phraseAmount));
+        robodrummer::styleForJamStyle(getJamStyle()), phraseState, phraseAmount));
 
     if (hasPpq && settings.mode == robodrummer::LeadershipMode::DrummerLeads)
         jam_.syncToPpq(hostPpq);
