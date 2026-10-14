@@ -44,7 +44,15 @@ foreach(test_name IN ITEMS
     silence_controller
     jam_coordinator
     output_mode
-    live_control_policy)
+    live_control_policy
+    style_library
+    humanize
+    fill_generator
+    drummer_personality
+    midi_tools
+    input_conditioner
+    mixer_kit
+    realtime_safety)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   if(MSVC)

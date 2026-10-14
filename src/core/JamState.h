@@ -6,6 +6,7 @@ struct JamState {
     float intensity{0.5f};
     int queuedSectionDelta{0};
     bool fillRequested{false};
+    bool fillImmediate{false};
     float fillStrength{0.75f};
     bool crashRequested{false};
     bool breakRequested{false};
@@ -15,7 +16,8 @@ struct JamState {
 };
 inline void applyMidiCommand(JamState& state, MidiCommand command) noexcept {
     switch (command) {
-        case MidiCommand::Fill: state.fillRequested = true; state.fillStrength = 0.75f; break;
+        case MidiCommand::Fill: state.fillRequested = true; state.fillImmediate = false; state.fillStrength = 0.75f; break;
+        case MidiCommand::ImmediateFill: state.fillRequested = true; state.fillImmediate = true; state.fillStrength = 0.75f; break;
         case MidiCommand::NextSection: ++state.queuedSectionDelta; break;
         case MidiCommand::PreviousSection: --state.queuedSectionDelta; break;
         case MidiCommand::Crash: state.crashRequested = true; break;

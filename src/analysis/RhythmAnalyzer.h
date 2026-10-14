@@ -58,12 +58,14 @@ public:
     }
 
     void processBlock(const float* mono, int numSamples) noexcept {
+        blockOnsetCount_ = 0;
         if (mono == nullptr || numSamples <= 0) return;
-        std::array<OnsetEvent, 32> events{};
-        const auto count = detector_.processBlock(mono, numSamples, events.data(), events.size());
+        const auto count = detector_.processBlock(mono, numSamples, blockOnsets_.data(), blockOnsets_.size());
+        blockOnsetCount_ = count;
+        blockStartSample_ = sampleCursor_;
         for (std::size_t i = 0; i < count; ++i) {
-            const double eventSeconds = (static_cast<double>(sampleCursor_) + events[i].sampleOffset) / sampleRate_;
-            acceptOnset(eventSeconds, events[i].strength);
+            const double eventSeconds = (static_cast<double>(sampleCursor_) + blockOnsets_[i].sampleOffset) / sampleRate_;
+            acceptOnset(eventSeconds, blockOnsets_[i].strength);
         }
         sampleCursor_ += numSamples;
         updateState(static_cast<double>(sampleCursor_) / sampleRate_);
@@ -71,6 +73,10 @@ public:
 
     [[nodiscard]] RhythmState state() const noexcept { return state_; }
     [[nodiscard]] const TempoTracker& tempoTracker() const noexcept { return tempo_; }
+    // Onsets found by the most recent processBlock call (for the analysis display).
+    [[nodiscard]] std::size_t lastBlockOnsetCount() const noexcept { return blockOnsetCount_; }
+    [[nodiscard]] const OnsetEvent& lastBlockOnset(std::size_t index) const noexcept { return blockOnsets_[index]; }
+    [[nodiscard]] long long lastBlockStartSample() const noexcept { return blockStartSample_; }
 
 private:
     void acceptOnset(double seconds, float strength) noexcept {
@@ -147,6 +153,9 @@ private:
     TempoTracker tempo_{};
     DownbeatTracker downbeat_{};
     RhythmState state_{};
+    std::array<OnsetEvent, 32> blockOnsets_{};
+    std::size_t blockOnsetCount_{0};
+    long long blockStartSample_{0};
 };
 
 } // namespace robodrummer
