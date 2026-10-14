@@ -23,6 +23,7 @@ Classification used below: **Verified** = implemented and covered by a test that
 | D5 | Tracker lock had no hysteresis (SPEC 13). | `RhythmAnalyzer.h` lock was a pure threshold. | Enter at 0.38/0.30, leave at 0.28/0.20. | `test_rhythm_analyzer`, fixtures |
 | D6 | Tempo range was 45–220 BPM; SPEC 8 says 40–240. | `TempoTracker.h` constants. | 40–240. | fixtures |
 | D7 | Initial lock could stick to a wrong octave after the range change (acquiring state smoothed from a stale value). | Found while changing D6. | Acquisition snaps to a clearly better estimate; locked state still filters. | `test_rhythm_analyzer` |
+| D9 | **End Jam (MIDI 49) only changed a status label.** `JamCoordinator` reported `EndingLikely`, but nothing ever ended the jam; SPEC 21 lists Outro among the bar states. | `PluginProcessor.cpp` `handleCommand` set a pending flag and returned; `JamCoordinatorDecision::executeTransition` is produced but never consumed anywhere (no-op wiring). | `JamEngine::requestOutro`: groove for the rest of the bar and the next, two-beat fill, crash + kick on the final downbeat, then stop (Resume restarts). `executeTransition` is redundant with the section sequencer and is documented as informational. | `tests/test_fill_generator.cpp` (outro), harness "end jam / outro" |
 | D8 | Non-finite input samples passed straight into the monitor path and the analysis. | `processBlock` copied input unchanged. | NaN/Inf replaced by silence at the top of `processBlock`. | harness "robustness" |
 
 ### Gaps vs SPEC (before → after)
@@ -43,6 +44,7 @@ Classification used below: **Verified** = implemented and covered by a test that
 | 20 | 21 styles (Rock … Jazz/Swing), soft tempo regions, distinct behaviour | **Partial** (6 styles) | **Verified** (22 styles, 7 groove families) | `src/core/Style.h`, `GrooveGenerator.h`, `StyleLibrary.h`, `tests/test_style_library.cpp` |
 | 22 | Style- and tempo-aware humanization | **Missing** (D1) | **Verified** | `tests/test_humanize.cpp` |
 | 23 | Fill frequency/complexity/length(1 beat…2 bars)/intensity/surprise; queued vs immediate fill | **Partial** (single 1-beat fill) | **Verified** | `src/core/FillGenerator.h:30`, `JamEngine.h`, `tests/test_fill_generator.cpp`, harness "MIDI commands" |
+| 21 | Bar states Normal/Build/Release/Fill/Transition/Break/Intro/Outro/Crash entry/Half-time/Double-time | Partial (no outro) | **Verified** (outro added; intro = the "establishing groove" bars with fills suppressed) | `JamEngine.h`, `test_fill_generator.cpp` |
 | 24 | Jam coordination | Verified on main | Verified | `test_jam_coordinator.cpp` |
 | 25 | Programmed song: name, bars, style, intensity, personality, fill frequency, leadership, follow strength, half/double, transition | **Partial** (style/bars/intensity/auto) | **Verified** | `core/SectionSequencer.h`, `SongPanel`, harness "programmed arrangement" |
 | 26 | MIDI commands; expression-pedal defaults; MIDI Learn for live parameters | **Partial** (fixed note map) | **Verified** | `core/MidiLearn.h:15`, `MidiPanel`, harness "MIDI commands, learn" |
@@ -109,7 +111,7 @@ Those draft PRs are stacked on unmerged bases (`codex/qa-assertions-enabled`, `c
 | P1 | Host matrix runs (Reaper, Ableton, FL, Cubase, Bitwig) | load/save/automate/resize/close checklist per host recorded | access to hosts |
 | P2 | Automatic meter detection (3/4, 6/8, 5/4, 7/8) | ≥ 85 % on fixtures; always overridable | real fixtures |
 | P2 | Signed Windows installer / notarised macOS | Authenticode / Developer ID in CI secrets | certificates |
-| P2 | Context menu value entry/reset on every control (CDL 2.3) | right-click → edit/reset on sliders | none |
+| P3 | Right-click menu on combo boxes / toggles (CDL 2.3) | sliders already offer reset/copy/paste on right-click | none |
 | P3 | Virtual-limb humanization | no physically impossible limb overlaps in generated bars | none |
 | P3 | Optional analysis worker thread | no regression in latency; allocation audit still zero | profiling data |
 | P3 | Learned beat/downbeat model (Phase 5) | beats deterministic baseline on the fixture set | P1 fixtures |

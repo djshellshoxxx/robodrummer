@@ -91,7 +91,7 @@ RoboDrummer treats MIDI channel 16 as its intervention/control channel. Channel-
 | 46 | Resume drummer |
 | 47 | Reset listening (clears tempo, phase, phrase, silence, coordinator and jam-memory tracking) |
 | 48 | Solo support cue |
-| 49 | End jam cue |
+| 49 | End jam: plays an outro (fill into a final crash + kick on a downbeat), then stops; Resume restarts |
 | 50 | Immediate fill (starts on the next beat; note 36 queues the fill instead) |
 
 Break is implemented as a one-bar musical dropout. The request is consumed once, normal groove generation is suppressed for that bar, and RoboDrummer re-enters automatically on the following bar. If a fill is already queued, it is deferred until after the break rather than discarded.

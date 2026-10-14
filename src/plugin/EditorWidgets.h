@@ -84,8 +84,35 @@ public:
         label_.setTooltip(tooltip);
         addAndMakeVisible(slider_);
         attachment_ = std::make_unique<APVTS::SliderAttachment>(state, id, slider_);
-        if (auto* parameter = state.getParameter(id))
+        if (auto* parameter = state.getParameter(id)) {
             slider_.setDoubleClickReturnValue(true, parameter->convertFrom0to1(parameter->getDefaultValue()));
+            defaultValue_ = parameter->convertFrom0to1(parameter->getDefaultValue());
+        }
+        slider_.addMouseListener(this, false);
+    }
+    ~ParamSlider() override { slider_.removeMouseListener(this); }
+
+    // Right-click: reset to default, copy or paste the value (pasted text is range-checked, never silently altered).
+    void mouseDown(const juce::MouseEvent& e) override {
+        if (!e.mods.isPopupMenu()) return;
+        juce::PopupMenu menu;
+        menu.addItem(1, "Reset to default");
+        menu.addItem(2, "Copy value");
+        menu.addItem(3, "Paste value");
+        juce::Component::SafePointer<ParamSlider> safe(this);
+        menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&slider_), [safe](int choice) {
+            if (safe == nullptr) return;
+            auto& slider = safe->slider_;
+            if (choice == 1) slider.setValue(safe->defaultValue_, juce::sendNotificationSync);
+            else if (choice == 2) juce::SystemClipboard::copyTextToClipboard(juce::String(slider.getValue(), 4));
+            else if (choice == 3) {
+                const auto text = juce::SystemClipboard::getTextFromClipboard().trim();
+                const bool numeric = text.isNotEmpty() && text.containsOnly("0123456789.-+eE") && text.containsAnyOf("0123456789");
+                const double value = text.getDoubleValue();
+                if (numeric && std::isfinite(value) && value >= slider.getMinimum() && value <= slider.getMaximum())
+                    slider.setValue(value, juce::sendNotificationSync);
+            }
+        });
     }
     void resized() override {
         auto area = getLocalBounds();
@@ -100,6 +127,7 @@ public:
     juce::Slider& slider() noexcept { return slider_; }
 private:
     juce::Slider::SliderStyle style_;
+    double defaultValue_{0.0};
     juce::Label label_;
     juce::Slider slider_;
     std::unique_ptr<APVTS::SliderAttachment> attachment_;

@@ -89,4 +89,30 @@ int main() {
         assert(tomsIn(events, n, 0, 70000) == 0);
         assert(tomsIn(events, n, 71000, 95000) > 0);
     }
+
+    // Outro: groove -> two-beat fill -> final crash + kick on a downbeat -> silence until Resume.
+    {
+        JamEngine e; e.prepare(48000.0); e.setTempo(120.0); e.setMeter(4, 4);
+        (void) e.processBlock(10000, events.data(), events.size());      // inside bar 0
+        e.apply(MidiCommand::EndJam);
+        assert(e.outroPending());
+        std::array<DrumEvent, 512> big{};
+        const auto n = e.processBlock(96000 * 4, big.data(), big.size()); // 4 s from sample 10000
+        // final downbeat is the start of bar 2 = sample 192000 -> offset 182000 in this block
+        bool kickAtFinal = false, crashAtFinal = false;
+        int hitsAfter = 0, tomsInFill = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (big[i].sampleOffset == 182000 && big[i].instrument == DrumInstrument::Kick) kickAtFinal = true;
+            if (big[i].sampleOffset == 182000 && big[i].instrument == DrumInstrument::Crash) crashAtFinal = true;
+            if (big[i].sampleOffset > 182000) ++hitsAfter;
+            if (big[i].sampleOffset >= 182000 - 48000 && big[i].sampleOffset < 182000 &&
+                (big[i].instrument == DrumInstrument::HighTom || big[i].instrument == DrumInstrument::MidTom || big[i].instrument == DrumInstrument::FloorTom)) ++tomsInFill;
+        }
+        assert(kickAtFinal && crashAtFinal);
+        assert(tomsInFill > 0);
+        assert(hitsAfter == 0);
+        assert(e.state().stopped && !e.outroPending());
+        e.apply(MidiCommand::Resume);
+        assert(e.processBlock(96000, events.data(), events.size()) > 0);
+    }
 }

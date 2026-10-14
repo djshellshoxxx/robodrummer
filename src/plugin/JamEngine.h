@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 namespace robodrummer {
 class JamEngine {
 public:
@@ -87,12 +88,33 @@ public:
         // Bar indices change meaning when the feel changes; re-target any pending break/fill.
         if (std::abs(state_.timeScale - previousScale) > 1.0e-9) clearBarTargets();
         if (command == MidiCommand::Fill || command == MidiCommand::ImmediateFill) fillStartBeat_ = -1;
+        if (command == MidiCommand::EndJam) requestOutro();
         if (command == MidiCommand::ResetListening) {
             resetPhase();
             state_.resetListeningRequested = false;
         }
     }
     [[nodiscard]] const JamState& state() const noexcept { return state_; }
+    [[nodiscard]] bool outroPending() const noexcept { return outroFinalBeat_ >= 0; }
+
+    // Outro (SPEC 21): the groove continues for the rest of this bar and the next, a two-beat fill leads into the
+    // following downbeat, where the drummer lands a crash and kick together and then stops (Resume restarts).
+    void requestOutro() noexcept {
+        if (!(bpm_ > 0.0) || state_.stopped) return;
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        const double spb = sampleRate_ * 60.0 / effectiveBpm * (4.0 / static_cast<double>(denominator_));
+        const long long currentBeat = static_cast<long long>(static_cast<double>(sampleCursor_) / spb);
+        const long long currentBar = currentBeat / numerator_;
+        outroFinalBeat_ = (currentBar + 2) * numerator_;
+        FillSettings outroFill = fillSettings_;
+        outroFill.length = FillLength::TwoBeats;
+        fillTotalBeats_ = std::min(2, numerator_);
+        fillStartBeat_ = outroFinalBeat_ - fillTotalBeats_;
+        state_.fillRequested = true;
+        state_.fillImmediate = false;
+        state_.fillStrength = 0.9f;
+        fillHitCount_ = FillGenerator::generate(outroFill, 0.9f, fillTotalBeats_, 0x0070u + static_cast<std::uint32_t>(outroFinalBeat_), fillHits_);
+    }
     [[nodiscard]] std::size_t processBlock(int numSamples, DrumEvent* out, std::size_t capacity) noexcept {
         if (numSamples <= 0 || out == nullptr || capacity == 0 || state_.stopped) { if (numSamples > 0) sampleCursor_ += numSamples; return 0; }
         const double effectiveBpm = bpm_ * state_.timeScale;
@@ -113,7 +135,7 @@ public:
             breakUntilBar_ = -1;
 
         // Plan a requested fill once; positions are stored as beat indices so tempo changes keep it aligned.
-        if (state_.fillRequested && fillStartBeat_ < 0) {
+        if (state_.fillRequested && fillStartBeat_ < 0 && outroFinalBeat_ < 0) {
             fillTotalBeats_ = FillGenerator::lengthBeats(fillSettings_.length, numerator_);
             const long long baseBar = breakUntilBar_ >= 0 ? std::max(firstBar, breakUntilBar_) : firstBar;
             if (state_.fillImmediate && breakUntilBar_ < 0) {
@@ -130,6 +152,9 @@ public:
         const bool fillPlanned = state_.fillRequested && fillStartBeat_ >= 0;
         const long long fillStartSample = fillPlanned ? beatSample(fillStartBeat_) : 0;
         const long long fillEndSample = fillPlanned ? beatSample(fillStartBeat_ + fillTotalBeats_) : 0;
+
+        // Nothing but the outro's final hit may sound at or after the final downbeat.
+        const long long outroCutoff = outroFinalBeat_ >= 0 ? beatSample(outroFinalBeat_) : std::numeric_limits<long long>::max();
 
         std::size_t count = 0;
         for (long long bar = firstBar; bar <= lastBar && count < capacity; ++bar) {
@@ -152,7 +177,7 @@ public:
             const long long barStart = bar * barSamples;
             for (std::size_t i = 0; i < eventCount && count < capacity; ++i) {
                 const long long absolute = barStart + events[i].sampleOffset;
-                if (absolute >= blockStart && absolute < blockEnd) {
+                if (absolute >= blockStart && absolute < blockEnd && absolute < outroCutoff) {
                     // The fill replaces the groove it covers (cymbal crashes aside).
                     if (fillPlanned && absolute >= fillStartSample && absolute < fillEndSample &&
                         events[i].instrument != DrumInstrument::Crash)
@@ -170,7 +195,7 @@ public:
                 if (absolute >= blockStart && absolute < blockEnd)
                     out[count++] = { fillHits_[i].instrument, static_cast<int>(absolute - blockStart), fillHits_[i].velocity, static_cast<std::uint32_t>(count) };
             }
-            if (FillGenerator::endsWithCrash(fillTotalBeats_) && fillEndSample >= blockStart && fillEndSample < blockEnd && count < capacity)
+            if (FillGenerator::endsWithCrash(fillTotalBeats_) && outroFinalBeat_ < 0 && fillEndSample >= blockStart && fillEndSample < blockEnd && count < capacity)
                 out[count++] = { DrumInstrument::Crash, static_cast<int>(fillEndSample - blockStart), 0.95f, static_cast<std::uint32_t>(count) };
             if (blockEnd >= fillEndSample) {
                 state_.fillRequested = false;
@@ -179,13 +204,26 @@ public:
             }
         }
 
+        if (outroFinalBeat_ >= 0) {
+            const long long finalSample = beatSample(outroFinalBeat_);
+            if (finalSample >= blockStart && finalSample < blockEnd && count + 1 < capacity) {
+                out[count++] = { DrumInstrument::Crash, static_cast<int>(finalSample - blockStart), 1.0f, static_cast<std::uint32_t>(count) };
+                out[count++] = { DrumInstrument::Kick, static_cast<int>(finalSample - blockStart), 0.98f, static_cast<std::uint32_t>(count) };
+            }
+            if (blockEnd > finalSample) { // the final hit has been played: stop; Resume starts the groove again
+                state_.stopped = true;
+                state_.fillRequested = false;
+                fillStartBeat_ = -1;
+                outroFinalBeat_ = -1;
+            }
+        }
         if (state_.crashRequested && count < capacity) { out[count++] = {DrumInstrument::Crash, 0, 1.0f, 0}; state_.crashRequested = false; }
         sampleCursor_ = blockEnd;
         std::sort(out, out + count, [](const DrumEvent& a, const DrumEvent& b){ return a.sampleOffset < b.sampleOffset; });
         return count;
     }
 private:
-    void clearBarTargets() noexcept { fillStartBeat_ = -1; breakUntilBar_ = -1; }
+    void clearBarTargets() noexcept { if (outroFinalBeat_ < 0) fillStartBeat_ = -1; breakUntilBar_ = -1; }
 
     double sampleRate_{48000.0};
     double bpm_{120.0};
@@ -193,6 +231,7 @@ private:
     int denominator_{4};
     long long sampleCursor_{0};
     long long fillStartBeat_{-1};
+    long long outroFinalBeat_{-1};
     int fillTotalBeats_{1};
     std::size_t fillHitCount_{0};
     std::array<FillHit, FillGenerator::MaxHits> fillHits_{};

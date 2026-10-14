@@ -236,6 +236,21 @@ void testMidiCommandsAndLearn() {
     CHECK(crash.notes[49] > 0);
 }
 
+void testOutro() {
+    section("end jam / outro");
+    Rig rig; rig.param("outputMode", 1);
+    rig.runSilent(20);
+    rig.run(1, [](long long) { return 0.0f; }, [](long long, juce::MidiBuffer& m) { m.addEvent(juce::MidiMessage::noteOn(16, 49, 1.0f), 0); });
+    const auto outro = rig.runSilent(500); // 5.3 s at 120 BPM: more than the two bars the outro needs
+    CHECK(rig.processor.isDrummerStopped());
+    CHECK_MSG(outro.notes[49] > 0, "no final crash (kicks %d, toms %d)", outro.notes[36], outro.notes[50] + outro.notes[47] + outro.notes[43]); // the final crash
+    const auto after = rig.runSilent(200);
+    CHECK_MSG(after.noteOns == 0, "drummer kept playing after the outro (%d)", after.noteOns);
+    rig.run(1, [](long long) { return 0.0f; }, [](long long, juce::MidiBuffer& m) { m.addEvent(juce::MidiMessage::noteOn(16, 46, 1.0f), 0); });
+    CHECK(!rig.processor.isDrummerStopped());
+    CHECK(rig.runSilent(200).noteOns > 0);
+}
+
 void testGuitarFollowing() {
     section("guitarist leads: acquire, join, follow");
     Rig rig; rig.param("outputMode", 1);
@@ -879,7 +894,7 @@ void dumpParameters(const juce::File& file) {
     file.replaceWithText(md);
 }
 
-void renderScreenshots(const juce::File& directory) {
+void renderScreenshots(const juce::File& directory, int width, int height) {
     section("editor screenshots");
     directory.createDirectory();
     Rig rig;
@@ -888,7 +903,7 @@ void renderScreenshots(const juce::File& directory) {
     std::unique_ptr<juce::AudioProcessorEditor> editor(rig.processor.createEditor());
     CHECK(editor != nullptr);
     if (editor == nullptr) return;
-    editor->setSize(1040, 720);
+    editor->setSize(width, height);
     static const char* names[] = { "live", "kit", "drummer", "style", "song", "midi", "analysis", "settings" };
     auto& ed = static_cast<RoboDrummerAudioProcessorEditor&>(*editor);
     for (int tab = 0; tab < 8; ++tab) {
@@ -914,7 +929,7 @@ void renderScreenshots(const juce::File& directory) {
         pump(150);
         const auto image = ed.createComponentSnapshot(ed.getLocalBounds(), true, 1.0f);
         juce::PNGImageFormat png;
-        auto file = directory.getChildFile(juce::String(names[tab]) + ".png");
+        auto file = directory.getChildFile(juce::String(names[tab]) + (width == 1040 ? "" : "_" + juce::String(width) + "x" + juce::String(height)) + ".png");
         file.deleteFile();
         juce::FileOutputStream out(file);
         if (out.openedOk()) png.writeImageToStream(image, out);
@@ -936,6 +951,7 @@ int main(int argc, char** argv) {
     testBasicPlayback();
     testHostTransportAndTempoSources();
     testMidiCommandsAndLearn();
+    testOutro();
     testGuitarFollowing();
     testMixerAndAux();
     testKitLoading();
@@ -949,7 +965,7 @@ int main(int argc, char** argv) {
     testRobustness();
     testFuzz();
     testSoak(soakMinutes);
-    if (screenshotDir != juce::File()) renderScreenshots(screenshotDir);
+    if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, 1040, 720); renderScreenshots(screenshotDir, 900, 640); }
 
     std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;

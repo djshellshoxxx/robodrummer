@@ -98,10 +98,9 @@ public:
           followResponse_(apvts_, robodrummer::ParamIDs::followResponse, "Follow response", "How quickly tempo and beat corrections are applied. Very Stable resists change; Very Responsive chases it."),
           intensity_(apvts_, robodrummer::ParamIDs::intensity, "Intensity", "Base drummer intensity before guitar dynamics, silence and coordinator adjustments."),
           complexity_(apvts_, robodrummer::ParamIDs::complexity, "Complexity", "Syncopation, ghost notes and kick patterns. 50% is the style's own feel."),
-          fillLevel_(apvts_, robodrummer::ParamIDs::fillFrequency, "Fill level", "How often automatic fills happen. 50% is the style's own cadence."),
-          dynamicFollow_(apvts_, robodrummer::ParamIDs::dynamicFollow, "Dynamic follow", "How strongly guitar dynamics steer the drummer's intensity.") {
+          fillLevel_(apvts_, robodrummer::ParamIDs::fillFrequency, "Fill level", "How often automatic fills happen. 50% is the style's own cadence.") {
         for (auto* c : std::initializer_list<juce::Component*>{ &mode_, &tempoSource_, &style_, &kit_, &drummer_, &bpm_, &leadership_, &followRange_,
-                                                               &followResponse_, &intensity_, &complexity_, &fillLevel_, &dynamicFollow_ })
+                                                               &followResponse_, &intensity_, &complexity_, &fillLevel_ })
             addAndMakeVisible(*c);
 
         tap_.setTooltip("Tap the beat to set the internal BPM.");
@@ -182,7 +181,7 @@ public:
         tap_.setBounds(bpmRow.removeFromRight(56)); bpmRow.removeFromRight(6);
         bpm_.setBounds(bpmRow);
         auto s = soundArea_.reduced(12, 6); s.removeFromTop(22);
-        stack(s, 28, 3, { &style_, &kit_, &drummer_, &intensity_, &complexity_, &fillLevel_, &dynamicFollow_ });
+        stack(s, 28, 3, { &style_, &kit_, &drummer_, &intensity_, &complexity_, &fillLevel_ });
 
         readoutArea_ = area.removeFromTop(area.getHeight() * 47 / 100);
         area.removeFromTop(8);
@@ -265,7 +264,7 @@ private:
     ParamCombo mode_, tempoSource_, style_, kit_, drummer_;
     ParamSlider bpm_, leadership_, followRange_;
     ParamCombo followResponse_;
-    ParamSlider intensity_, complexity_, fillLevel_, dynamicFollow_;
+    ParamSlider intensity_, complexity_, fillLevel_;
     juce::TextButton tap_{"TAP"};
     juce::Label tempoBig_, beatBar_, section_, tracker_, guitar_, status_;
     juce::Label tempoCaption_, beatCaption_, downCaption_, levelCaption_;

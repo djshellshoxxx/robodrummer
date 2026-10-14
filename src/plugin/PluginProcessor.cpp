@@ -1190,7 +1190,7 @@ void RoboDrummerAudioProcessor::handleCommand(robodrummer::MidiCommand command, 
     using C = robodrummer::MidiCommand;
     switch (command) {
         case C::SoloSupport: coordinatorSoloCuePending_ = true; return;
-        case C::EndJam: coordinatorEndCuePending_ = true; return;
+        case C::EndJam: coordinatorEndCuePending_ = true; break; // also plays the outro and stops
         case C::ResetListening: resetListeningState(); return;
         case C::NextSection:
             coordinatorNextCuePending_ = true;

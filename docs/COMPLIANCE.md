@@ -14,7 +14,7 @@ Buses: stereo guitar/analysis input (mono, stereo or disabled); stereo main outp
 |---|---|---|
 | 2.1 Predictable controls | Implemented | Every control is labelled and bound to a parameter or command; toggles show state; commands show feedback. |
 | 2.2 Parameter contract | Implemented | Stable IDs, documented in [`PARAMETERS.md`](PARAMETERS.md) (generated from code). Host automation ⇄ GUI via JUCE attachments. Audio-thread-originated changes (MIDI intensity, sections) are republished to the host from the message thread. |
-| 2.3 Gestures | Partial | Double-click resets a slider; tooltips can be turned off globally (SETTINGS). Right-click value entry/reset menu: planned (backlog P2). |
+| 2.3 Gestures | Partial | Double-click resets a slider; tooltips can be turned off globally (SETTINGS). Right-click on sliders offers reset to default and copy/paste of the value (pasted text is range-checked and rejected when malformed); combo boxes and toggles have no context menu yet. |
 | 2.4 Accessibility | Partial | State is conveyed by text as well as colour; resizable editor (900×640 minimum). Full keyboard navigation relies on JUCE defaults; no reduced-motion option because the UI has no decorative animation beyond live meters. |
 | 3.1 Host responsibilities | Implemented | Plug-in never opens or configures audio devices. |
 | 3.2 Real-time safety | Implemented | No allocation/locks/I/O on the audio thread — verified by an allocation audit (0 allocations over 1500 blocks with aux buses, reverb, MIDI clock, calibration). Variable and zero-length blocks, 11–192 kHz sample rates, NaN/Inf input covered by the harness. Latency 0, `ScopedNoDenormals`, tail 2 s. |
