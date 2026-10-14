@@ -894,3 +894,8 @@ Initial literature review produced several requirements that are now part of the
 7. **Multiple hypotheses and explicit confidence are required.** A single fragile beat interpretation is not acceptable for live jamming.
 
 See the `research/` directory for sources and detailed notes.
+
+
+## 41. Implementation status (0.3.0)
+
+Implementation status against this specification, the defects found and the remaining backlog are recorded in [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md). Compliance with the shared plug-in standard: [docs/COMPLIANCE.md](docs/COMPLIANCE.md). Validation: [docs/QA.md](docs/QA.md).

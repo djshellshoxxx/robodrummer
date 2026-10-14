@@ -77,12 +77,21 @@ if(ROBODRUMMER_BUILD_JUCE)
   )
   FetchContent_MakeAvailable(JUCE)
 
+  # AU is only available on macOS (it is an Apple format); everything else builds on every platform.
+  set(ROBODRUMMER_FORMATS VST3 Standalone)
+  if(APPLE)
+    list(APPEND ROBODRUMMER_FORMATS AU)
+  endif()
+
   juce_add_plugin(RoboDrummer
     COMPANY_NAME "Circuit Drift Labs"
     BUNDLE_ID "com.circuitdriftlabs.robodrummer"
     PLUGIN_MANUFACTURER_CODE CDrf
     PLUGIN_CODE RDrm
-    FORMATS VST3 Standalone
+    FORMATS ${ROBODRUMMER_FORMATS}
+    AU_MAIN_TYPE kAudioUnitType_MusicEffect
+    PLUGIN_DESCRIPTION "Adaptive virtual drummer for a live guitarist"
+
     VST3_CATEGORIES Instrument Drum
     PRODUCT_NAME "RoboDrummer"
     IS_SYNTH FALSE

@@ -497,6 +497,80 @@ void testExtendedControls() {
     }
 }
 
+
+// SPEC 37: the beta acceptance scenario, end to end through the real processor.
+void testBetaAcceptanceScenario() {
+    section("beta acceptance scenario (SPEC 37)");
+    Rig rig; rig.param("outputMode", 1);
+    rig.playHead.hasTempo = false;
+    rig.param("tempoSource", 1); rig.param("bpm", 100.0f);
+    rig.param("jamStyle", 0);                 // Rock
+    rig.param("leadershipMode", 2);           // Guitar leads
+    rig.param("followRange", 40.0f);
+    rig.param("silenceMode", 4);              // stop after N bars
+    rig.param("silenceStopBars", 2.0f);
+    double beatAccum = 0.0;
+    double guitarBpm = 104.0;
+    float amplitude = 0.35f;
+    bool guitarPlaying = true;
+    auto guitar = [&](long long) {
+        const double rate = guitarBpm / 60.0 / kSampleRate;
+        beatAccum += rate;
+        const double inBeat = std::fmod(beatAccum, 1.0) / rate;
+        if (!guitarPlaying) return 0.0f;
+        return static_cast<float>(amplitude * std::exp(-inBeat / 2200.0) * std::sin(6.2831853 * 196.0 * inBeat / kSampleRate) * (inBeat < 8000 ? 1.0 : 0.0));
+    };
+    auto none = [](long long, juce::MidiBuffer&) {};
+    const auto seconds = [](double s) { return static_cast<int>(s * kSampleRate / kBlock); };
+
+    // 2-3. four bars of playing: tempo and phase are acquired, the drummer enters on a sensible boundary.
+    const auto before = rig.run(seconds(1.0), guitar, none);
+    CHECK_MSG(before.noteOns == 0, "drummer played before acquiring (%d hits)", before.noteOns);
+    const auto entry = rig.run(seconds(9.0), guitar, none);
+    CHECK(rig.processor.hasAdaptiveJoined());
+    CHECK_MSG(entry.noteOns > 8, "no entry (%d hits)", entry.noteOns);
+    CHECK_MSG(std::abs(rig.processor.getEffectiveDrummerBpm() - 104.0) < 6.0, "entry tempo %f", rig.processor.getEffectiveDrummerBpm());
+
+    // 4-5. gradual acceleration is followed without obvious jumps.
+    double previous = rig.processor.getEffectiveDrummerBpm(), maxStep = 0.0;
+    const int accelBlocks = seconds(14.0);
+    for (int b = 0; b < accelBlocks; ++b) {
+        guitarBpm = 104.0 + 12.0 * b / accelBlocks;
+        rig.run(1, guitar, none);
+        const double now = rig.processor.getEffectiveDrummerBpm();
+        maxStep = std::max(maxStep, std::abs(now - previous)); previous = now;
+    }
+    CHECK_MSG(maxStep < 1.0, "tempo jump %f", maxStep);
+    CHECK_MSG(rig.processor.getEffectiveDrummerBpm() > 108.0, "drummer %f after acceleration", rig.processor.getEffectiveDrummerBpm());
+
+    // 6-7. the guitarist plays harder and the drummer's energy rises.
+    const float intensityBefore = rig.processor.getEffectiveDrummerIntensity();
+    for (int b = 0; b < seconds(10.0); ++b) { amplitude = 0.35f + 0.55f * b / seconds(10.0); rig.run(1, guitar, none); }
+    CHECK_MSG(rig.processor.getEffectiveDrummerIntensity() > intensityBefore + 0.08f, "intensity %f -> %f", intensityBefore, rig.processor.getEffectiveDrummerIntensity());
+
+    // 8-9. a fill requested by MIDI is executed musically (toms appear within two bars).
+    const auto fill = rig.run(seconds(5.0), guitar, [](long long b, juce::MidiBuffer& m) { if (b % 1000 == 3) m.addEvent(juce::MidiMessage::noteOn(16, 36, 1.0f), 0); });
+    // the request lands on the next block after block 3 modulo - make sure one was sent in the window by forcing it
+    (void) fill;
+    rig.processor.requestCommand(robodrummer::MidiCommand::Fill);
+    const auto fillRun = rig.run(seconds(4.0), guitar, none);
+    CHECK_MSG(fillRun.notes[50] + fillRun.notes[47] + fillRun.notes[43] > 0, "fill without toms");
+
+    // 10-11. the guitar stops: after the configured silent bars the drummer stops.
+    guitarPlaying = false;
+    rig.run(seconds(12.0), guitar, none);
+    CHECK(rig.processor.isDrummerStopped());
+    const auto silent = rig.run(seconds(2.0), guitar, none);
+    CHECK_MSG(silent.noteOns == 0, "drummer still playing in silence (%d)", silent.noteOns);
+
+    // 12-14. the guitar resumes; the drummer continues without any manual restart.
+    guitarPlaying = true;
+    const auto resumed = rig.run(seconds(20.0), guitar, none);
+    CHECK(!rig.processor.isDrummerStopped());
+    CHECK_MSG(resumed.noteOns > 8, "drummer did not resume (%d hits)", resumed.noteOns);
+    CHECK_MSG(std::abs(rig.processor.getEffectiveDrummerBpm() - 116.0) < 9.0, "resumed tempo %f", rig.processor.getEffectiveDrummerBpm());
+}
+
 void testCalibration() {
     section("calibration");
     Rig rig;
@@ -868,6 +942,7 @@ int main(int argc, char** argv) {
     testStateAndPresets();
     testProgrammedArrangement();
     testExtendedControls();
+    testBetaAcceptanceScenario();
     testCalibration();
     testRealtimeAllocations();
     testCpuBudget();

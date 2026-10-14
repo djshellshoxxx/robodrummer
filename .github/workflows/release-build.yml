@@ -61,10 +61,12 @@ jobs:
           mkdir -p "$out"
           cp -R "$src/VST3/RoboDrummer.vst3" "$out/"
           cp -R "$src/CLAP/RoboDrummer.clap" "$out/"
+          if [ "$RUNNER_OS" = "macOS" ]; then cp -R "$src/AU/RoboDrummer.component" "$out/"; fi
           if [ "$RUNNER_OS" = "Windows" ]; then cp "$src/Standalone/RoboDrummer.exe" "$out/";
           elif [ "$RUNNER_OS" = "macOS" ]; then cp -R "$src/Standalone/RoboDrummer.app" "$out/";
           else cp "$src/Standalone/RoboDrummer" "$out/"; fi
           cp LICENSE COPYRIGHT-TRADEMARK.md docs/INSTALL.md "$out/"
+          cp docs/PARAMETERS.md "$out/PARAMETERS.md"
 
       - uses: actions/upload-artifact@v4
         with:
