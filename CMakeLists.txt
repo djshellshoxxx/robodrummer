@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(RoboDrummer VERSION 0.2.0 LANGUAGES C CXX)
+project(RoboDrummer VERSION 0.3.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,7 +44,19 @@ foreach(test_name IN ITEMS
     silence_controller
     jam_coordinator
     output_mode
-    live_control_policy)
+    live_control_policy
+    style_library
+    humanize
+    fill_generator
+    drummer_personality
+    midi_tools
+    input_conditioner
+    mixer_kit
+    realtime_safety
+    tracking_fixtures
+    performance_features
+    follow_controls
+    lookahead)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   if(MSVC)
@@ -65,12 +77,21 @@ if(ROBODRUMMER_BUILD_JUCE)
   )
   FetchContent_MakeAvailable(JUCE)
 
+  # AU is only available on macOS (it is an Apple format); everything else builds on every platform.
+  set(ROBODRUMMER_FORMATS VST3 Standalone)
+  if(APPLE)
+    list(APPEND ROBODRUMMER_FORMATS AU)
+  endif()
+
   juce_add_plugin(RoboDrummer
     COMPANY_NAME "Circuit Drift Labs"
     BUNDLE_ID "com.circuitdriftlabs.robodrummer"
     PLUGIN_MANUFACTURER_CODE CDrf
     PLUGIN_CODE RDrm
-    FORMATS VST3 Standalone
+    FORMATS ${ROBODRUMMER_FORMATS}
+    AU_MAIN_TYPE kAudioUnitType_MusicEffect
+    PLUGIN_DESCRIPTION "Adaptive virtual drummer for a live guitarist"
+
     VST3_CATEGORIES Instrument Drum
     PRODUCT_NAME "RoboDrummer"
     IS_SYNTH FALSE
@@ -86,6 +107,12 @@ if(ROBODRUMMER_BUILD_JUCE)
     src/plugin/PluginProcessor.h
     src/plugin/PluginEditor.cpp
     src/plugin/PluginEditor.h
+    src/plugin/EditorPanels.h
+    src/plugin/EditorWidgets.h
+    src/plugin/PresetManager.cpp
+    src/plugin/PresetManager.h
+    src/audio/KitBuilder.cpp
+    src/audio/KitBuilder.h
   )
   target_include_directories(RoboDrummer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(RoboDrummer PRIVATE
@@ -102,6 +129,24 @@ if(ROBODRUMMER_BUILD_JUCE)
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
   )
+
+  # Headless end-to-end checks against the real AudioProcessor (no host or audio device needed).
+  juce_add_console_app(RoboDrummerHarness PRODUCT_NAME "RoboDrummerHarness")
+  juce_generate_juce_header(RoboDrummerHarness)
+  target_sources(RoboDrummerHarness PRIVATE tests/harness/PluginHarness.cpp)
+  target_include_directories(RoboDrummerHarness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(RoboDrummerHarness PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+  target_link_libraries(RoboDrummerHarness PRIVATE
+    RoboDrummer
+    juce::juce_audio_utils
+    juce::juce_dsp
+    juce::juce_recommended_config_flags)
+  if(MSVC)
+    target_compile_options(RoboDrummerHarness PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(RoboDrummerHarness PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME plugin_harness COMMAND RoboDrummerHarness)
 
   if(ROBODRUMMER_BUILD_CLAP)
     FetchContent_Declare(

@@ -13,6 +13,7 @@ class DrumSamplePlayer {
 public:
     static constexpr std::size_t InstrumentCount = 16;
     static constexpr std::size_t MaxVoices = 64;
+    static constexpr std::size_t MaxBuses = 5;
     static constexpr std::size_t MaxVelocityLayers = 4;
     static constexpr std::size_t MaxRoundRobinVariants = 4;
 
@@ -70,12 +71,20 @@ public:
     }
 
     void setInstrumentGainPan(DrumInstrument instrument, float gain, float pan) noexcept {
+        if (!std::isfinite(gain)) gain = 1.0f;
+        if (!std::isfinite(pan)) pan = 0.0f;
         auto& set = instruments_[index(instrument)];
         set.gain = std::clamp(gain, 0.0f, 4.0f);
         set.pan = std::clamp(pan, -1.0f, 1.0f);
     }
 
+    // Output bus for this instrument's voices (0 = main mix; 1+ = aux outputs that fall back to main when not rendered).
+    void setInstrumentBus(DrumInstrument instrument, int bus) noexcept {
+        instruments_[index(instrument)].bus = std::clamp(bus, 0, static_cast<int>(MaxBuses) - 1);
+    }
+
     void setInstrumentTuning(DrumInstrument instrument, float semitones) noexcept {
+        if (!std::isfinite(semitones)) semitones = 0.0f;
         instruments_[index(instrument)].tuningSemitones = std::clamp(semitones, -24.0f, 24.0f);
     }
 
@@ -138,15 +147,35 @@ public:
         voice.attackSamples = instrument.attackSamples;
         voice.releaseSamples = instrument.releaseSamples;
         voice.chokeGroup = instrument.chokeGroup;
+        voice.bus = instrument.bus;
     }
 
     void render(float** outputs, int channels, int numSamples) noexcept {
         if (!outputs || !outputs[0] || channels <= 0 || numSamples <= 0)
             return;
+        float* left[1] { outputs[0] };
+        float* right[1] { channels > 1 ? outputs[1] : nullptr };
+        renderBuses(left, right, 1, numSamples);
+    }
+
+    // Renders into per-bus stereo pairs. A null left pointer means that bus is unavailable and its voices
+    // fall back to bus 0, so disabled aux outputs never lose audio.
+    // sendLeft/sendRight, when given, additionally receive every voice (the feed for a room/reverb return that
+    // must hear the whole kit even when instruments are routed to aux outputs).
+    void renderBuses(float* const* busLeft, float* const* busRight, int numBuses, int numSamples,
+                     float* sendLeft = nullptr, float* sendRight = nullptr) noexcept {
+        if (!busLeft || numBuses <= 0 || !busLeft[0] || numSamples <= 0)
+            return;
 
         for (auto& voice : voices_) {
             if (!voice.active || voice.sample == nullptr)
                 continue;
+
+            int bus = voice.bus;
+            if (bus >= numBuses || busLeft[bus] == nullptr)
+                bus = 0;
+            float* outLeft = busLeft[bus];
+            float* outRight = busRight ? busRight[bus] : nullptr;
 
             const auto& sample = *voice.sample;
             const double sampleLength = static_cast<double>(sample.left.size());
@@ -157,9 +186,12 @@ public:
                     ? interpolate(sample.left, voice.position)
                     : interpolate(sample.right, voice.position);
 
-                outputs[0][n] += left;
-                if (channels > 1 && outputs[1])
-                    outputs[1][n] += rightSource * voice.rightGain * envelope;
+                const float right = rightSource * voice.rightGain * envelope;
+                outLeft[n] += left;
+                if (outRight)
+                    outRight[n] += right;
+                if (sendLeft) sendLeft[n] += left;
+                if (sendRight) sendRight[n] += right;
 
                 voice.position += voice.playbackRate;
             }
@@ -187,6 +219,7 @@ private:
         float tuningSemitones{0.0f};
         int attackSamples{0};
         int releaseSamples{0};
+        int bus{0};
     };
 
     struct Voice {
@@ -199,6 +232,7 @@ private:
         int attackSamples{0};
         int releaseSamples{0};
         int chokeGroup{0};
+        int bus{0};
     };
 
     [[nodiscard]] static constexpr std::size_t index(DrumInstrument instrument) noexcept {

@@ -29,27 +29,17 @@ CMake downloads the pinned JUCE release and clap-juce-extensions during configur
 
 ## Host parameters
 
-All main controls are host-automatable parameters (stable IDs, version 1). The GUI uses JUCE parameter attachments, so host automation, generic host editors and the RoboDrummer editor always agree.
+Every main control is a host-automatable parameter with a stable ID. The complete, generated table (IDs, ranges, choices, defaults) is in [PARAMETERS.md](PARAMETERS.md); regenerate it with `RoboDrummerHarness --dump-parameters docs/PARAMETERS.md`. Parameters are only ever appended; an ID is never reused for a different meaning.
 
-| ID | Name | Range / choices | Default |
-|---|---|---|---|
-| `bpm` | Internal BPM | 40–240 BPM | 120 |
-| `intensity` | Intensity | 0–100 % | 50 % |
-| `outputMode` | Output Mode | Internal Drums / MIDI Only / Internal + MIDI | Internal + MIDI |
-| `leadershipMode` | Timing Mode | Drummer Leads / Hybrid / Guitarist Leads | Drummer Leads |
-| `leadership` | Leadership | 0–100 % | 50 % |
-| `followRange` | Follow Range | 0–80 BPM | 15 |
-| `dynamicFollow` | Dynamic Follow | 0–100 % | 60 % |
-| `jamStyle` | Jam Style | Rock / Blues / Funk / Punk / Metal / Shuffle | Rock |
-| `arrangementEnabled` | Programmed Arrangement | off / on | off |
-| `jamMemoryEnabled` | Learn This Jam | off / on | on |
-| `manualMeterEnabled` | Manual Meter | off / on | off |
-| `meterNumerator` | Meter Numerator | 2–12 | 4 |
-| `meterDenominator` | Meter Denominator | 2 / 4 / 8 / 16 | 4 |
-| `silenceMode` | Guitar Silence | Keep playing / Reduce intensity / Hold groove / Fill during silence / Stop after bars / Wait for resume | Keep playing |
-| `silenceStopBars` | Silence Stop Bars | 1–16 bars | 2 |
+Intensity and Jam Style can also be changed by the audio thread (MIDI intensity notes, programmed sections). Those changes are published back to the host from the message thread. Non-parameter state saved with the session (state version 3): arrangement slots and names, MIDI learn map, MIDI drum map and the user-kit folder path. Versions 1 and 2 are migrated on load.
 
-Intensity and Jam Style can also be changed by the audio thread (MIDI intensity notes, programmed arrangement sections). Those changes are published back to the host from the message thread, so automation lanes and saved state follow what is playing. Arrangement slot contents are non-parameter state saved alongside the parameters. Saved state carries `stateVersion` 2; version-1 sessions (plain properties on a `RoboDrummerState` root) are migrated on load.
+## Targets
+
+VST3, CLAP and Standalone on Windows, macOS and Linux, plus AU on macOS. `RoboDrummerHarness` is a headless console test of the real processor (`ctest` runs it as `plugin_harness`).
+
+## Tempo sources
+
+`tempoSource`: **Host / Internal** (host tempo and transport when available, Internal BPM otherwise), **Internal BPM only** (free-running, ignores the host transport), **MIDI Clock** (24 ppqn with Start/Stop/Continue; falls back to the host/internal tempo when no clock is present). Tap tempo sets Internal BPM.
 
 ## Current timing modes
 
@@ -84,7 +74,7 @@ Large phase disagreement is currently flagged rather than immediately corrected.
 
 ## MIDI intervention map
 
-RoboDrummer treats MIDI channel 16 as its intervention/control channel. Channel-16 messages are consumed and not forwarded to the MIDI output; all other incoming MIDI passes through. Generated drum MIDI is sent on General MIDI drum channel 10.
+RoboDrummer treats MIDI channel 16 as its intervention/control channel. Channel-16 messages are consumed and not forwarded to the MIDI output; all other incoming MIDI passes through. Generated drum MIDI is sent on the *MIDI Output Channel* parameter (default 10, General MIDI drums) using an editable drum map (SETTINGS → EDIT DRUM MAP). Every command note, and every controller → parameter assignment, can be re-learned on the MIDI tab; learned notes fire only on the channel they were learned on. Defaults: CC 11 → Intensity, CC 12 → Leadership. All Sound Off / All Notes Off silence the sampler.
 
 | Note | Action |
 |---:|---|
@@ -101,13 +91,20 @@ RoboDrummer treats MIDI channel 16 as its intervention/control channel. Channel-
 | 46 | Resume drummer |
 | 47 | Reset listening (clears tempo, phase, phrase, silence, coordinator and jam-memory tracking) |
 | 48 | Solo support cue |
-| 49 | End jam cue |
+| 49 | End jam: plays an outro (fill into a final crash + kick on a downbeat), then stops; Resume restarts |
+| 50 | Immediate fill (starts on the next beat; note 36 queues the fill instead) |
 
 Break is implemented as a one-bar musical dropout. The request is consumed once, normal groove generation is suppressed for that bar, and RoboDrummer re-enters automatically on the following bar. If a fill is already queued, it is deferred until after the break rather than discarded.
 
 MIDI intensity up/down updates the persistent live intensity control, so the change remains active across subsequent processing blocks and is reflected in the editor.
 
 Not every higher-level command has a complete arrangement behavior yet; the command model is in place so those behaviors can be added without changing the MIDI contract.
+
+## Kits, mixer and outputs
+
+Built-in kits: Studio, Tight, Big Room, Lo-Fi (synthesised at load). **User kits:** point the KIT tab at a folder of WAV/AIFF/FLAC files named `kick`, `snare`, `closedhat`, `openhat`, `ride`, `crash`, `tom1`/`hightom`, `tom2`/`midtom`, `floortom`, `rimshot`, `sidestick`, `china`, `splash`, `cowbell`, `tambourine`, `clap`; add `_v1`…`_v4` for velocity layers and `_rr1`…`_rr4` for round robin (e.g. `snare_v2_rr3.wav`). Missing instruments fall back to the Studio kit; files are resampled to the host rate on a background thread and swapped in without blocking the audio thread.
+
+Mixer channels (Kick, Snare, Toms, Hi-Hat, Ride, Cymbals, Room, Master) have gain, pan, mute and (except Room/Master) solo. The Room channel is a reverb fed by every voice, whatever its routing. Enable the **Kick / Snare / Toms / Hats + Cymbals** output buses in the host to receive each group separately; a disabled bus falls back to the main mix.
 
 ## Internal sampler status
 

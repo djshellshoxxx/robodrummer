@@ -6,7 +6,13 @@ The intended product is a VST3/CLAP/AU instrument plus a standalone application.
 
 The design target is roughly 90% autonomous performance with the remaining 10% exposed as optional MIDI intervention: fills, next section, intensity changes, half/double time, crash, break, stop/resume, and listening reset.
 
-## Current development status
+## Current development status (0.3.0)
+
+All SPEC sections up to Phase 4 are implemented and tested; see [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md) for the traceability matrix, the defects found, and the remaining backlog, [docs/QA.md](docs/QA.md) for validation status, and [docs/PARAMETERS.md](docs/PARAMETERS.md) for every host parameter. Highlights: 22 styles, humanization, 1-beat to 2-bar fills, drummer personalities, a phase-locked tempo/beat tracker with movement classification, input conditioning and calibration, tap tempo and MIDI clock, user WAV/AIFF kits, mixer with room and aux outputs, presets, MIDI Learn, and an 8-tab editor (LIVE, KIT, DRUMMER, STYLE, SONG, MIDI, ANALYSIS, SETTINGS).
+
+Windows users: download `RoboDrummer-<version>-Windows-x64-Setup.exe` (or the zip) from the **RoboDrummer Release Build** workflow artifacts; see [docs/INSTALL.md](docs/INSTALL.md).
+
+### Earlier phases
 
 Phase 1 established the JUCE-independent C++ core and tests. Phase 2 added the JUCE VST3/Standalone shell, generated starter kit, host transport integration, MIDI intervention, MIDI drum output and the first playable drummer path.
 
@@ -19,6 +25,11 @@ See [docs/JUCE_BUILD.md](docs/JUCE_BUILD.md) for build instructions and the curr
 - [SPEC.md](SPEC.md) — engineering/product specification
 - [docs/PHASE2_SCOPE.md](docs/PHASE2_SCOPE.md) — JUCE shell scope
 - [docs/JUCE_BUILD.md](docs/JUCE_BUILD.md) — build instructions and current behavior
+- [docs/PARAMETERS.md](docs/PARAMETERS.md) — generated parameter reference
+- [docs/QA.md](docs/QA.md) — validation record and known limitations
+- [docs/COMPLIANCE.md](docs/COMPLIANCE.md) — CDL standard compliance table
+- [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md) — feature audit and backlog
+- [docs/RELEASE_NOTES_0.3.0.md](docs/RELEASE_NOTES_0.3.0.md) — what changed
 - [research/jam-session-behavior.md](research/jam-session-behavior.md) — improvisation, entrainment, leader/follower behavior, tempo drift, turn-taking and implications for the engine
 - [research/genre-tempo-drumming.md](research/genre-tempo-drumming.md) — groove, genre, tempo, drum-pattern and song-form research
 - [research/realtime-tracking.md](research/realtime-tracking.md) — causal beat/downbeat/tempo tracking research and proposed tracking architecture

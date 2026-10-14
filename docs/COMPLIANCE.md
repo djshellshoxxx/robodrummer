@@ -1,0 +1,36 @@
+# CDL Shared Audio Plugin Standard — compliance record
+
+Applies to RoboDrummer 0.3.0. Standard: [`standards/CDL_PLUGIN_BASELINE.md`](standards/CDL_PLUGIN_BASELINE.md) (required baseline). Product specification: [`../SPEC.md`](../SPEC.md).
+
+## Product profile (§1.2)
+
+Hybrid **instrument plug-in + standalone application**. Targets: VST3 and CLAP (Windows, macOS, Linux), AU (macOS), Standalone. Standalone-only device settings (audio device, sample rate, buffer size) are provided by the JUCE standalone wrapper and are not duplicated inside the plug-in.
+
+Buses: stereo guitar/analysis input (mono, stereo or disabled); stereo main output ("Drums + Monitor"); four optional stereo aux outputs (Kick, Snare, Toms, Hats + Cymbals), disabled by default. MIDI in and out. Latency 0 samples (reported). Tail 2 s.
+
+## Compliance table (§1.3)
+
+| Baseline area | Status | Notes |
+|---|---|---|
+| 2.1 Predictable controls | Implemented | Every control is labelled and bound to a parameter or command; toggles show state; commands show feedback. |
+| 2.2 Parameter contract | Implemented | Stable IDs, documented in [`PARAMETERS.md`](PARAMETERS.md) (generated from code). Host automation ⇄ GUI via JUCE attachments. Audio-thread-originated changes (MIDI intensity, sections) are republished to the host from the message thread. |
+| 2.3 Gestures | Partial | Double-click resets a slider; tooltips can be turned off globally (SETTINGS). Right-click on sliders offers reset to default and copy/paste of the value (pasted text is range-checked and rejected when malformed); combo boxes and toggles have no context menu yet. |
+| 2.4 Accessibility | Partial | State is conveyed by text as well as colour; resizable editor (900×640 minimum). Full keyboard navigation relies on JUCE defaults; no reduced-motion option because the UI has no decorative animation beyond live meters. |
+| 3.1 Host responsibilities | Implemented | Plug-in never opens or configures audio devices. |
+| 3.2 Real-time safety | Implemented | No allocation/locks/I/O on the audio thread — verified by an allocation audit (0 allocations over 1500 blocks with aux buses, reverb, MIDI clock, calibration). Variable and zero-length blocks, 11–192 kHz sample rates, NaN/Inf input covered by the harness. Latency 0, `ScopedNoDenormals`, tail 2 s. |
+| 3.3 Formats, buses, transport | Implemented | See profile. Stopped transport silences new hits (Drummer Leads); missing host tempo falls back to Internal BPM; seeks/loops re-sync the bar position (`JamEngine::syncToPpq`). Internal-BPM-only and MIDI-clock tempo sources are available. |
+| 3.4 Bypass, levels, meters | Implemented | Instrument: no MIDI → free-running drummer by design; All Sound Off / All Notes Off silence the sampler. Meters: "Input level" = analysis signal after gain/gate (dBFS peak); "Output" = main mix peak. |
+| 4.1 Host state | Implemented | State version 3; v1 and v2 migrate; malformed, truncated and mutated state is fuzzed (400 mutations + 100 garbage blobs) without crashes or out-of-range values. Non-parameter state: arrangement slots, MIDI map, drum map, user-kit folder path (not the samples). |
+| 4.2 Presets | Implemented | Jam/Drummer/Style/Kit/Song/Analysis presets as XML in the user application-data folder; atomic (values applied only after the file parsed); factory presets listed in the UI; Jam factory presets are also host programs. No A/B compare (optional). |
+| 4.3 File loading | Implemented | User kits: WAV/AIFF/FLAC, mono/stereo, any sample rate (resampled), ≤ 20 s per file; unrecognised/unreadable files are skipped with a status line; loading is asynchronous with fallback to the built-in kit. No audio export. |
+| 5 MIDI/automation | Implemented | Note-on/off, velocity, channel handling, All Notes Off documented in help; MIDI Learn shows armed state, mapping result, can be cancelled/cleared/reset; conflicting mappings are resolved by replacing the previous binding. Controller-over-automation precedence: last writer wins (the CC updates the host parameter). Invalid/dense streams fuzzed. |
+| 6 Visual identity | Implemented | CDL palette (`EditorWidgets.h`), dark layout; Inter is not bundled — platform sans-serif fallback. |
+| 7.1 Options | Implemented | Tooltips on/off (persisted). |
+| 7.2 Help/About | Implemented | HELP button (full help), SETTINGS → About with version, formats, privacy statement and link to <https://djshellshoxxx.github.io/circuitdriftlabs/>. Help text lives in `PluginEditor.cpp` and `docs/`. |
+| 8 Privacy/security | Implemented | **No network access, telemetry, analytics, licensing or update checks.** Parsers validate ranges and bound sizes; paths are handled through `juce::File`. |
+| 9 Documentation | Implemented | README, `docs/INSTALL.md`, `docs/JUCE_BUILD.md`, `docs/PARAMETERS.md`, `docs/QA.md`, `docs/feature-audit/`. |
+| 10 Required links | Implemented | Standard stored in `docs/standards/`, linked from README and SPEC. |
+
+## Exceptions
+
+None. Partial items are tracked in the audit backlog: [`feature-audit/FEATURE_AUDIT_2026-10-14.md`](feature-audit/FEATURE_AUDIT_2026-10-14.md).
