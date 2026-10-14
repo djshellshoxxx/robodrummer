@@ -56,6 +56,15 @@ public:
         return sampleCursor_ / barSamples;
     }
 
+    // 1-based beat within the current bar, following the (possibly half/double-time) feel.
+    [[nodiscard]] int currentBeatInBar() const noexcept {
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return 1;
+        const double spb = sampleRate_ * 60.0 / effectiveBpm * (4.0 / static_cast<double>(denominator_));
+        const long long beat = static_cast<long long>(static_cast<double>(sampleCursor_) / spb);
+        return static_cast<int>(beat % numerator_) + 1;
+    }
+
     // Phase of the unscaled pulse, so half/double-time feels still line up with the guitarist's beat.
     [[nodiscard]] double currentBeatPhase() const noexcept {
         if (!(bpm_ > 0.0) || !(sampleRate_ > 0.0)) return 0.0;

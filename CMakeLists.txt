@@ -94,6 +94,12 @@ if(ROBODRUMMER_BUILD_JUCE)
     src/plugin/PluginProcessor.h
     src/plugin/PluginEditor.cpp
     src/plugin/PluginEditor.h
+    src/plugin/EditorPanels.h
+    src/plugin/EditorWidgets.h
+    src/plugin/PresetManager.cpp
+    src/plugin/PresetManager.h
+    src/audio/KitBuilder.cpp
+    src/audio/KitBuilder.h
   )
   target_include_directories(RoboDrummer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_link_libraries(RoboDrummer PRIVATE

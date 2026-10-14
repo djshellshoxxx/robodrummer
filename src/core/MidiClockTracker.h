@@ -18,7 +18,7 @@ public:
     void prepare(double sampleRate) noexcept { sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0; reset(); }
 
     void reset() noexcept {
-        count_ = 0; head_ = 0; lastTickSample_ = -1; bpm_ = 0.0; running_ = false; startPending_ = false;
+        count_ = 0; head_ = 0; lastTickSample_ = -1; bpm_ = 0.0; running_ = false; startPending_ = false; transportSeen_ = false;
     }
 
     // sampleTime is a monotonically increasing sample counter (block start + offset).
@@ -41,9 +41,11 @@ public:
         lastTickSample_ = sampleTime;
     }
 
-    void start() noexcept { running_ = true; startPending_ = true; }
-    void continueClock() noexcept { running_ = true; }
-    void stop() noexcept { running_ = false; }
+    void start() noexcept { running_ = true; startPending_ = true; transportSeen_ = true; }
+    void continueClock() noexcept { running_ = true; transportSeen_ = true; }
+    void stop() noexcept { running_ = false; transportSeen_ = true; }
+    // Some sources send ticks only; the Start/Stop state is enforced once any transport message has been seen.
+    [[nodiscard]] bool transportSeen() const noexcept { return transportSeen_; }
 
     // True once per MIDI Start message; the engine uses it to re-align the bar phase.
     [[nodiscard]] bool consumeStart() noexcept { const bool v = startPending_; startPending_ = false; return v; }
@@ -65,6 +67,7 @@ private:
     double bpm_{0.0};
     bool running_{false};
     bool startPending_{false};
+    bool transportSeen_{false};
 };
 
 } // namespace robodrummer
