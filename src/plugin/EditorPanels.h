@@ -1154,7 +1154,12 @@ public:
         helpButton_.onClick = [this] { showHelp_(); };
         addAndMakeVisible(tooltips_); addAndMakeVisible(helpButton_);
         about_.setText(juce::String("RoboDrummer ") + JucePlugin_VersionString + "  |  Circuit Drift Labs\nAdaptive virtual drummer for a live guitarist.\n"
+                       "Formats: VST3, CLAP, Standalone (Windows, macOS, Linux). No network access, telemetry, licensing or update checks.\n"
                        "Audio thread: no allocation, no locks, no disk. Kits load on a background thread.", juce::dontSendNotification);
+        website_.setButtonText("Circuit Drift Labs website");
+        website_.setURL(juce::URL("https://djshellshoxxx.github.io/circuitdriftlabs/"));
+        website_.setColour(juce::HyperlinkButton::textColourId, kAccentAlt);
+        addAndMakeVisible(website_);
         refresh();
     }
     void paint(juce::Graphics& g) override {
@@ -1192,6 +1197,7 @@ public:
         auto f = interfaceArea_.reduced(12, 6); f.removeFromTop(22);
         auto row = f.removeFromTop(30);
         tooltips_.setBounds(row.removeFromLeft(160)); helpButton_.setBounds(row.removeFromLeft(120).reduced(0, 2)); f.removeFromTop(6);
+        website_.setBounds(f.removeFromBottom(24).withWidth(220));
         about_.setBounds(f);
     }
     void refresh() override {
@@ -1223,6 +1229,7 @@ private:
     BarMeter meter_, progress_;
     juce::TextButton calibrate_{"CALIBRATE (8 s)"}, apply_{"APPLY SUGGESTIONS"}, helpButton_{"HELP"};
     juce::ToggleButton tooltips_;
+    juce::HyperlinkButton website_;
     juce::Label gateState_, calResult_, about_;
     std::function<void()> showHelp_;
     juce::Rectangle<int> inputArea_, calibrationArea_, interfaceArea_, followArea_, midiOutArea_;

@@ -5,6 +5,9 @@ on:
   pull_request:
     paths:
       - '.github/workflows/release-build.yml'
+      - 'installer/**'
+      - 'CMakeLists.txt'
+      - 'src/**'
   push:
     branches: [main]
     tags: ['v*']
@@ -65,3 +68,64 @@ jobs:
           name: RoboDrummer-${{ matrix.name }}
           path: dist/RoboDrummer-${{ matrix.name }}
           if-no-files-found: error
+
+      - name: Zip Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/RoboDrummer-${{ matrix.name }}" -DestinationPath "dist/RoboDrummer-${{ matrix.name }}.zip" -Force
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern 'project\(RoboDrummer VERSION ([0-9.]+)').Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress; $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DAppVersion=$version" "/DStageDir=$PWD\dist\RoboDrummer-${{ matrix.name }}" "installer\RoboDrummer.iss"
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          Get-ChildItem dist
+
+      - name: Validate VST3 with pluginval (Windows)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip" -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval
+          ./pluginval/pluginval.exe --strictness-level 5 --validate-in-process --timeout-ms 180000 --output-dir pluginval-report "dist/RoboDrummer-${{ matrix.name }}/RoboDrummer.vst3"
+
+      - name: Validate VST3 with pluginval (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y xvfb
+          curl -L -o pluginval.zip https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Linux.zip
+          unzip -q pluginval.zip
+          xvfb-run -a ./pluginval --strictness-level 5 --validate-in-process --skip-gui-tests --timeout-ms 180000 --output-dir pluginval-report "dist/RoboDrummer-${{ matrix.name }}/RoboDrummer.vst3"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pluginval-${{ matrix.name }}
+          path: pluginval-report
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: RoboDrummer-Windows-installer
+          path: |
+            dist/RoboDrummer-Windows-x64.zip
+            dist/RoboDrummer-*-Windows-x64-Setup.exe
+          if-no-files-found: error
+
+      - name: Attach Windows files to a draft release (tags only)
+        if: runner.os == 'Windows' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: true
+          files: |
+            dist/RoboDrummer-Windows-x64.zip
+            dist/RoboDrummer-*-Windows-x64-Setup.exe

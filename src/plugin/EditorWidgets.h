@@ -11,15 +11,18 @@ namespace rdui {
 
 using APVTS = juce::AudioProcessorValueTreeState;
 
-inline const juce::Colour kBackground { 0xff12141a };
-inline const juce::Colour kPanel { 0xff1b1f27 };
-inline const juce::Colour kPanelRaised { 0xff262c38 };
-inline const juce::Colour kAccent { 0xffe8553a };
-inline const juce::Colour kAccentAlt { 0xff3ec7b8 };
-inline const juce::Colour kText { 0xffe6e9ef };
-inline const juce::Colour kDim { 0xff8a93a6 };
-inline const juce::Colour kGood { 0xff4cd07d };
-inline const juce::Colour kWarn { 0xffe8b13a };
+// Circuit Drift Labs palette (docs/standards/CDL_PLUGIN_BASELINE.md section 6.1).
+inline const juce::Colour kBackground { 0xff0e1116 };
+inline const juce::Colour kPanel { 0xff171b22 };
+inline const juce::Colour kPanelRaised { 0xff222833 };
+inline const juce::Colour kBorder { 0xff2a303a };
+inline const juce::Colour kAccent { 0xffe8532a };
+inline const juce::Colour kAccentAlt { 0xff4fb6c4 };
+inline const juce::Colour kText { 0xffe6e8ec };
+inline const juce::Colour kDim { 0xff8a929e };
+inline const juce::Colour kGood { 0xff7bc96f };
+inline const juce::Colour kWarn { 0xfff2c14e };
+inline const juce::Colour kError { 0xffef5350 };
 
 class RoboLookAndFeel final : public juce::LookAndFeel_V4 {
 public:
@@ -36,7 +39,7 @@ public:
         setColour(juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
         setColour(juce::ComboBox::backgroundColourId, kPanelRaised);
         setColour(juce::ComboBox::textColourId, kText);
-        setColour(juce::ComboBox::outlineColourId, juce::Colour(0xff39414f));
+        setColour(juce::ComboBox::outlineColourId, kBorder);
         setColour(juce::ComboBox::arrowColourId, kDim);
         setColour(juce::PopupMenu::backgroundColourId, kPanelRaised);
         setColour(juce::PopupMenu::textColourId, kText);
@@ -50,7 +53,7 @@ public:
         setColour(juce::ToggleButton::tickDisabledColourId, kDim);
         setColour(juce::TextEditor::backgroundColourId, kPanel);
         setColour(juce::TextEditor::textColourId, kText);
-        setColour(juce::TextEditor::outlineColourId, juce::Colour(0xff39414f));
+        setColour(juce::TextEditor::outlineColourId, kBorder);
         setColour(juce::TextEditor::focusedOutlineColourId, kAccent);
         setColour(juce::TooltipWindow::backgroundColourId, kPanelRaised);
         setColour(juce::TooltipWindow::textColourId, kText);

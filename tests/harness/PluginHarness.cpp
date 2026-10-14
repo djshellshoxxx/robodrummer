@@ -559,6 +559,252 @@ void testCpuBudget() {
     CHECK_MSG(load < 0.25, "load %.3f", load);
 }
 
+
+bool allFinite(const juce::AudioBuffer<float>& b, float limit = 64.0f) {
+    for (int c = 0; c < b.getNumChannels(); ++c)
+        for (int i = 0; i < b.getNumSamples(); ++i) { const float v = b.getSample(c, i); if (!std::isfinite(v) || std::abs(v) > limit) return false; }
+    return true;
+}
+
+void testRobustness() {
+    section("robustness: block sizes, sample rates, non-finite input, zero-length blocks");
+    {
+        RoboDrummerAudioProcessor processor;
+        processor.prepareToPlay(48000.0, 512);
+        bool finite = true; double peak = 0.0;
+        for (const int size : { 1, 2, 7, 31, 64, 100, 333, 512, 1000, 4097, 16384, 40000, 70000 }) {
+            juce::AudioBuffer<float> buffer(2, size);
+            for (int rep = 0; rep < (size < 1000 ? 40 : 3); ++rep) {
+                for (int i = 0; i < size; ++i) { const float v = 0.2f * std::sin(0.05f * static_cast<float>(i)); buffer.setSample(0, i, v); buffer.setSample(1, i, v); }
+                juce::MidiBuffer midi;
+                if (size > 4) midi.addEvent(juce::MidiMessage::noteOn(16, 36, 1.0f), size / 2);
+                processor.processBlock(buffer, midi);
+                if (!allFinite(buffer)) { std::printf("    non-finite/large at block size %d rep %d magnitude %f\n", size, rep, static_cast<double>(buffer.getMagnitude(0, size))); finite = false; }
+                peak = std::max(peak, static_cast<double>(buffer.getMagnitude(0, size)));
+            }
+        }
+        CHECK(finite);
+        // Zero-length blocks are legal in some hosts.
+        juce::AudioBuffer<float> empty(2, 0);
+        juce::MidiBuffer midi;
+        processor.processBlock(empty, midi);
+        CHECK(true);
+    }
+    for (const double rate : { 11025.0, 22050.0, 44100.0, 48000.0, 88200.0, 96000.0, 192000.0 }) {
+        RoboDrummerAudioProcessor processor;
+        processor.setPlayHead(nullptr);
+        processor.prepareToPlay(rate, 480);
+        juce::AudioBuffer<float> buffer(2, 480);
+        bool finite = true; double peak = 0.0;
+        for (int b = 0; b < static_cast<int>(rate * 2.0 / 480.0); ++b) {
+            for (int i = 0; i < 480; ++i) { const float v = (i % 5000 < 200) ? 0.4f * std::sin(0.3f * static_cast<float>(i)) : 0.0f; buffer.setSample(0, i, v); buffer.setSample(1, i, v); }
+            juce::MidiBuffer m;
+            processor.processBlock(buffer, m);
+            finite = finite && allFinite(buffer);
+            peak = std::max(peak, static_cast<double>(buffer.getMagnitude(0, 480)));
+        }
+        CHECK_MSG(finite, "rate %.0f", rate);
+        CHECK_MSG(peak > 0.02, "rate %.0f peak %f", rate, peak);
+        processor.releaseResources();
+    }
+    {
+        // Changing the sample rate on a live instance re-prepares everything safely.
+        RoboDrummerAudioProcessor processor;
+        juce::AudioBuffer<float> buffer(2, 256);
+        for (const double rate : { 44100.0, 96000.0, 48000.0 }) {
+            processor.prepareToPlay(rate, 256);
+            for (int b = 0; b < 100; ++b) { buffer.clear(); juce::MidiBuffer m; processor.processBlock(buffer, m); CHECK(allFinite(buffer)); }
+        }
+    }
+    {
+        // NaN / Inf / huge input must never corrupt the output or the tracker.
+        Rig rig; rig.param("leadershipMode", 2); rig.param("outputMode", 0);
+        bool finite = true;
+        const float bad[] { std::nanf(""), INFINITY, -INFINITY, 1.0e30f, -1.0e30f, 0.0f };
+        for (int b = 0; b < 300; ++b) {
+            rig.buffer.clear();
+            for (int i = 0; i < kBlock; ++i) { const float v = bad[(b + i) % 6]; rig.buffer.setSample(0, i, v); rig.buffer.setSample(1, i, v); }
+            juce::MidiBuffer m;
+            rig.processor.processBlock(rig.buffer, m);
+            finite = finite && allFinite(rig.buffer, 1.0e31f);
+        }
+        CHECK(finite);
+        // ...and the engine still works afterwards.
+        rig.runSilent(5);
+        const auto r = rig.run(200, [](long long s) { return pluck(s, 100.0); }, [](long long, juce::MidiBuffer&) {});
+        CHECK(r.peak < 16.0);
+        CHECK(std::isfinite(rig.processor.getEffectiveDrummerBpm()) && rig.processor.getEffectiveDrummerBpm() > 20.0 && rig.processor.getEffectiveDrummerBpm() < 400.0);
+    }
+}
+
+void testFuzz() {
+    section("fuzzing: saved state, parameters, MIDI streams (fixed seeds)");
+    // Mutated state blobs must never crash or leave invalid values behind.
+    juce::MemoryBlock good;
+    { Rig rig; rig.param("jamStyle", 9); rig.processor.getMidiLearn().bindCc(30, 4); rig.processor.getStateInformation(good); }
+    auto xml = juce::AudioProcessor::getXmlFromBinary(good.getData(), static_cast<int>(good.getSize()));
+    CHECK(xml != nullptr);
+    if (xml == nullptr) return;
+    const juce::String text = xml->toString();
+    std::uint32_t rng = 20261014u;
+    const auto next = [&] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+    Rig rig;
+    int crashesAvoided = 0;
+    for (int iteration = 0; iteration < 400; ++iteration) {
+        juce::String mutated = text;
+        const int edits = 1 + static_cast<int>(next() % 6);
+        for (int e = 0; e < edits && mutated.length() > 4; ++e) {
+            const int pos = static_cast<int>(next() % static_cast<unsigned>(mutated.length()));
+            switch (next() % 7) {
+                case 0: mutated = mutated.replaceSection(pos, 1, ""); break;
+                case 1: mutated = mutated.replaceSection(pos, 1, juce::String::charToString(static_cast<juce::juce_wchar>(32 + next() % 90))); break;
+                case 2: mutated = mutated.replaceSection(pos, 0, juce::String::charToString(static_cast<juce::juce_wchar>(32 + next() % 90))); break;
+                case 3: mutated = mutated.substring(0, pos); break;
+                case 4: mutated = mutated.replaceSection(pos, 3, "1e99"); break;
+                case 5: mutated = mutated.replaceSection(pos, 2, "-1"); break;
+                default: mutated = mutated.replaceSection(pos, 2, "nan"); break;
+            }
+        }
+        // Same container format as AudioProcessor::copyXmlToBinary, but around the raw (possibly malformed) text.
+        juce::MemoryBlock blob;
+        {
+            juce::MemoryOutputStream out(blob, false);
+            out.writeInt(0x21324356);
+            out.writeInt(static_cast<int>(mutated.getNumBytesAsUTF8()));
+            out.write(mutated.toRawUTF8(), mutated.getNumBytesAsUTF8());
+            out.writeByte(0);
+        }
+        rig.processor.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        ++crashesAvoided;
+        rig.buffer.clear();
+        juce::MidiBuffer m;
+        rig.processor.processBlock(rig.buffer, m);
+        CHECK_MSG(allFinite(rig.buffer), "non-finite output after mutated state #%d", iteration);
+        const double bpm = rig.processor.getEffectiveDrummerBpm();
+        CHECK_MSG(std::isfinite(bpm) && bpm >= 20.0 && bpm <= 400.0, "bpm %f after state #%d", bpm, iteration);
+        for (auto* parameter : rig.processor.getParameters().processor.getParameters()) {
+            const float v = parameter->getValue();
+            if (!(v >= 0.0f && v <= 1.0f)) { CHECK_MSG(false, "parameter %s out of range after mutated state: %f", parameter->getName(64).toRawUTF8(), v); break; }
+        }
+    }
+    CHECK(crashesAvoided == 400);
+    // Pure binary garbage and truncation.
+    for (int iteration = 0; iteration < 100; ++iteration) {
+        juce::MemoryBlock junk;
+        const int n = static_cast<int>(next() % 2000);
+        for (int i = 0; i < n; ++i) { const char c = static_cast<char>(next() & 0xff); junk.append(&c, 1); }
+        rig.processor.setStateInformation(junk.getData(), static_cast<int>(junk.getSize()));
+        juce::MemoryBlock truncated(good.getData(), static_cast<size_t>(next() % good.getSize()));
+        rig.processor.setStateInformation(truncated.getData(), static_cast<int>(truncated.getSize()));
+    }
+    rig.processor.setStateInformation(nullptr, 0);
+    rig.processor.setStateInformation(good.getData(), -5);
+    CHECK(true);
+
+    // Randomised parameters, MIDI and block sizes (fixed seed).
+    for (int round = 0; round < 40; ++round) {
+        Rig r2(round % 3 == 0);
+        for (auto* parameter : r2.processor.getParameters().processor.getParameters()) {
+            if (parameter->getName(64).containsIgnoreCase("gain") || next() % 3 == 0) parameter->setValueNotifyingHost(static_cast<float>(next() % 1000) / 1000.0f);
+        }
+        bool finite = true;
+        for (int b = 0; b < 60; ++b) {
+            const int size = 1 + static_cast<int>(next() % 1200);
+            juce::AudioBuffer<float> buffer(r2.numChannels, size);
+            for (int c = 0; c < r2.numChannels; ++c) for (int i = 0; i < size; ++i) buffer.setSample(c, i, ((next() % 2000) / 1000.0f - 1.0f) * 0.6f);
+            juce::MidiBuffer midi;
+            const int events = static_cast<int>(next() % 10);
+            for (int e = 0; e < events; ++e) {
+                const int pos = static_cast<int>(next() % static_cast<unsigned>(size));
+                switch (next() % 6) {
+                    case 0: midi.addEvent(juce::MidiMessage::noteOn(1 + static_cast<int>(next() % 16), static_cast<int>(next() % 128), static_cast<juce::uint8>(1 + next() % 127)), pos); break;
+                    case 1: midi.addEvent(juce::MidiMessage::noteOff(1 + static_cast<int>(next() % 16), static_cast<int>(next() % 128)), pos); break;
+                    case 2: midi.addEvent(juce::MidiMessage::controllerEvent(1 + static_cast<int>(next() % 16), static_cast<int>(next() % 128), static_cast<int>(next() % 128)), pos); break;
+                    case 3: midi.addEvent(juce::MidiMessage(0xF8), pos); break;
+                    case 4: midi.addEvent(juce::MidiMessage(0xFA + static_cast<int>(next() % 3)), pos); break;
+                    default: midi.addEvent(juce::MidiMessage::pitchWheel(1 + static_cast<int>(next() % 16), static_cast<int>(next() % 16384)), pos); break;
+                }
+            }
+            r2.processor.processBlock(buffer, midi);
+            finite = finite && allFinite(buffer);
+        }
+        CHECK_MSG(finite, "round %d produced non-finite output", round);
+        const double bpm = r2.processor.getEffectiveDrummerBpm();
+        CHECK_MSG(std::isfinite(bpm) && bpm >= 20.0 && bpm <= 400.0, "round %d bpm %f", round, bpm);
+    }
+}
+
+void testSoak(double minutes) {
+    section("soak test");
+    Rig rig(true);
+    rig.param("leadershipMode", 1);
+    rig.param("arrangementEnabled", 1);
+    rig.param("gain_room", -6.0f);
+    rig.param("humanize", 0.7f);
+    std::uint32_t rng = 777;
+    const auto next = [&] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+    const long long blocks = static_cast<long long>(minutes * 60.0 * kSampleRate / kBlock);
+    long long nonFinite = 0;
+    double minBpm = 1e9, maxBpm = 0.0, bpmTarget = 104.0;
+    const auto start = juce::Time::getMillisecondCounterHiRes();
+    double guitarBpm = 104.0;
+    double beatAccum = 0.0;
+    auto guitar = [&](long long s) {
+        const double blockTime = static_cast<double>(s) / kSampleRate;
+        // slow tempo wander and occasional rests
+        guitarBpm = 104.0 + 14.0 * std::sin(blockTime / 47.0);
+        const double rate = guitarBpm / 60.0 / kSampleRate;
+        beatAccum += rate;
+        const double inBeat = std::fmod(beatAccum, 1.0) / rate;
+        const bool rest = std::fmod(blockTime, 90.0) > 80.0;
+        return rest ? 0.0f : static_cast<float>(0.6 * std::exp(-inBeat / 2200.0) * std::sin(6.2831853 * 196.0 * inBeat / kSampleRate) * (inBeat < 8000 ? 1.0 : 0.0));
+    };
+    (void) bpmTarget;
+    for (long long b = 0; b < blocks; ++b) {
+        juce::MidiBuffer midi;
+        if (next() % 700 == 0) midi.addEvent(juce::MidiMessage::noteOn(16, 36 + static_cast<int>(next() % 15), 1.0f), 3);
+        if (next() % 40 == 0) midi.addEvent(juce::MidiMessage::controllerEvent(1, 11, static_cast<int>(next() % 128)), 4);
+        rig.buffer.clear();
+        for (int i = 0; i < kBlock; ++i) { const float v = guitar(rig.blockIndex * kBlock + i); rig.buffer.setSample(0, i, v); rig.buffer.setSample(1, i, v); }
+        rig.processor.processBlock(rig.buffer, midi);
+        ++rig.blockIndex;
+        if (!allFinite(rig.buffer)) ++nonFinite;
+        const double bpm = rig.processor.getEffectiveDrummerBpm();
+        minBpm = std::min(minBpm, bpm); maxBpm = std::max(maxBpm, bpm);
+        if (b % 20000 == 0) pump(1);
+    }
+    const double elapsedSeconds = (juce::Time::getMillisecondCounterHiRes() - start) / 1000.0;
+    std::printf("  simulated %.1f minutes of playing in %.1f s (%.0fx real time); drummer tempo range %.1f-%.1f BPM\n", minutes, elapsedSeconds, minutes * 60.0 / std::max(0.001, elapsedSeconds), minBpm, maxBpm);
+    CHECK(nonFinite == 0);
+    CHECK(minBpm >= 20.0 && maxBpm <= 400.0);
+}
+
+void dumpParameters(const juce::File& file) {
+    RoboDrummerAudioProcessor processor;
+    juce::String md;
+    md << "# RoboDrummer parameter reference\n\n"
+          "Generated by `RoboDrummerHarness --dump-parameters`. Parameter IDs are stable (version hint 1); IDs are never reused for a different meaning.\n\n"
+          "| ID | Name | Type | Range / choices | Default |\n|---|---|---|---|---|\n";
+    for (auto* parameter : processor.getParameters().processor.getParameters()) {
+        auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter);
+        if (withId == nullptr) continue;
+        juce::String type, range;
+        if (auto* choice = dynamic_cast<juce::AudioParameterChoice*>(parameter)) {
+            type = "choice"; range = choice->choices.joinIntoString(" / ");
+        } else if (dynamic_cast<juce::AudioParameterBool*>(parameter) != nullptr) {
+            type = "toggle"; range = "off / on";
+        } else if (auto* integer = dynamic_cast<juce::AudioParameterInt*>(parameter)) {
+            type = "integer"; range = juce::String(integer->getRange().getStart()) + " - " + juce::String(integer->getRange().getEnd());
+        } else if (auto* floating = dynamic_cast<juce::AudioParameterFloat*>(parameter)) {
+            type = "float"; range = juce::String(floating->range.start, 2) + " - " + juce::String(floating->range.end, 2);
+            if (floating->getLabel().isNotEmpty()) range << " " << floating->getLabel();
+        }
+        const auto defaultText = parameter->getText(parameter->getDefaultValue(), 64);
+        md << "| `" << withId->paramID << "` | " << withId->getName(64) << " | " << type << " | " << range << " | " << defaultText << " |\n";
+    }
+    file.replaceWithText(md);
+}
+
 void renderScreenshots(const juce::File& directory) {
     section("editor screenshots");
     directory.createDirectory();
@@ -606,8 +852,12 @@ void renderScreenshots(const juce::File& directory) {
 int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juceInit;
     juce::File screenshotDir;
-    for (int i = 1; i + 1 < argc; ++i)
+    double soakMinutes = 5.0;
+    for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--screenshots") screenshotDir = juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1]);
+        if (std::string(argv[i]) == "--soak-minutes") soakMinutes = std::atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--dump-parameters") { dumpParameters(juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1])); return 0; }
+    }
 
     testBasicPlayback();
     testHostTransportAndTempoSources();
@@ -621,6 +871,9 @@ int main(int argc, char** argv) {
     testCalibration();
     testRealtimeAllocations();
     testCpuBudget();
+    testRobustness();
+    testFuzz();
+    testSoak(soakMinutes);
     if (screenshotDir != juce::File()) renderScreenshots(screenshotDir);
 
     std::printf("\n%d checks, %d failures\n", gChecks, gFailures);

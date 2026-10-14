@@ -399,6 +399,7 @@ void RoboDrummerAudioProcessor::applyMixerToSampler() noexcept {
 
 void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+    setLatencySamples(0); // all processing is causal and sample-aligned; nothing is delayed
     jam_.prepare(sampleRate_);
     conditioner_.prepare(sampleRate_);
     calibration_.cancel();
@@ -491,6 +492,14 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     for (int channel = getTotalNumInputChannels(); channel < getTotalNumOutputChannels(); ++channel)
         buffer.clear(channel, 0, numSamples);
 
+    // The monitored guitar passes through untouched, except that NaN/Inf samples are replaced by silence so a
+    // misbehaving upstream device can never poison the drum mix or the analysis.
+    for (int channel = 0; channel < getTotalNumInputChannels(); ++channel) {
+        float* samples = buffer.getWritePointer(channel);
+        for (int i = 0; i < numSamples; ++i)
+            if (!std::isfinite(samples[i])) samples[i] = 0.0f;
+    }
+
     swapInPendingKit();
 
     // ---- MIDI: clock, MIDI learn, controller mapping and intervention notes -------------------------------------
@@ -516,6 +525,12 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             continue;
         }
         const int channel = msg.getChannel();
+        if (msg.isAllNotesOff() || msg.isAllSoundOff()) {
+            // Drums are one-shots, but "all sound off / all notes off" must still silence anything ringing.
+            if (player_ != nullptr) player_->clear();
+            if (channel != rd::MidiLearnMap::DefaultChannel) midiOut_.addEvent(msg, metadata.samplePosition);
+            continue;
+        }
         if (msg.isController()) {
             const int cc = msg.getControllerNumber();
             const int target = midiLearn_.handleCc(cc);
