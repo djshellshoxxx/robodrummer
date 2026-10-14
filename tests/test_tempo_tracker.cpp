@@ -11,6 +11,12 @@ int main() {
     auto best = tracker.best();
     assert(std::abs(best.bpm - 120.0) <= 1.0);
     assert(best.confidence > 0.35f);
+    assert(best.supportingEventCount >= 8);
+    assert(best.recentConsistency > 0.0f);
+    assert(best.ageSeconds >= 0.0);
+    assert(best.predictedNextBeatSeconds > 9.5);
+    assert(std::abs(best.halfTimeBpm - best.bpm * 0.5) < 0.001);
+    assert(std::abs(best.doubleTimeBpm - best.bpm * 2.0) < 0.001);
 
     tracker.reset();
     double t = 0.0;
@@ -41,4 +47,15 @@ int main() {
 
     const auto top = tracker.topHypotheses();
     assert(std::abs(top[0].bpm - 132.0) <= 2.0);
+    assert(top[0].supportingEventCount > 0);
+    assert(top[0].predictedNextBeatSeconds > 0.0);
+
+    // The documented operating range includes the 40 and 240 BPM boundaries.
+    tracker.reset();
+    for (int i = 0; i < 16; ++i) tracker.addOnset(i * 1.5, 1.0f);
+    assert(std::abs(tracker.best().bpm - 40.0) <= 1.0);
+
+    tracker.reset();
+    for (int i = 0; i < 24; ++i) tracker.addOnset(i * 0.25, 1.0f);
+    assert(std::abs(tracker.best().bpm - 240.0) <= 1.0);
 }
