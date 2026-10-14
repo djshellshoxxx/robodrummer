@@ -236,6 +236,23 @@ void testMidiCommandsAndLearn() {
     CHECK(crash.notes[49] > 0);
 }
 
+void testGuitarMonitor() {
+    section("guitar monitor");
+    const auto dc = [](long long) { return 0.3f; };
+    const auto none = [](long long, juce::MidiBuffer&) {};
+    Rig off; off.param("outputMode", 1);
+    off.run(5, dc, none);
+    const auto silent = off.run(10, dc, none);
+    CHECK_MSG(silent.peak < 1.0e-3, "guitar leaked with monitor off: %f", silent.peak);
+    Rig on; on.param("outputMode", 1); on.param("guitarMonitor", 1.0f);
+    on.run(5, dc, none);
+    const auto heard = on.run(10, dc, none);
+    CHECK_MSG(std::abs(heard.peak - 0.3) < 0.01, "monitor on: %f", heard.peak);
+    Rig half; half.param("outputMode", 1); half.param("guitarMonitor", 0.5f);
+    half.run(5, dc, none);
+    CHECK_MSG(std::abs(half.run(10, dc, none).peak - 0.15) < 0.01, "monitor half");
+}
+
 void testOutro() {
     section("end jam / outro");
     Rig rig; rig.param("outputMode", 1);
@@ -951,6 +968,7 @@ int main(int argc, char** argv) {
     testBasicPlayback();
     testHostTransportAndTempoSources();
     testMidiCommandsAndLearn();
+    testGuitarMonitor();
     testOutro();
     testGuitarFollowing();
     testMixerAndAux();

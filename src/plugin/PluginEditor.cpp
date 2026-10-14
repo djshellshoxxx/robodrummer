@@ -29,7 +29,7 @@ const char* kHelpText =
     "MIDI: tempo source (host, internal, MIDI clock), note commands with MIDI Learn, controller mapping with MIDI Learn (expression pedal defaults: "
     "CC11 = Intensity, CC12 = Leadership).\n"
     "ANALYSIS: onsets, predicted beat grid, tempo hypotheses, phase error, confidence history, input level / gate and state transitions.\n"
-    "SETTINGS: guitar input selection, gain and noise gate, optional calibration, tooltips.\n\n"
+    "SETTINGS: guitar input selection, gain, noise gate and guitar monitor level, optional calibration, follow behaviour (strength, inertia, correction speed, confidence sensitivity), MIDI drum map, tooltips.\n\n"
     "PRESETS\n"
     "The header bar loads and saves Jam, Drummer, Style, Kit, Song and Analysis presets. Each type only stores its own slice, so a Kit preset never "
     "changes the groove. Factory Jam presets are also available as host programs.\n\n"

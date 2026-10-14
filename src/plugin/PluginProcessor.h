@@ -80,6 +80,7 @@ inline constexpr const char* beatCorrection = "beatCorrection";
 inline constexpr const char* confidenceSensitivity = "confidenceSensitivity";
 inline constexpr const char* kitTune = "kitTune";
 inline constexpr const char* midiOutChannel = "midiOutChannel";
+inline constexpr const char* guitarMonitor = "guitarMonitor";
 inline constexpr std::array<const char*, 8> mixGain { "gain_kick", "gain_snare", "gain_toms", "gain_hihat", "gain_ride", "gain_cymbals", "gain_room", "gain_master" };
 inline constexpr std::array<const char*, 7> mixPan { "pan_kick", "pan_snare", "pan_toms", "pan_hihat", "pan_ride", "pan_cymbals", "pan_room" };
 inline constexpr std::array<const char*, 8> mixMute { "mute_kick", "mute_snare", "mute_toms", "mute_hihat", "mute_ride", "mute_cymbals", "mute_room", "mute_master" };
@@ -296,6 +297,7 @@ private:
     void parameterChanged(const juce::String& parameterID, float newValue) override;
     void timerCallback() override;
     void syncAllParametersToAtomics();
+    void sanitiseParameters();
     void setParameterFromState(const char* id, float plainValue);
     void handleCommand(robodrummer::MidiCommand command, bool arrangementEnabled) noexcept;
     void resetListeningState() noexcept;
@@ -496,6 +498,8 @@ private:
     std::atomic<float>* rawConfidenceSensitivity_{nullptr};
     std::atomic<float>* rawKitTune_{nullptr};
     std::atomic<float>* rawMidiOutChannel_{nullptr};
+    std::atomic<float>* rawGuitarMonitor_{nullptr};
+    float lastMonitorGain_{0.0f};
     std::array<std::atomic<float>*, 8> rawMixGain_{};
     std::array<std::atomic<float>*, 7> rawMixPan_{};
     std::array<std::atomic<float>*, 8> rawMixMute_{};

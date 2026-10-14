@@ -71,6 +71,8 @@ public:
     }
 
     void setInstrumentGainPan(DrumInstrument instrument, float gain, float pan) noexcept {
+        if (!std::isfinite(gain)) gain = 1.0f;
+        if (!std::isfinite(pan)) pan = 0.0f;
         auto& set = instruments_[index(instrument)];
         set.gain = std::clamp(gain, 0.0f, 4.0f);
         set.pan = std::clamp(pan, -1.0f, 1.0f);
@@ -82,6 +84,7 @@ public:
     }
 
     void setInstrumentTuning(DrumInstrument instrument, float semitones) noexcept {
+        if (!std::isfinite(semitones)) semitones = 0.0f;
         instruments_[index(instrument)].tuningSemitones = std::clamp(semitones, -24.0f, 24.0f);
     }
 

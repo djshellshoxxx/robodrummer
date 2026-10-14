@@ -132,6 +132,10 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     rawConfidenceSensitivity_ = cache(ids::confidenceSensitivity);
     rawKitTune_ = cache(ids::kitTune);
     rawMidiOutChannel_ = cache(ids::midiOutChannel);
+    rawGuitarMonitor_ = cache(ids::guitarMonitor);
+    // The standalone app is a jam tool, so the guitar is monitored by default; in a host it stays on its own track.
+    if (wrapperType == wrapperType_Standalone)
+        if (auto* monitor = parameters_.getParameter(ids::guitarMonitor)) monitor->setValueNotifyingHost(1.0f);
     resetMidiDrumMap();
     for (std::size_t i = 0; i < 8; ++i) { rawMixGain_[i] = cache(ids::mixGain[i]); rawMixMute_[i] = cache(ids::mixMute[i]); }
     for (std::size_t i = 0; i < 7; ++i) rawMixPan_[i] = cache(ids::mixPan[i]);
@@ -243,6 +247,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::kitTune, 1}, "Kit Tuning",
         juce::NormalisableRange<float>(-12.0f, 12.0f, 0.1f), 0.0f, juce::AudioParameterFloatAttributes().withLabel("st")));
     layout.add(std::make_unique<juce::AudioParameterInt>(ParameterID{ids::midiOutChannel, 1}, "MIDI Output Channel", 1, 16, 10));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::guitarMonitor, 1}, "Guitar Monitor",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.0f, percent));
     for (std::size_t i = 0; i < robodrummer::kMixerChannelCount; ++i) {
         const juce::String name = robodrummer::kMixerChannelNames[i];
         const float defaultDb = i == static_cast<std::size_t>(robodrummer::MixerChannel::Room) ? -12.0f : 0.0f;
@@ -280,6 +286,16 @@ void RoboDrummerAudioProcessor::parameterChanged(const juce::String& id, float v
                        kMeterDenominators[static_cast<std::size_t>(juce::jlimit(0, 3, index))]);
     else if (id == ids::silenceMode) setSilenceMode(static_cast<robodrummer::SilenceMode>(juce::jlimit(0, 5, index)));
     else if (id == ids::silenceStopBars) setSilenceStopBars(index);
+}
+
+// Restored or fuzzed state may carry NaN/inf or out-of-range numbers; they are replaced by the parameter default
+// or clamped before anything on the audio thread can read them.
+void RoboDrummerAudioProcessor::sanitiseParameters() {
+    for (auto* parameter : juce::AudioProcessor::getParameters()) {
+        const float value = parameter->getValue();
+        if (!std::isfinite(value)) parameter->setValueNotifyingHost(parameter->getDefaultValue());
+        else if (value < 0.0f || value > 1.0f) parameter->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, value));
+    }
 }
 
 void RoboDrummerAudioProcessor::syncAllParametersToAtomics() {
@@ -453,6 +469,7 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     reverb_.setSampleRate(sampleRate_);
     reverb_.reset();
     lastRoomSize_ = -1.0f;
+    lastMonitorGain_ = rawGuitarMonitor_ != nullptr ? juce::jlimit(0.0f, 1.0f, rawGuitarMonitor_->load()) : 0.0f;
     masterGain_.reset(sampleRate_, 0.02);
     masterGain_.setCurrentAndTargetValue(1.0f);
 
@@ -667,6 +684,17 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             }
             candidateCountdown_ = static_cast<int>(sampleRate_ * 0.1);
         }
+    }
+
+    // Guitar monitor: the analysis above already read the untouched input; what reaches the output is level-controlled
+    // (and a mono guitar is placed on both channels). In a host the guitar normally has its own track, so it defaults to off.
+    if (getTotalNumInputChannels() > 0 && numSamples > 0) {
+        const float monitorGain = rawGuitarMonitor_ != nullptr ? juce::jlimit(0.0f, 1.0f, rawGuitarMonitor_->load(std::memory_order_relaxed)) : 0.0f;
+        if (getTotalNumInputChannels() == 1 && buffer.getNumChannels() > 1)
+            buffer.copyFrom(1, 0, buffer, 0, 0, numSamples);
+        for (int channel = 0; channel < std::min(2, buffer.getNumChannels()); ++channel)
+            buffer.applyGainRamp(channel, 0, numSamples, lastMonitorGain_, monitorGain);
+        lastMonitorGain_ = monitorGain;
     }
 
     // ---- tempo source, transport and meter ---------------------------------------------------------------------
@@ -1426,6 +1454,7 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
     } else {
         return;
     }
+    sanitiseParameters();
     syncAllParametersToAtomics();
     applyArrangementState(arrangementSource);
     requestKitReload();

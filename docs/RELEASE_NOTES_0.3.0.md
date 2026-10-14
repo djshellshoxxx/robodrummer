@@ -21,7 +21,8 @@ Completes the build to SPEC.md (Phases 1–4) and adds a Windows installer.
 * Host/MIDI tempo changes were smeared by the guitar-follow slew limit.
 * The tracker could not follow a gradual accelerando and never re-locked after a sudden tempo change.
 * Tracker lock had no hysteresis; tempo range was 45–220 instead of 40–240 BPM.
-* NaN/Inf input samples reached the monitor path and the analysis.
+* NaN/Inf input samples reached the monitor path and the analysis; NaN/Inf values in saved state could reach the audio thread.
+* The guitar was always passed to the output at unity; it now has a **Guitar Monitor** level (0 % in hosts, 100 % in the standalone).
 
 ## Compatibility
 * `jamStyle` now has 22 choices (indices 0–5 unchanged). Saved sessions restore correctly; automation lanes of that parameter recorded with 0.2.x map to different styles.

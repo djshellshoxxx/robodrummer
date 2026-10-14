@@ -1121,6 +1121,7 @@ public:
           gain_(apvts_, robodrummer::ParamIDs::inputGain, "Input gain", "Gain applied to the analysis signal only."),
           autoGain_(apvts_, robodrummer::ParamIDs::autoGain, "Automatic gain normalisation", "Slowly levels a quiet or hot guitar for analysis."),
           gate_(apvts_, robodrummer::ParamIDs::gateThreshold, "Noise gate", "Analysis noise gate threshold. Off at the far left."),
+          monitor_(apvts_, robodrummer::ParamIDs::guitarMonitor, "Guitar monitor", "How much of the guitar input is passed to the output. Leave at 0% when the guitar is on its own track or monitored through your interface."),
           dynamic_(apvts_, robodrummer::ParamIDs::dynamicFollow, "Dynamic follow", "How strongly guitar dynamics steer the drummer's intensity."),
           strength_(apvts_, robodrummer::ParamIDs::followStrength, "Follow strength", "Scales how much of the guitar's timing authority is applied (100% = all of it)."),
           inertia_(apvts_, robodrummer::ParamIDs::tempoInertia, "Tempo inertia", "How heavy the tempo feels. High values resist change; low values move quickly."),
@@ -1128,7 +1129,7 @@ public:
           sensitivity_(apvts_, robodrummer::ParamIDs::confidenceSensitivity, "Confidence sensitivity", "Low = only follow when the tracker is very sure; high = follow on weaker evidence."),
           midiChannel_(apvts_, robodrummer::ParamIDs::midiOutChannel, "Output channel", "MIDI channel for generated drum notes (default 10, General MIDI drums)."),
           tooltips_("Show tooltips"), showHelp_(std::move(showHelp)) {
-        for (auto* c : std::initializer_list<juce::Component*>{ &mode_, &gain_, &autoGain_, &gate_, &dynamic_, &strength_, &inertia_, &correction_, &sensitivity_, &midiChannel_ }) addAndMakeVisible(*c);
+        for (auto* c : std::initializer_list<juce::Component*>{ &mode_, &gain_, &autoGain_, &gate_, &monitor_, &dynamic_, &strength_, &inertia_, &correction_, &sensitivity_, &midiChannel_ }) addAndMakeVisible(*c);
         drumMap_.setTooltip("Edit which MIDI note each drum sends (General MIDI by default).");
         drumMap_.onClick = [this] {
             juce::CallOutBox::launchAsynchronously(std::make_unique<DrumMapEditor>(processor_), drumMap_.getScreenBounds(), nullptr);
@@ -1181,7 +1182,7 @@ public:
         area.removeFromBottom(8);
         followArea_ = area;
         auto i = inputArea_.reduced(12, 6); i.removeFromTop(22);
-        stack(i, 28, 4, { &mode_, &gain_, &autoGain_, &gate_, &dynamic_ });
+        stack(i, 28, 4, { &mode_, &gain_, &autoGain_, &gate_, &monitor_, &dynamic_ });
         meter_.setBounds(i.removeFromTop(14).reduced(0, 2)); i.removeFromTop(4);
         gateState_.setBounds(i.removeFromTop(20));
         auto c = calibrationArea_.reduced(12, 6); c.removeFromTop(22);
@@ -1223,7 +1224,7 @@ private:
     ParamCombo mode_;
     ParamSlider gain_;
     ParamToggle autoGain_;
-    ParamSlider gate_, dynamic_, strength_, inertia_, correction_, sensitivity_, midiChannel_;
+    ParamSlider gate_, monitor_, dynamic_, strength_, inertia_, correction_, sensitivity_, midiChannel_;
     juce::TextButton drumMap_{"EDIT DRUM MAP..."};
     BarMeter meter_, progress_;
     juce::TextButton calibrate_{"CALIBRATE (8 s)"}, apply_{"APPLY SUGGESTIONS"}, helpButton_{"HELP"};

@@ -40,3 +40,8 @@ Run this from inside the unpacked `RoboDrummer-Linux-x64` folder:
 ```bash
 mkdir -p ~/.vst3 ~/.clap ~/.local/bin && cp -R RoboDrummer.vst3 ~/.vst3/ && cp RoboDrummer.clap ~/.clap/ && cp RoboDrummer ~/.local/bin/ && chmod +x ~/.local/bin/RoboDrummer && echo "RoboDrummer installed"
 ```
+
+## Standalone notes
+
+* The standalone app starts with the **guitar monitor** at 100 % and JUCE's **Mute audio input** option enabled to prevent speaker feedback. Open *Options* and untick *Mute audio input* to let RoboDrummer hear your guitar interface, and pick the same device for input and output.
+* As a plug-in, put RoboDrummer on an instrument/MIDI-capable track, route the guitar into its input (sidechain) and leave **Guitar monitor** at 0 % (SETTINGS tab) when the guitar already has its own track.

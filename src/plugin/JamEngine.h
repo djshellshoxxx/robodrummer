@@ -21,13 +21,17 @@ public:
     void resetPhase() noexcept { sampleCursor_ = 0; clearBarTargets(); }
     void setTempo(double bpm) noexcept { bpm_ = std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0); }
     void setMeter(int n, int d) noexcept { numerator_ = std::clamp(n, 1, MeterProfile::MaxBeats); denominator_ = (d == 1 || d == 2 || d == 4 || d == 8 || d == 16) ? d : 4; }
-    void setIntensity(float value) noexcept { state_.intensity = std::clamp(value, 0.0f, 1.0f); }
+    void setIntensity(float value) noexcept { state_.intensity = std::clamp(finiteOr(value, 0.5f), 0.0f, 1.0f); }
     void setStyle(const Style& style) noexcept { style_ = style; }
-    void setFillSettings(const FillSettings& settings) noexcept { fillSettings_ = settings; }
-    void setHumanize(float amount) noexcept { humanize_ = std::clamp(amount, 0.0f, 1.0f); }
-    void setFeelMs(float ms) noexcept { feelMs_ = std::clamp(ms, -30.0f, 30.0f); }
-    void setComplexity(float value) noexcept { complexity_ = std::clamp(value, 0.0f, 1.0f); }
-    void setCrashScale(float value) noexcept { crashScale_ = std::clamp(value, 0.0f, 2.0f); }
+    void setFillSettings(FillSettings settings) noexcept {
+        settings.complexity = std::clamp(finiteOr(settings.complexity, 0.5f), 0.0f, 1.0f);
+        settings.surprise = std::clamp(finiteOr(settings.surprise, 0.0f), 0.0f, 1.0f);
+        fillSettings_ = settings;
+    }
+    void setHumanize(float amount) noexcept { humanize_ = std::clamp(finiteOr(amount, 0.0f), 0.0f, 1.0f); }
+    void setFeelMs(float ms) noexcept { feelMs_ = std::clamp(finiteOr(ms, 0.0f), -30.0f, 30.0f); }
+    void setComplexity(float value) noexcept { complexity_ = std::clamp(finiteOr(value, 0.5f), 0.0f, 1.0f); }
+    void setCrashScale(float value) noexcept { crashScale_ = std::clamp(finiteOr(value, 1.0f), 0.0f, 2.0f); }
     // Sets the half/normal/double feel directly (used by programmed sections); MIDI commands toggle it instead.
     void setTimeScale(double scale) noexcept {
         const double clamped = scale < 0.75 ? 0.5 : (scale > 1.5 ? 2.0 : 1.0);
@@ -223,6 +227,7 @@ public:
         return count;
     }
 private:
+    static float finiteOr(float value, float fallback) noexcept { return std::isfinite(value) ? value : fallback; }
     void clearBarTargets() noexcept { if (outroFinalBeat_ < 0) fillStartBeat_ = -1; breakUntilBar_ = -1; }
 
     double sampleRate_{48000.0};
