@@ -110,7 +110,7 @@ juce::StringArray idsFor(PresetType type, RoboDrummerAudioProcessor& processor) 
                   ids::fillComplexity, ids::fillSurprise, ids::crashTendency });
             break;
         case PresetType::Kit:
-            add({ ids::kit, ids::outputMode, ids::roomSize });
+            add({ ids::kit, ids::outputMode, ids::roomSize, ids::kitTune, ids::midiOutChannel });
             for (std::size_t i = 0; i < 8; ++i) { result.add(ids::mixGain[i]); result.add(ids::mixMute[i]); }
             for (std::size_t i = 0; i < 7; ++i) result.add(ids::mixPan[i]);
             for (std::size_t i = 0; i < 6; ++i) result.add(ids::mixSolo[i]);
@@ -118,7 +118,8 @@ juce::StringArray idsFor(PresetType type, RoboDrummerAudioProcessor& processor) 
         case PresetType::Song: add({ ids::arrangementEnabled }); break;
         case PresetType::Analysis:
             add({ ids::inputMode, ids::inputGain, ids::autoGain, ids::gateThreshold, ids::followResponse, ids::followRange,
-                  ids::dynamicFollow, ids::silenceMode, ids::silenceStopBars });
+                  ids::dynamicFollow, ids::silenceMode, ids::silenceStopBars, ids::followStrength, ids::tempoInertia,
+                  ids::beatCorrection, ids::confidenceSensitivity });
             break;
         case PresetType::Jam:
             for (auto* parameter : processor.getParameters().processor.getParameters())

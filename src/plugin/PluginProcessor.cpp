@@ -126,6 +126,13 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     rawGate_ = cache(ids::gateThreshold);
     rawKit_ = cache(ids::kit);
     rawRoomSize_ = cache(ids::roomSize);
+    rawFollowStrength_ = cache(ids::followStrength);
+    rawTempoInertia_ = cache(ids::tempoInertia);
+    rawBeatCorrection_ = cache(ids::beatCorrection);
+    rawConfidenceSensitivity_ = cache(ids::confidenceSensitivity);
+    rawKitTune_ = cache(ids::kitTune);
+    rawMidiOutChannel_ = cache(ids::midiOutChannel);
+    resetMidiDrumMap();
     for (std::size_t i = 0; i < 8; ++i) { rawMixGain_[i] = cache(ids::mixGain[i]); rawMixMute_[i] = cache(ids::mixMute[i]); }
     for (std::size_t i = 0; i < 7; ++i) rawMixPan_[i] = cache(ids::mixPan[i]);
     for (std::size_t i = 0; i < 6; ++i) rawMixSolo_[i] = cache(ids::mixSolo[i]);
@@ -225,6 +232,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
     layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::kit, 1}, "Kit", kits, 0));
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::roomSize, 1}, "Room Size",
         juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f, percent));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::followStrength, 1}, "Follow Strength",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 1.0f, percent));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::tempoInertia, 1}, "Tempo Inertia",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f, percent));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::beatCorrection, 1}, "Beat Correction Speed",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f, percent));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::confidenceSensitivity, 1}, "Confidence Sensitivity",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.5f, percent));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::kitTune, 1}, "Kit Tuning",
+        juce::NormalisableRange<float>(-12.0f, 12.0f, 0.1f), 0.0f, juce::AudioParameterFloatAttributes().withLabel("st")));
+    layout.add(std::make_unique<juce::AudioParameterInt>(ParameterID{ids::midiOutChannel, 1}, "MIDI Output Channel", 1, 16, 10));
     for (std::size_t i = 0; i < robodrummer::kMixerChannelCount; ++i) {
         const juce::String name = robodrummer::kMixerChannelNames[i];
         const float defaultDb = i == static_cast<std::size_t>(robodrummer::MixerChannel::Room) ? -12.0f : 0.0f;
@@ -370,10 +388,12 @@ void RoboDrummerAudioProcessor::applyMixerToSampler() noexcept {
         if (i < 7) mix.pan[i] = rawMixPan_[i] != nullptr ? rawMixPan_[i]->load(std::memory_order_relaxed) : 0.0f;
         if (i < 6) mix.solo[i] = rawMixSolo_[i] != nullptr && rawMixSolo_[i]->load(std::memory_order_relaxed) >= 0.5f;
     }
+    const float tune = rawKitTune_ != nullptr ? rawKitTune_->load(std::memory_order_relaxed) : 0.0f;
     for (int i = 0; i <= static_cast<int>(robodrummer::DrumInstrument::Clap); ++i) {
         const auto instrument = static_cast<robodrummer::DrumInstrument>(i);
         const auto resolved = robodrummer::resolveInstrumentMix(instrument, mix);
         player_->setInstrumentGainPan(instrument, resolved.gain, resolved.pan);
+        player_->setInstrumentTuning(instrument, tune);
     }
 }
 
@@ -560,6 +580,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             const int n = std::min(AnalysisChunk, numSamples - position);
             conditioner_.process(left + position, right != nullptr ? right + position : nullptr, analysisScratch_.data(), n);
             rhythmAnalyzer_.processBlock(analysisScratch_.data(), n);
+            for (std::size_t i = 0; i < rhythmAnalyzer_.lastBlockOnsetCount(); ++i) {
+                const auto& onset = rhythmAnalyzer_.lastBlockOnset(i);
+                performanceAnalyzer_.noteOnset(static_cast<double>(rhythmAnalyzer_.lastBlockStartSample() + onset.sampleOffset) / sampleRate_, onset.strength);
+            }
             performanceAnalyzer_.processBlock(analysisScratch_.data(), n);
             peak = std::max(peak, conditioner_.lastBlockPeak());
             rmsAccumulator += conditioner_.lastBlockRms();
@@ -600,6 +624,13 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         guitarDownbeatConfidence_.store(rhythm.downbeatConfidence, std::memory_order_relaxed);
         guitarTrackerLocked_.store(rhythm.locked, std::memory_order_release);
         guitarIntensity_.store(performance.intensity, std::memory_order_relaxed);
+        const float perfFields[13] { performance.rms, performance.peak, performance.activity, performance.intensity, performance.bandLow,
+                                     performance.bandMid, performance.bandHigh, performance.spectralFlux, performance.transientDensity,
+                                     performance.transientStrength, performance.regularity, performance.accentProbability, performance.silenceProbability };
+        for (std::size_t i = 0; i < perfValues_.size(); ++i) perfValues_[i].store(perfFields[i], std::memory_order_relaxed);
+        tempoMovement_.store(static_cast<int>(rhythm.movement), std::memory_order_relaxed);
+        tempoVelocity_.store(rhythm.tempoVelocity, std::memory_order_relaxed);
+        lookaheadMs_.store(robodrummer::recommendedLookaheadMs(numSamples, sampleRate_, std::min(rhythm.beatConfidence, 1.0f)), std::memory_order_relaxed);
         inputPeak_.store(peak, std::memory_order_relaxed);
         inputRms_.store(chunks > 0 ? rmsAccumulator / static_cast<float>(chunks) : 0.0f, std::memory_order_relaxed);
         gateOpen_.store(conditioner_.gateOpen(), std::memory_order_relaxed);
@@ -608,9 +639,16 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         candidateCountdown_ -= numSamples;
         if (candidateCountdown_ <= 0) {
             const auto candidates = rhythmAnalyzer_.tempoTracker().topHypotheses();
+            const auto rich = rhythmAnalyzer_.richHypotheses();
             for (std::size_t i = 0; i < 3; ++i) {
                 candidateBpm_[i].store(candidates[i].bpm, std::memory_order_relaxed);
                 candidateConfidence_[i].store(candidates[i].confidence, std::memory_order_relaxed);
+                richValues_[i * 6 + 0].store(static_cast<float>(rich[i].bpm), std::memory_order_relaxed);
+                richValues_[i * 6 + 1].store(rich[i].confidence, std::memory_order_relaxed);
+                richValues_[i * 6 + 2].store(static_cast<float>(rich[i].supportingEvents), std::memory_order_relaxed);
+                richValues_[i * 6 + 3].store(rich[i].consistency, std::memory_order_relaxed);
+                richValues_[i * 6 + 4].store(static_cast<float>(rich[i].ageSeconds), std::memory_order_relaxed);
+                richValues_[i * 6 + 5].store(static_cast<float>(rich[i].relationToBest), std::memory_order_relaxed);
             }
             candidateCountdown_ = static_cast<int>(sampleRate_ * 0.1);
         }
@@ -699,6 +737,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     if (sectionFollowStrength_ >= 0.0f && arrangementEnabled)
         settings.followRangeBpm *= static_cast<double>(juce::jlimit(0.0f, 1.0f, sectionFollowStrength_));
     settings.response = static_cast<robodrummer::FollowResponse>(choiceIndex(rawFollowResponse_, 5));
+    settings.followStrength = rawFollowStrength_ != nullptr ? rawFollowStrength_->load(std::memory_order_relaxed) : 1.0f;
+    settings.tempoInertia = rawTempoInertia_ != nullptr ? rawTempoInertia_->load(std::memory_order_relaxed) : 0.5f;
+    settings.confidenceSensitivity = rawConfidenceSensitivity_ != nullptr ? rawConfidenceSensitivity_->load(std::memory_order_relaxed) : 0.5f;
+    const float beatCorrectionSpeed = rawBeatCorrection_ != nullptr ? rawBeatCorrection_->load(std::memory_order_relaxed) : 0.5f;
 
     const int modeValue = static_cast<int>(settings.mode);
     if (modeValue != lastAudioMode_) {
@@ -865,7 +907,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
     if (settings.mode != robodrummer::LeadershipMode::DrummerLeads) {
         const auto phase = phaseFollower_.update(jam_.currentBeatPhase(), rhythm, authority.outputBpm,
-                                                 authority.effectiveGuitarAuthority, settings.response, sampleRate_);
+                                                 authority.effectiveGuitarAuthority, settings.response, sampleRate_, beatCorrectionSpeed);
         phaseErrorCycles_.store(phase.phaseErrorCycles, std::memory_order_relaxed);
         hardResyncRecommended_.store(phase.hardResyncRecommended, std::memory_order_relaxed);
 
@@ -1032,6 +1074,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         applyMixerToSampler();
         std::fill_n(drumL_.begin(), renderSamples, 0.0f);
         std::fill_n(drumR_.begin(), renderSamples, 0.0f);
+        std::fill_n(roomL_.begin(), renderSamples, 0.0f); // receives every voice, whatever its output routing
+        std::fill_n(roomR_.begin(), renderSamples, 0.0f);
         for (int aux = 1; aux <= robodrummer::kAuxBusCount; ++aux) {
             auto* bus = getBus(false, aux);
             if (bus != nullptr && bus->isEnabled() && bus->getNumberOfChannels() >= 2) {
@@ -1050,7 +1094,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             busLeft[aux] = auxLeft[aux] != nullptr ? auxLeft[aux] + from : nullptr;
             busRight[aux] = auxRight[aux] != nullptr ? auxRight[aux] + from : nullptr;
         }
-        player_->renderBuses(busLeft, busRight, static_cast<int>(robodrummer::DrumSamplePlayer::MaxBuses), span);
+        player_->renderBuses(busLeft, busRight, static_cast<int>(robodrummer::DrumSamplePlayer::MaxBuses), span,
+                             roomL_.data() + from, roomR_.data() + from);
     };
 
     int renderedUntil = 0;
@@ -1062,9 +1107,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
         if (writeMidi) {
             const int note = midiNoteFor(events[i].instrument);
+            const int outChannel = rawMidiOutChannel_ != nullptr ? juce::jlimit(1, 16, juce::roundToInt(rawMidiOutChannel_->load(std::memory_order_relaxed))) : 10;
             if (note >= 0 && numSamples > 0) {
-                midiOut_.addEvent(juce::MidiMessage::noteOn(10, note, events[i].velocity), offset);
-                midiOut_.addEvent(juce::MidiMessage::noteOff(10, note), juce::jmin(numSamples - 1, offset + 1));
+                midiOut_.addEvent(juce::MidiMessage::noteOn(outChannel, note, events[i].velocity), offset);
+                midiOut_.addEvent(juce::MidiMessage::noteOff(outChannel, note), juce::jmin(numSamples - 1, offset + 1));
             }
         }
         renderedUntil = std::max(renderedUntil, offset);
@@ -1101,8 +1147,6 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                 reverb_.setParameters(parameters);
                 lastRoomSize_ = size;
             }
-            std::copy_n(drumL_.begin(), renderSamples, roomL_.begin());
-            std::copy_n(drumR_.begin(), renderSamples, roomR_.begin());
             reverb_.processStereo(roomL_.data(), roomR_.data(), renderSamples);
         }
         const float roomLeftGain = roomGain * (roomPan > 0.0f ? 1.0f - roomPan : 1.0f);
@@ -1317,8 +1361,10 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     state.setProperty("userKitPath", getUserKitFolder().getFullPathName(), nullptr);
     state.removeChild(state.getChildWithName("Arrangement"), nullptr);
     state.removeChild(state.getChildWithName("MidiMap"), nullptr);
+    state.removeChild(state.getChildWithName("DrumMap"), nullptr);
     state.appendChild(createArrangementState(), nullptr);
     state.appendChild(createMidiMapState(), nullptr);
+    state.appendChild(createDrumMapState(), nullptr);
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
 
@@ -1333,13 +1379,16 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
     if (state.hasType(parameters_.state.getType())) {
         arrangementSource = state.getChildWithName("Arrangement").createCopy();
         const auto midiMap = state.getChildWithName("MidiMap").createCopy();
+        const auto drumMap = state.getChildWithName("DrumMap").createCopy();
         auto parameterState = state.createCopy();
         parameterState.removeChild(parameterState.getChildWithName("Arrangement"), nullptr);
         parameterState.removeChild(parameterState.getChildWithName("MidiMap"), nullptr);
+        parameterState.removeChild(parameterState.getChildWithName("DrumMap"), nullptr);
         parameters_.replaceState(parameterState);
         if (state.hasProperty("userKitPath"))
             setUserKitFolder(juce::File(state.getProperty("userKitPath").toString()));
         if (midiMap.isValid()) applyMidiMapState(midiMap);
+        if (drumMap.isValid()) applyDrumMapState(drumMap);
     } else if (state.hasType("RoboDrummerState")) {
         // Version 1 stored plain properties on the root before host parameters existed.
         setParameterFromState(ids::bpm, static_cast<float>(static_cast<double>(state.getProperty("bpm", 120.0))));
@@ -1597,27 +1646,56 @@ juce::String RoboDrummerAudioProcessor::getLastMidiText() const {
     }
 }
 
-int RoboDrummerAudioProcessor::midiNoteFor(robodrummer::DrumInstrument i) noexcept {
+int RoboDrummerAudioProcessor::midiNoteFor(robodrummer::DrumInstrument i) const noexcept {
+    return drumNotes_[static_cast<std::size_t>(i)].load(std::memory_order_relaxed);
+}
+
+void RoboDrummerAudioProcessor::resetMidiDrumMap() noexcept {
     using I = robodrummer::DrumInstrument;
-    switch (i) {
-        case I::Kick: return 36;
-        case I::Snare: return 38;
-        case I::ClosedHat: return 42;
-        case I::OpenHat: return 46;
-        case I::Ride: return 51;
-        case I::Crash: return 49;
-        case I::HighTom: return 50;
-        case I::MidTom: return 47;
-        case I::FloorTom: return 43;
-        case I::Rimshot: return 37;
-        case I::Sidestick: return 37;
-        case I::China: return 52;
-        case I::Splash: return 55;
-        case I::Cowbell: return 56;
-        case I::Tambourine: return 54;
-        case I::Clap: return 39;
+    // General MIDI percussion map.
+    const std::array<std::pair<I, int>, 16> gm {{
+        {I::Kick, 36}, {I::Snare, 38}, {I::ClosedHat, 42}, {I::OpenHat, 46}, {I::Ride, 51}, {I::Crash, 49},
+        {I::HighTom, 50}, {I::MidTom, 47}, {I::FloorTom, 43}, {I::Rimshot, 37}, {I::Sidestick, 37}, {I::China, 52},
+        {I::Splash, 55}, {I::Cowbell, 56}, {I::Tambourine, 54}, {I::Clap, 39}
+    }};
+    for (const auto& [instrument, note] : gm) drumNotes_[static_cast<std::size_t>(instrument)].store(note, std::memory_order_relaxed);
+}
+
+juce::ValueTree RoboDrummerAudioProcessor::createDrumMapState() const {
+    juce::ValueTree map("DrumMap");
+    for (int i = 0; i <= static_cast<int>(robodrummer::DrumInstrument::Clap); ++i)
+        map.setProperty(juce::Identifier("n" + juce::String(i)), drumNotes_[static_cast<std::size_t>(i)].load(std::memory_order_relaxed), nullptr);
+    return map;
+}
+
+void RoboDrummerAudioProcessor::applyDrumMapState(const juce::ValueTree& tree) {
+    if (!tree.isValid()) return;
+    for (int i = 0; i <= static_cast<int>(robodrummer::DrumInstrument::Clap); ++i) {
+        const auto key = juce::Identifier("n" + juce::String(i));
+        if (tree.hasProperty(key)) drumNotes_[static_cast<std::size_t>(i)].store(juce::jlimit(0, 127, static_cast<int>(tree.getProperty(key))), std::memory_order_relaxed);
     }
-    return -1;
+}
+
+robodrummer::PerformanceState RoboDrummerAudioProcessor::getPerformanceState() const noexcept {
+    robodrummer::PerformanceState s;
+    float* fields[13] { &s.rms, &s.peak, &s.activity, &s.intensity, &s.bandLow, &s.bandMid, &s.bandHigh, &s.spectralFlux,
+                        &s.transientDensity, &s.transientStrength, &s.regularity, &s.accentProbability, &s.silenceProbability };
+    for (std::size_t i = 0; i < perfValues_.size(); ++i) *fields[i] = perfValues_[i].load(std::memory_order_relaxed);
+    return s;
+}
+
+std::array<robodrummer::RichTempoHypothesis, 3> RoboDrummerAudioProcessor::getRichHypotheses() const noexcept {
+    std::array<robodrummer::RichTempoHypothesis, 3> result{};
+    for (std::size_t i = 0; i < 3; ++i) {
+        auto& h = result[i];
+        h.bpm = richValues_[i * 6 + 0].load(std::memory_order_relaxed);
+        h.confidence = richValues_[i * 6 + 1].load(std::memory_order_relaxed);
+        h.supportingEvents = static_cast<int>(richValues_[i * 6 + 2].load(std::memory_order_relaxed));
+        h.consistency = richValues_[i * 6 + 3].load(std::memory_order_relaxed);
+        h.ageSeconds = richValues_[i * 6 + 4].load(std::memory_order_relaxed);
+        h.relationToBest = static_cast<robodrummer::HypothesisRelation>(static_cast<int>(richValues_[i * 6 + 5].load(std::memory_order_relaxed)));
+    }
+    return result;
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new RoboDrummerAudioProcessor(); }

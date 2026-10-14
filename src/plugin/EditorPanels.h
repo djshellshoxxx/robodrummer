@@ -20,12 +20,15 @@ public:
 };
 
 // Stacks components top to bottom inside an area.
-inline void stack(juce::Rectangle<int> area, int rowHeight, int gap, std::initializer_list<juce::Component*> items) {
+inline void stack(juce::Rectangle<int>& area, int rowHeight, int gap, std::initializer_list<juce::Component*> items) {
     for (auto* item : items) {
         item->setBounds(area.removeFromTop(rowHeight));
         area.removeFromTop(gap);
     }
 }
+
+// whole(float) prints full precision rather than rounding, so whole numbers go through here.
+inline juce::String whole(double value) { return juce::String(juce::roundToInt(value)); }
 
 inline void rowOfButtons(juce::Rectangle<int> area, int gap, std::initializer_list<juce::Component*> items) {
     const int count = static_cast<int>(items.size());
@@ -45,6 +48,20 @@ inline juce::String phraseName(robodrummer::PhraseState state) {
         case robodrummer::PhraseState::Stable: break;
     }
     return "stable";
+}
+
+inline juce::String movementName(robodrummer::TempoMovement movement) {
+    using M = robodrummer::TempoMovement;
+    switch (movement) {
+        case M::Steady: return "steady";
+        case M::Jitter: return "micro-timing jitter";
+        case M::Drift: return "slow drift";
+        case M::Accelerating: return "ACCELERATING";
+        case M::Decelerating: return "DECELERATING";
+        case M::AbruptShift: return "ABRUPT TEMPO SHIFT";
+        case M::HalfDoubleReinterpretation: return "half/double reinterpretation";
+    }
+    return "steady";
 }
 
 inline juce::String coordinationName(robodrummer::JamCoordinationState state) {
@@ -218,9 +235,9 @@ public:
                          (guitarMode ? (processor_.hasAdaptiveJoined() ? "  |  drummer joined" : "  |  waiting for a reliable beat to join") : "  |  guitar tracking is informational"),
                          juce::dontSendNotification);
         guitar_.setText("Guitar: " + juce::String(processor_.getDetectedGuitarBpm(), 1) + " BPM  |  authority " +
-                        juce::String(processor_.getEffectiveGuitarAuthority() * 100.0f, 0) + "%  |  dynamics " +
-                        juce::String(processor_.getDetectedGuitarIntensity() * 100.0f, 0) + "% -> drummer " +
-                        juce::String(processor_.getEffectiveDrummerIntensity() * 100.0f, 0) + "%", juce::dontSendNotification);
+                        whole(processor_.getEffectiveGuitarAuthority() * 100.0f) + "%  |  dynamics " +
+                        whole(processor_.getDetectedGuitarIntensity() * 100.0f) + "% -> drummer " +
+                        whole(processor_.getEffectiveDrummerIntensity() * 100.0f) + "%", juce::dontSendNotification);
         tempoConf_.setValue(processor_.getGuitarTempoConfidence());
         beatConf_.setValue(processor_.getGuitarBeatConfidence());
         downConf_.setValue(processor_.getGuitarDownbeatConfidence());
@@ -299,8 +316,9 @@ public:
         : processor_(p), apvts_(p.getParameters()),
           kit_(apvts_, robodrummer::ParamIDs::kit, "Kit", "Built-in synthesised kits, or your own folder of WAV/AIFF samples."),
           output_(apvts_, robodrummer::ParamIDs::outputMode, "Output mode", "Internal drum audio, generated MIDI on channel 10, or both."),
-          room_(apvts_, robodrummer::ParamIDs::roomSize, "Room size", "Size of the room reverb that feeds the Room channel.") {
-        addAndMakeVisible(kit_); addAndMakeVisible(output_); addAndMakeVisible(room_);
+          room_(apvts_, robodrummer::ParamIDs::roomSize, "Room size", "Size of the room reverb that feeds the Room channel."),
+          tune_(apvts_, robodrummer::ParamIDs::kitTune, "Kit tuning", "Pitch of every drum in semitones (-12 to +12). Applies to built-in and user kits.") {
+        addAndMakeVisible(kit_); addAndMakeVisible(output_); addAndMakeVisible(room_); addAndMakeVisible(tune_);
         chooseFolder_.setTooltip("Pick a folder of WAV/AIFF drum samples. Name files like kick.wav, snare_v1.wav .. snare_v3.wav (velocity layers), snare_v2_rr2.wav (round robin), closedhat.wav, openhat.wav, ride.wav, crash.wav, tom1.wav, tom2.wav, floortom.wav.");
         chooseFolder_.onClick = [this] {
             chooser_ = std::make_unique<juce::FileChooser>("Choose a drum sample folder", processor_.getUserKitFolder(), "");
@@ -330,6 +348,8 @@ public:
         routing_.setText("Multi-output: enable the Kick, Snare, Toms and Hats + Cymbals output buses in your DAW to receive each group separately; "
                          "disabled buses fall back to the main mix.", juce::dontSendNotification);
         routing_.setJustificationType(juce::Justification::topLeft);
+        routing_.setMinimumHorizontalScale(1.0f);
+        status_.setMinimumHorizontalScale(1.0f);
         for (std::size_t i = 0; i < strips_.size(); ++i) {
             strips_[i] = std::make_unique<MixerStrip>(apvts_, i);
             addAndMakeVisible(*strips_[i]);
@@ -344,13 +364,13 @@ public:
     }
     void resized() override {
         auto area = getLocalBounds().reduced(8);
-        topArea_ = area.removeFromTop(150);
+        topArea_ = area.removeFromTop(184);
         area.removeFromTop(8);
         mixerArea_ = area;
         auto t = topArea_.reduced(12, 6); t.removeFromTop(22);
         auto left = t.removeFromLeft(t.getWidth() / 2 - 6);
         t.removeFromLeft(12);
-        stack(left, 28, 3, { &kit_, &output_, &room_ });
+        stack(left, 28, 3, { &kit_, &output_, &room_, &tune_ });
         auto buttons = left.removeFromTop(28);
         chooseFolder_.setBounds(buttons.removeFromLeft(150)); buttons.removeFromLeft(6);
         reload_.setBounds(buttons.removeFromLeft(90));
@@ -373,7 +393,7 @@ private:
     RoboDrummerAudioProcessor& processor_;
     APVTS& apvts_;
     ParamCombo kit_, output_;
-    ParamSlider room_;
+    ParamSlider room_, tune_;
     juce::TextButton chooseFolder_{"CHOOSE KIT FOLDER..."}, reload_{"RELOAD"};
     juce::Label folder_, status_, routing_;
     std::array<std::unique_ptr<MixerStrip>, robodrummer::kMixerChannelCount> strips_;
@@ -409,6 +429,7 @@ public:
         note_.setText("Personality offsets your settings: Laid-back sits behind the beat, Pushing sits ahead, Aggressive adds intensity and crashes, "
                       "Busy plays more and fills more, Minimal stays out of the way, Tight tightens the timing.", juce::dontSendNotification);
         note_.setJustificationType(juce::Justification::topLeft);
+        note_.setMinimumHorizontalScale(1.0f);
         addAndMakeVisible(note_);
     }
     void paint(juce::Graphics& g) override { drawPanel(g, characterArea_, "Character"); drawPanel(g, fillArea_, "Fills"); }
@@ -456,7 +477,7 @@ public:
         for (auto* l : { &description_, &meterInfo_, &phrase_, &memoryInfo_, &silenceInfo_ }) {
             l->setFont(juce::FontOptions(14.0f));
             l->setColour(juce::Label::textColourId, kDim);
-            l->setMinimumHorizontalScale(0.6f);
+            l->setMinimumHorizontalScale(1.0f);
             l->setJustificationType(juce::Justification::topLeft);
             addAndMakeVisible(*l);
         }
@@ -506,7 +527,7 @@ public:
         if (!processor_.isJamMemoryEnabled()) memoryInfo_.setText("Jam memory is off.", juce::dontSendNotification);
         else if (processor_.isArrangementEnabled()) memoryInfo_.setText("Paused while the programmed arrangement is active.", juce::dontSendNotification);
         else memoryInfo_.setText(juce::String(processor_.getJamMemoryBars()) + " bars observed  |  confidence " +
-                                 juce::String(processor_.getJamMemoryConfidence() * 100.0f, 0) + "%\nAverage tempo " +
+                                 whole(processor_.getJamMemoryConfidence() * 100.0f) + "%\nAverage tempo " +
                                  juce::String(processor_.getJamMemoryAverageTempo(), 1) + " BPM  |  phrase " +
                                  juce::String(processor_.getJamMemoryAveragePhraseBars(), 1) + " bars\nFill bias " +
                                  juce::String(processor_.getJamMemoryFillBias(), 2) + "  |  dynamics x" +
@@ -514,10 +535,10 @@ public:
         silenceInfo_.setText("Silent bars: " + juce::String(processor_.getSilentBars()) +
                              (processor_.isWaitingForGuitarResume() ? "   WAITING FOR GUITAR TO RESUME" : ""), juce::dontSendNotification);
         phrase_.setText("Phrase: " + phraseName(processor_.getPhraseState()) + "  |  fill strength " +
-                        juce::String(processor_.getPhraseFillStrength() * 100.0f, 0) + "%" + (processor_.isPhraseBoundary() ? "  |  BOUNDARY" : "") +
+                        whole(processor_.getPhraseFillStrength() * 100.0f) + "%" + (processor_.isPhraseBoundary() ? "  |  BOUNDARY" : "") +
                         "\nCoordinator: " + coordinationName(processor_.getJamCoordinationState()) + "  |  transition " +
-                        juce::String(processor_.getTransitionProbability() * 100.0f, 0) + "%  |  ending " +
-                        juce::String(processor_.getEndingProbability() * 100.0f, 0) + "%" +
+                        whole(processor_.getTransitionProbability() * 100.0f) + "%  |  ending " +
+                        whole(processor_.getEndingProbability() * 100.0f) + "%" +
                         (processor_.isCoordinatorSuppressingBusyFills() ? "  |  restrained fills" : ""), juce::dontSendNotification);
     }
 private:
@@ -732,6 +753,7 @@ public:
         hint_.setText("Learn: click Learn, then press the note (on any channel) or move the controller you want to use. Default commands live on MIDI channel 16 "
                       "(notes 36-50) and are consumed, not forwarded. Controllers mapped to a parameter are consumed too.", juce::dontSendNotification);
         hint_.setJustificationType(juce::Justification::topLeft);
+        hint_.setMinimumHorizontalScale(1.0f);
 
         for (int c = 0; c < robodrummer::MidiLearnMap::CommandCount; ++c) {
             auto& row = commandRows_[static_cast<std::size_t>(c)];
@@ -902,20 +924,33 @@ public:
         auto tempoArea = area.removeFromTop(area.getHeight() * 38 / 100);
         drawPanel(g, tempoArea, "Tempo hypotheses and phase");
         auto inner = tempoArea.reduced(12, 6); inner.removeFromTop(22);
-        const auto candidates = processor_.getTempoCandidates();
-        auto candidateArea = inner.removeFromLeft(inner.getWidth() * 55 / 100);
+        const auto candidates = processor_.getRichHypotheses();
+        auto candidateArea = inner.removeFromLeft(inner.getWidth() * 58 / 100);
         for (std::size_t i = 0; i < candidates.size(); ++i) {
             auto row = candidateArea.removeFromTop(22);
             g.setColour(kText); g.setFont(juce::FontOptions(13.0f));
-            g.drawText(candidates[i].confidence > 0.0f ? juce::String(candidates[i].bpm, 1) + " BPM" : juce::String("--"), row.removeFromLeft(86), juce::Justification::centredLeft);
+            g.drawText(candidates[i].confidence > 0.0f ? juce::String(candidates[i].bpm, 1) + " BPM" : juce::String("--"), row.removeFromLeft(78), juce::Justification::centredLeft);
+            auto details = row.removeFromRight(150);
+            g.setColour(kDim); g.setFont(juce::FontOptions(11.0f));
+            static const char* relations[] = { "primary", "half", "double", "related", "other" };
+            if (candidates[i].confidence > 0.0f)
+                g.drawText(juce::String(candidates[i].supportingEvents) + " ev  " + whole(candidates[i].consistency * 100.0) + "%  " + whole(candidates[i].ageSeconds) + "s  " +
+                           relations[juce::jlimit(0, 4, static_cast<int>(candidates[i].relationToBest))], details, juce::Justification::centredRight);
             g.setColour(kPanelRaised); g.fillRoundedRectangle(row.reduced(0, 4).toFloat(), 3.0f);
             g.setColour(i == 0 ? kAccent : kAccentAlt);
             g.fillRoundedRectangle(row.reduced(0, 4).toFloat().withWidth(row.getWidth() * candidates[i].confidence), 3.0f);
             candidateArea.removeFromTop(3);
         }
+        const auto perf = processor_.getPerformanceState();
+        auto textRow = candidateArea.withWidth(tempoArea.getWidth() - 24);
+        g.setColour(kDim); g.setFont(juce::FontOptions(11.0f));
+        g.drawText("bands L/M/H " + whole(perf.bandLow * 100.0) + "/" + whole(perf.bandMid * 100.0) + "/" + whole(perf.bandHigh * 100.0) + "  flux " + whole(perf.spectralFlux * 100.0) +
+                   "  density " + whole(perf.transientDensity * 100.0) + "  regularity " + whole(perf.regularity * 100.0) + "  accent " + whole(perf.accentProbability * 100.0) +
+                   "  silence " + whole(perf.silenceProbability * 100.0) + "%", textRow.removeFromTop(16), juce::Justification::centredLeft);
         g.setColour(kText); g.setFont(juce::FontOptions(13.0f));
-        g.drawText("Active guitar tempo " + juce::String(bpm, 1) + " BPM  |  drummer " + juce::String(processor_.getEffectiveDrummerBpm(), 1) + " BPM  |  velocity shown by tempo drift",
-                   candidateArea.removeFromTop(20), juce::Justification::centredLeft);
+        g.drawText("Guitar " + juce::String(bpm, 1) + " BPM  |  drummer " + juce::String(processor_.getEffectiveDrummerBpm(), 1) + " BPM  |  " + movementName(processor_.getTempoMovement()) +
+                   " (" + juce::String(processor_.getTempoVelocity(), 2) + " BPM/s)  |  lookahead " + juce::String(processor_.getLookaheadMs(), 1) + " ms",
+                   textRow.removeFromTop(20), juce::Justification::centredLeft);
         inner.removeFromLeft(14);
         auto phaseArea = inner;
         g.setColour(kDim); g.drawText("Phase error (cycles)", phaseArea.removeFromTop(18), juce::Justification::centredLeft);
@@ -931,7 +966,9 @@ public:
 
         // ---- confidence history ----
         area.removeFromTop(8);
-        auto confArea = area.removeFromTop(area.getHeight() * 62 / 100);
+        auto levelPanel = area.removeFromBottom(76);
+        area.removeFromBottom(8);
+        auto confArea = area;
         drawPanel(g, confArea, "Confidence history (30 s)   tempo / beat / downbeat");
         auto cplot = confArea.reduced(12, 6); cplot.removeFromTop(22);
         g.setColour(kBackground); g.fillRoundedRectangle(cplot.toFloat(), 4.0f);
@@ -947,7 +984,8 @@ public:
             g.setColour(colours[line]); g.strokePath(path, juce::PathStrokeType(1.6f));
         }
         // ---- input level + noise gate ----
-        auto levelArea = area;
+        drawPanel(g, levelPanel, "Input level and noise gate");
+        auto levelArea = levelPanel.withTrimmedTop(22);
         auto meterRow = levelArea.reduced(12, 0).removeFromTop(24);
         g.setColour(kDim); g.setFont(juce::FontOptions(12.0f));
         g.drawText("Input level", meterRow.removeFromLeft(80), juce::Justification::centredLeft);
@@ -964,7 +1002,7 @@ public:
             g.drawLine(x, static_cast<float>(bar.getY() - 2), x, static_cast<float>(bar.getBottom() + 2), 2.0f);
         }
         g.setColour(kDim);
-        g.drawText(juce::String(db(processor_.getInputPeak()), 0) + " dB  gate " + (processor_.isGateOpen() ? "open" : "closed"),
+        g.drawText(whole(db(processor_.getInputPeak())) + " dB  gate " + (processor_.isGateOpen() ? "open" : "closed"),
                    levelArea.reduced(12, 0).removeFromBottom(18), juce::Justification::centredLeft);
 
         // ---- state transition log ----
@@ -1031,6 +1069,49 @@ private:
 };
 
 // ====================================================================================================================
+// MIDI drum output map (editable; General MIDI by default)
+// ====================================================================================================================
+class DrumMapEditor final : public juce::Component {
+public:
+    explicit DrumMapEditor(RoboDrummerAudioProcessor& p) : processor_(p) {
+        static const char* names[16] { "Kick", "Snare", "Closed hat", "Open hat", "Ride", "Crash", "High tom", "Mid tom", "Floor tom",
+                                       "Rimshot", "Side stick", "China", "Splash", "Cowbell", "Tambourine", "Clap" };
+        for (int i = 0; i < 16; ++i) {
+            rows_[static_cast<std::size_t>(i)].label.setText(names[i], juce::dontSendNotification);
+            for (int note = 0; note < 128; ++note)
+                rows_[static_cast<std::size_t>(i)].combo.addItem(juce::String(note) + "  " + juce::MidiMessage::getMidiNoteName(note, true, true, 3), note + 1);
+            addAndMakeVisible(rows_[static_cast<std::size_t>(i)].label);
+            addAndMakeVisible(rows_[static_cast<std::size_t>(i)].combo);
+            rows_[static_cast<std::size_t>(i)].combo.onChange = [this, i] {
+                processor_.setMidiDrumNote(static_cast<robodrummer::DrumInstrument>(i), rows_[static_cast<std::size_t>(i)].combo.getSelectedId() - 1);
+            };
+        }
+        reset_.setTooltip("Restore the General MIDI percussion map.");
+        reset_.onClick = [this] { processor_.resetMidiDrumMap(); load(); };
+        addAndMakeVisible(reset_);
+        load();
+        setSize(330, 16 * 28 + 52);
+    }
+    void resized() override {
+        auto area = getLocalBounds().reduced(10);
+        for (auto& row : rows_) {
+            auto r = area.removeFromTop(26); area.removeFromTop(2);
+            row.label.setBounds(r.removeFromLeft(110)); row.combo.setBounds(r);
+        }
+        reset_.setBounds(area.removeFromTop(30).reduced(0, 2));
+    }
+private:
+    void load() {
+        for (int i = 0; i < 16; ++i)
+            rows_[static_cast<std::size_t>(i)].combo.setSelectedId(processor_.getMidiDrumNote(static_cast<robodrummer::DrumInstrument>(i)) + 1, juce::dontSendNotification);
+    }
+    struct Row { juce::Label label; juce::ComboBox combo; };
+    RoboDrummerAudioProcessor& processor_;
+    std::array<Row, 16> rows_;
+    juce::TextButton reset_{"RESET TO GENERAL MIDI"};
+};
+
+// ====================================================================================================================
 // SETTINGS
 // ====================================================================================================================
 class SettingsPanel final : public PanelBase {
@@ -1042,8 +1123,18 @@ public:
           autoGain_(apvts_, robodrummer::ParamIDs::autoGain, "Automatic gain normalisation", "Slowly levels a quiet or hot guitar for analysis."),
           gate_(apvts_, robodrummer::ParamIDs::gateThreshold, "Noise gate", "Analysis noise gate threshold. Off at the far left."),
           dynamic_(apvts_, robodrummer::ParamIDs::dynamicFollow, "Dynamic follow", "How strongly guitar dynamics steer the drummer's intensity."),
+          strength_(apvts_, robodrummer::ParamIDs::followStrength, "Follow strength", "Scales how much of the guitar's timing authority is applied (100% = all of it)."),
+          inertia_(apvts_, robodrummer::ParamIDs::tempoInertia, "Tempo inertia", "How heavy the tempo feels. High values resist change; low values move quickly."),
+          correction_(apvts_, robodrummer::ParamIDs::beatCorrection, "Beat correction speed", "How quickly small phase errors against the guitar's beat are nudged away."),
+          sensitivity_(apvts_, robodrummer::ParamIDs::confidenceSensitivity, "Confidence sensitivity", "Low = only follow when the tracker is very sure; high = follow on weaker evidence."),
+          midiChannel_(apvts_, robodrummer::ParamIDs::midiOutChannel, "Output channel", "MIDI channel for generated drum notes (default 10, General MIDI drums)."),
           tooltips_("Show tooltips"), showHelp_(std::move(showHelp)) {
-        for (auto* c : std::initializer_list<juce::Component*>{ &mode_, &gain_, &autoGain_, &gate_, &dynamic_ }) addAndMakeVisible(*c);
+        for (auto* c : std::initializer_list<juce::Component*>{ &mode_, &gain_, &autoGain_, &gate_, &dynamic_, &strength_, &inertia_, &correction_, &sensitivity_, &midiChannel_ }) addAndMakeVisible(*c);
+        drumMap_.setTooltip("Edit which MIDI note each drum sends (General MIDI by default).");
+        drumMap_.onClick = [this] {
+            juce::CallOutBox::launchAsynchronously(std::make_unique<DrumMapEditor>(processor_), drumMap_.getScreenBounds(), nullptr);
+        };
+        addAndMakeVisible(drumMap_);
         addAndMakeVisible(meter_);
         meter_.setColour(kGood);
         calibrate_.setTooltip("Play normally for about 8 seconds. RoboDrummer measures your noise floor, levels and attack density and suggests gate and gain settings.");
@@ -1053,7 +1144,7 @@ public:
         addAndMakeVisible(calibrate_); addAndMakeVisible(apply_); addAndMakeVisible(progress_);
         progress_.setColour(kAccent);
         for (auto* l : { &gateState_, &calResult_, &about_ }) {
-            l->setFont(juce::FontOptions(13.0f)); l->setColour(juce::Label::textColourId, kDim); l->setMinimumHorizontalScale(0.6f);
+            l->setFont(juce::FontOptions(13.0f)); l->setColour(juce::Label::textColourId, kDim); l->setMinimumHorizontalScale(1.0f);
             l->setJustificationType(juce::Justification::topLeft);
             addAndMakeVisible(*l);
         }
@@ -1069,6 +1160,8 @@ public:
     void paint(juce::Graphics& g) override {
         drawPanel(g, inputArea_, "Guitar input & analysis");
         drawPanel(g, calibrationArea_, "Calibration");
+        drawPanel(g, followArea_, "Following (advanced)");
+        drawPanel(g, midiOutArea_, "MIDI drum output");
         drawPanel(g, interfaceArea_, "Interface & help");
     }
     void resized() override {
@@ -1078,7 +1171,11 @@ public:
         inputArea_ = left.removeFromTop(left.getHeight() * 62 / 100);
         left.removeFromTop(8);
         interfaceArea_ = left;
-        calibrationArea_ = area;
+        calibrationArea_ = area.removeFromTop(area.getHeight() * 40 / 100);
+        area.removeFromTop(8);
+        midiOutArea_ = area.removeFromBottom(100);
+        area.removeFromBottom(8);
+        followArea_ = area;
         auto i = inputArea_.reduced(12, 6); i.removeFromTop(22);
         stack(i, 28, 4, { &mode_, &gain_, &autoGain_, &gate_, &dynamic_ });
         meter_.setBounds(i.removeFromTop(14).reduced(0, 2)); i.removeFromTop(4);
@@ -1087,6 +1184,11 @@ public:
         rowOfButtons(c.removeFromTop(34), 8, { &calibrate_, &apply_ }); c.removeFromTop(8);
         progress_.setBounds(c.removeFromTop(14)); c.removeFromTop(8);
         calResult_.setBounds(c);
+        auto fa = followArea_.reduced(12, 6); fa.removeFromTop(22);
+        stack(fa, 28, 3, { &strength_, &inertia_, &correction_, &sensitivity_ });
+        auto mo = midiOutArea_.reduced(12, 6); mo.removeFromTop(22);
+        stack(mo, 28, 3, { &midiChannel_ });
+        drumMap_.setBounds(mo.removeFromTop(28));
         auto f = interfaceArea_.reduced(12, 6); f.removeFromTop(22);
         auto row = f.removeFromTop(30);
         tooltips_.setBounds(row.removeFromLeft(160)); helpButton_.setBounds(row.removeFromLeft(120).reduced(0, 2)); f.removeFromTop(6);
@@ -1095,7 +1197,7 @@ public:
     void refresh() override {
         const auto toNorm = [](float peak) { const float db = peak > 1.0e-5f ? 20.0f * std::log10(peak) : -100.0f; return juce::jlimit(0.0f, 1.0f, (db + 80.0f) / 80.0f); };
         meter_.setValue(toNorm(processor_.getInputPeak()));
-        gateState_.setText(juce::String("Analysis input: ") + juce::String(processor_.getInputPeak() > 1.0e-5f ? 20.0f * std::log10(processor_.getInputPeak()) : -100.0f, 0) +
+        gateState_.setText(juce::String("Analysis input: ") + whole(processor_.getInputPeak() > 1.0e-5f ? 20.0f * std::log10(processor_.getInputPeak()) : -100.0f) +
                            " dB peak  |  gate " + (processor_.isGateOpen() ? "open" : "closed"), juce::dontSendNotification);
         const auto cal = processor_.getCalibration();
         calibrate_.setButtonText(cal.state == 1 ? "CANCEL" : "CALIBRATE (8 s)");
@@ -1116,13 +1218,14 @@ private:
     ParamCombo mode_;
     ParamSlider gain_;
     ParamToggle autoGain_;
-    ParamSlider gate_, dynamic_;
+    ParamSlider gate_, dynamic_, strength_, inertia_, correction_, sensitivity_, midiChannel_;
+    juce::TextButton drumMap_{"EDIT DRUM MAP..."};
     BarMeter meter_, progress_;
     juce::TextButton calibrate_{"CALIBRATE (8 s)"}, apply_{"APPLY SUGGESTIONS"}, helpButton_{"HELP"};
     juce::ToggleButton tooltips_;
     juce::Label gateState_, calResult_, about_;
     std::function<void()> showHelp_;
-    juce::Rectangle<int> inputArea_, calibrationArea_, interfaceArea_;
+    juce::Rectangle<int> inputArea_, calibrationArea_, interfaceArea_, followArea_, midiOutArea_;
 };
 
 } // namespace rdui

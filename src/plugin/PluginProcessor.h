@@ -21,7 +21,10 @@
 #include "audio/DrumSamplePlayer.h"
 #include "audio/KitBuilder.h"
 #include "core/DrummerPersonality.h"
+#include "analysis/PerformanceAnalyzer.h"
+#include "analysis/TempoMovement.h"
 #include "core/JamStyleProfile.h"
+#include "core/Lookahead.h"
 #include "core/MeterSelection.h"
 #include "core/MidiClockTracker.h"
 #include "core/MidiLearn.h"
@@ -71,6 +74,12 @@ inline constexpr const char* autoGain = "autoGain";
 inline constexpr const char* gateThreshold = "gateThreshold";
 inline constexpr const char* kit = "kit";
 inline constexpr const char* roomSize = "roomSize";
+inline constexpr const char* followStrength = "followStrength";
+inline constexpr const char* tempoInertia = "tempoInertia";
+inline constexpr const char* beatCorrection = "beatCorrection";
+inline constexpr const char* confidenceSensitivity = "confidenceSensitivity";
+inline constexpr const char* kitTune = "kitTune";
+inline constexpr const char* midiOutChannel = "midiOutChannel";
 inline constexpr std::array<const char*, 8> mixGain { "gain_kick", "gain_snare", "gain_toms", "gain_hihat", "gain_ride", "gain_cymbals", "gain_room", "gain_master" };
 inline constexpr std::array<const char*, 7> mixPan { "pan_kick", "pan_snare", "pan_toms", "pan_hihat", "pan_ride", "pan_cymbals", "pan_room" };
 inline constexpr std::array<const char*, 8> mixMute { "mute_kick", "mute_snare", "mute_toms", "mute_hihat", "mute_ride", "mute_cymbals", "mute_room", "mute_master" };
@@ -245,6 +254,19 @@ public:
     robodrummer::CalibrationSummary getCalibration() const noexcept;
     void applyCalibrationSuggestions();
 
+    robodrummer::PerformanceState getPerformanceState() const noexcept;
+    robodrummer::TempoMovement getTempoMovement() const noexcept { return static_cast<robodrummer::TempoMovement>(tempoMovement_.load(std::memory_order_relaxed)); }
+    double getTempoVelocity() const noexcept { return tempoVelocity_.load(std::memory_order_relaxed); }
+    std::array<robodrummer::RichTempoHypothesis, 3> getRichHypotheses() const noexcept;
+    double getLookaheadMs() const noexcept { return lookaheadMs_.load(std::memory_order_relaxed); }
+
+    // ---- MIDI drum output map (General MIDI by default) ----
+    int getMidiDrumNote(robodrummer::DrumInstrument instrument) const noexcept { return drumNotes_[static_cast<std::size_t>(instrument)].load(std::memory_order_relaxed); }
+    void setMidiDrumNote(robodrummer::DrumInstrument instrument, int note) noexcept { drumNotes_[static_cast<std::size_t>(instrument)].store(juce::jlimit(0, 127, note), std::memory_order_relaxed); }
+    void resetMidiDrumMap() noexcept;
+    juce::ValueTree createDrumMapState() const;
+    void applyDrumMapState(const juce::ValueTree& tree);
+
     // ---- tempo tools ----
     void tapTempo();
     bool isMidiClockActive() const noexcept { return midiClockActive_.load(std::memory_order_relaxed); }
@@ -286,7 +308,7 @@ private:
     void swapInPendingKit() noexcept;
     void applyMixerToSampler() noexcept;
     void drainMidiLearnToParameters();
-    static int midiNoteFor(robodrummer::DrumInstrument) noexcept;
+    int midiNoteFor(robodrummer::DrumInstrument) const noexcept;
     float rawValue(const char* id, float fallback) const noexcept;
 
     struct SlotAtomics {
@@ -433,6 +455,12 @@ private:
     juce::AbstractFifo onsetFifo_{OnsetFifoSize};
     std::array<robodrummer::AnalysisOnsetMark, OnsetFifoSize> onsetStorage_{};
     int candidateCountdown_{0};
+    std::array<std::atomic<float>, 13> perfValues_{};
+    std::atomic<int> tempoMovement_{0};
+    std::atomic<double> tempoVelocity_{0.0};
+    std::atomic<double> lookaheadMs_{0.0};
+    std::array<std::atomic<float>, 18> richValues_{}; // 3 hypotheses x (bpm, confidence, support, consistency, age, relation)
+    std::array<std::atomic<int>, 16> drumNotes_{};
     std::atomic<int> calibrationCommand_{0};
     std::atomic<int> calibrationState_{0};
     std::atomic<float> calibrationProgress_{0.0f};
@@ -462,6 +490,12 @@ private:
     std::atomic<float>* rawGate_{nullptr};
     std::atomic<float>* rawKit_{nullptr};
     std::atomic<float>* rawRoomSize_{nullptr};
+    std::atomic<float>* rawFollowStrength_{nullptr};
+    std::atomic<float>* rawTempoInertia_{nullptr};
+    std::atomic<float>* rawBeatCorrection_{nullptr};
+    std::atomic<float>* rawConfidenceSensitivity_{nullptr};
+    std::atomic<float>* rawKitTune_{nullptr};
+    std::atomic<float>* rawMidiOutChannel_{nullptr};
     std::array<std::atomic<float>*, 8> rawMixGain_{};
     std::array<std::atomic<float>*, 7> rawMixPan_{};
     std::array<std::atomic<float>*, 8> rawMixMute_{};

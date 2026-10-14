@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 namespace robodrummer {
 
@@ -16,15 +17,31 @@ struct TempoHypothesis {
     float confidence{0.0f};
 };
 
+enum class HypothesisRelation : std::uint8_t { Primary, HalfTime, DoubleTime, Related, Independent };
+
+// SPEC 8: a competing tempo interpretation with its supporting evidence.
+struct RichTempoHypothesis {
+    double bpm{0.0};
+    float confidence{0.0f};
+    int supportingEvents{0};          // recent onsets that sit on this hypothesis' beat grid
+    float consistency{0.0f};          // supportingEvents / recent onsets
+    double ageSeconds{0.0};           // how long this interpretation has had evidence
+    double beatPhase{0.0};            // 0-1 position of "now" within the beat
+    double predictedNextBeatSeconds{0.0};
+    HypothesisRelation relationToBest{HypothesisRelation::Independent};
+};
+
 class TempoTracker {
 public:
-    static constexpr double MinBpm = 45.0;
-    static constexpr double MaxBpm = 220.0;
+    static constexpr double MinBpm = 40.0;
+    static constexpr double MaxBpm = 240.0;
     static constexpr double BinSize = 0.5;
     static constexpr std::size_t BinCount = static_cast<std::size_t>((MaxBpm - MinBpm) / BinSize) + 1;
 
     void reset() noexcept {
         histogram_.fill(0.0f);
+        activeSince_.fill(0.0);
+        currentSeconds_ = 0.0;
         onsetTimes_.fill(0.0);
         onsetStrengths_.fill(0.0f);
         onsetCount_ = 0;
@@ -36,7 +53,11 @@ public:
     void addOnset(double seconds, float strength = 1.0f) noexcept {
         if (!std::isfinite(seconds) || strength <= 0.0f) return;
         strength = std::clamp(strength, 0.05f, 1.0f);
-        for (auto& score : histogram_) score *= 0.965f;
+        currentSeconds_ = seconds;
+        for (std::size_t i = 0; i < histogram_.size(); ++i) {
+            histogram_[i] *= 0.965f;
+            if (histogram_[i] < 0.01f) activeSince_[i] = 0.0;
+        }
 
         const std::size_t available = std::min<std::size_t>(onsetCount_, onsetTimes_.size());
         for (std::size_t lag = 1; lag <= available; ++lag) {
@@ -61,9 +82,8 @@ public:
         std::array<TempoHypothesis, 3> result{};
         std::array<float, BinCount> scratch = histogram_;
         for (std::size_t rank = 0; rank < result.size(); ++rank) {
-            const auto it = std::max_element(scratch.begin(), scratch.end());
-            if (it == scratch.end() || *it <= 0.0f) break;
-            const std::size_t idx = static_cast<std::size_t>(std::distance(scratch.begin(), it));
+            const std::size_t idx = pickBin(scratch, rank);
+            if (idx >= BinCount) break;
             result[rank] = {MinBpm + static_cast<double>(idx) * BinSize, confidenceForBin(idx)};
             const int radius = static_cast<int>(std::llround(3.0 / BinSize));
             const int center = static_cast<int>(idx);
@@ -73,7 +93,70 @@ public:
         return result;
     }
 
+    // Scales down accumulated evidence so a decisive tempo change can take over quickly.
+    void forgetOlderEvidence(float keep) noexcept {
+        for (auto& score : histogram_) score *= std::clamp(keep, 0.0f, 1.0f);
+        hasBest_ = false;
+        updateBest();
+    }
+
+    // The top competing hypotheses with supporting-event counts, consistency, age, phase and the next predicted beat.
+    [[nodiscard]] std::array<RichTempoHypothesis, 3> richHypotheses(double nowSeconds) const noexcept {
+        std::array<RichTempoHypothesis, 3> result{};
+        std::array<float, BinCount> scratch = histogram_;
+        const std::size_t recent = std::min<std::size_t>(onsetCount_, onsetTimes_.size());
+        double bestBpm = 0.0;
+        for (std::size_t rank = 0; rank < result.size(); ++rank) {
+            const std::size_t idx = pickBin(scratch, rank);
+            if (idx >= BinCount) break;
+            auto& h = result[rank];
+            h.bpm = MinBpm + static_cast<double>(idx) * BinSize;
+            h.confidence = confidenceForBin(idx);
+            if (rank == 0) bestBpm = h.bpm;
+
+            const double period = 60.0 / h.bpm;
+            if (recent > 0) {
+                const double lastOnset = onsetTimes_[(writeIndex_ + onsetTimes_.size() - 1) % onsetTimes_.size()];
+                for (std::size_t k = 0; k < recent; ++k) {
+                    const double t = onsetTimes_[(writeIndex_ + onsetTimes_.size() - 1 - k) % onsetTimes_.size()];
+                    const double x = (lastOnset - t) / period;
+                    if (std::abs(x - std::round(x)) < 0.12) ++h.supportingEvents;
+                }
+                h.consistency = static_cast<float>(h.supportingEvents) / static_cast<float>(recent);
+                const double sinceLast = std::max(0.0, nowSeconds - lastOnset);
+                h.beatPhase = std::fmod(sinceLast, period) / period;
+                h.predictedNextBeatSeconds = lastOnset + std::ceil(sinceLast / period + 1.0e-9) * period;
+            }
+            h.ageSeconds = activeSince_[idx] > 0.0 ? std::max(0.0, nowSeconds - activeSince_[idx]) : 0.0;
+            if (rank == 0) h.relationToBest = HypothesisRelation::Primary;
+            else {
+                const double ratio = h.bpm / std::max(1.0, bestBpm);
+                if (std::abs(ratio - 0.5) < 0.03) h.relationToBest = HypothesisRelation::HalfTime;
+                else if (std::abs(ratio - 2.0) < 0.06) h.relationToBest = HypothesisRelation::DoubleTime;
+                else if (std::abs(ratio - 1.5) < 0.05 || std::abs(ratio - 2.0 / 3.0) < 0.04 || std::abs(ratio - 3.0) < 0.1 || std::abs(ratio - 1.0 / 3.0) < 0.03)
+                    h.relationToBest = HypothesisRelation::Related;
+                else h.relationToBest = HypothesisRelation::Independent;
+            }
+            const int radius = static_cast<int>(std::llround(3.0 / BinSize));
+            const int center = static_cast<int>(idx);
+            for (int j = std::max(0, center - radius); j <= std::min(static_cast<int>(BinCount) - 1, center + radius); ++j)
+                scratch[static_cast<std::size_t>(j)] = 0.0f;
+        }
+        return result;
+    }
+
 private:
+    // The active (hysteresis-protected) tempo always ranks first; the rest are the strongest remaining peaks.
+    [[nodiscard]] std::size_t pickBin(const std::array<float, BinCount>& scratch, std::size_t rank) const noexcept {
+        if (rank == 0 && hasBest_) {
+            const auto idx = static_cast<std::size_t>(std::clamp(static_cast<int>(std::llround((best_.bpm - MinBpm) / BinSize)), 0, static_cast<int>(BinCount) - 1));
+            if (histogram_[idx] > 0.0f) return idx;
+        }
+        const auto it = std::max_element(scratch.begin(), scratch.end());
+        if (it == scratch.end() || *it <= 0.0f) return BinCount;
+        return static_cast<std::size_t>(std::distance(scratch.begin(), it));
+    }
+
     void vote(double bpm, float weight) noexcept {
         if (!std::isfinite(bpm) || bpm < MinBpm || bpm > MaxBpm || weight <= 0.0f) return;
         const int center = static_cast<int>(std::llround((bpm - MinBpm) / BinSize));
@@ -82,6 +165,7 @@ private:
             if (bin < 0 || bin >= static_cast<int>(BinCount)) continue;
             const float kernel = (offset == 0 ? 1.0f : (std::abs(offset) == 1 ? 0.60f : 0.22f));
             histogram_[static_cast<std::size_t>(bin)] += weight * kernel;
+            if (activeSince_[static_cast<std::size_t>(bin)] <= 0.0) activeSince_[static_cast<std::size_t>(bin)] = currentSeconds_;
         }
     }
 
@@ -135,6 +219,8 @@ private:
     }
 
     std::array<float, BinCount> histogram_{};
+    std::array<double, BinCount> activeSince_{};
+    double currentSeconds_{0.0};
     std::array<double, 24> onsetTimes_{};
     std::array<float, 24> onsetStrengths_{};
     std::size_t onsetCount_{0};

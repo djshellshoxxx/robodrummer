@@ -157,7 +157,10 @@ public:
 
     // Renders into per-bus stereo pairs. A null left pointer means that bus is unavailable and its voices
     // fall back to bus 0, so disabled aux outputs never lose audio.
-    void renderBuses(float* const* busLeft, float* const* busRight, int numBuses, int numSamples) noexcept {
+    // sendLeft/sendRight, when given, additionally receive every voice (the feed for a room/reverb return that
+    // must hear the whole kit even when instruments are routed to aux outputs).
+    void renderBuses(float* const* busLeft, float* const* busRight, int numBuses, int numSamples,
+                     float* sendLeft = nullptr, float* sendRight = nullptr) noexcept {
         if (!busLeft || numBuses <= 0 || !busLeft[0] || numSamples <= 0)
             return;
 
@@ -180,9 +183,12 @@ public:
                     ? interpolate(sample.left, voice.position)
                     : interpolate(sample.right, voice.position);
 
+                const float right = rightSource * voice.rightGain * envelope;
                 outLeft[n] += left;
                 if (outRight)
-                    outRight[n] += rightSource * voice.rightGain * envelope;
+                    outRight[n] += right;
+                if (sendLeft) sendLeft[n] += left;
+                if (sendRight) sendRight[n] += right;
 
                 voice.position += voice.playbackRate;
             }

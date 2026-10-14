@@ -1,6 +1,7 @@
 #pragma once
 #include "analysis/DownbeatTracker.h"
 #include "analysis/OnsetDetector.h"
+#include "analysis/TempoMovement.h"
 #include "analysis/TempoTracker.h"
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@ struct RhythmState {
     float downbeatConfidence{0.0f};
     float meterConfidence{0.0f};
     bool locked{false};
+    TempoMovement movement{TempoMovement::Steady};
 };
 
 class LiveRhythmAnalyzer {
@@ -42,6 +44,14 @@ public:
         lastUpdateSeconds_ = 0.0;
         previousTempo_ = 120.0;
         lastObservedBeatIndex_ = std::numeric_limits<long long>::min();
+        pllPeriod_ = 0.0;
+        intervalCount_ = 0;
+        intervalHead_ = 0;
+        beatCounter_ = 0;
+        pllConsistency_ = 0.0f;
+        pllUpdates_ = 0;
+        lockLatched_ = false;
+        movement_.reset();
         state_ = {};
     }
 
@@ -73,30 +83,97 @@ public:
 
     [[nodiscard]] RhythmState state() const noexcept { return state_; }
     [[nodiscard]] const TempoTracker& tempoTracker() const noexcept { return tempo_; }
+    [[nodiscard]] std::array<RichTempoHypothesis, 3> richHypotheses() const noexcept { return tempo_.richHypotheses(lastUpdateSeconds_); }
+    [[nodiscard]] double loopTempoBpm() const noexcept { return pllPeriod_ > 0.0 ? 60.0 / pllPeriod_ : 0.0; }
+    [[nodiscard]] float loopConsistency() const noexcept { return pllConsistency_; }
     // Onsets found by the most recent processBlock call (for the analysis display).
     [[nodiscard]] std::size_t lastBlockOnsetCount() const noexcept { return blockOnsetCount_; }
     [[nodiscard]] const OnsetEvent& lastBlockOnset(std::size_t index) const noexcept { return blockOnsets_[index]; }
     [[nodiscard]] long long lastBlockStartSample() const noexcept { return blockStartSample_; }
 
 private:
+    // A run of mutually consistent inter-onset intervals that contradicts the current tempo (and is not just a
+    // musical subdivision of it) is a real tempo change, so the loop and the histogram re-seed from it.
+    bool detectTempoChange(double seconds, double& newPeriod) noexcept {
+        if (std::isfinite(lastOnsetSeconds_)) {
+            const double interval = seconds - lastOnsetSeconds_;
+            if (interval > 0.08) {
+                intervals_[intervalHead_] = interval;
+                intervalHead_ = (intervalHead_ + 1) % intervals_.size();
+                intervalCount_ = std::min(intervalCount_ + 1, intervals_.size());
+            }
+        }
+        if (intervalCount_ < intervals_.size() || pllPeriod_ <= 0.0) return false;
+        auto sorted = intervals_;
+        std::sort(sorted.begin(), sorted.end());
+        const double median = 0.5 * (sorted[1] + sorted[2]);
+        for (const double v : intervals_)
+            if (std::abs(v - median) > 0.08 * median) return false;
+        const double ratio = median / pllPeriod_;
+        for (const double related : { 1.0, 2.0, 0.5, 3.0, 1.0 / 3.0, 1.5, 2.0 / 3.0, 4.0, 0.25 })
+            if (std::abs(ratio - related) < 0.045 * related) return false;
+        newPeriod = median;
+        return true;
+    }
+
     void acceptOnset(double seconds, float strength) noexcept {
         tempo_.addOnset(seconds, std::max(0.15f, strength));
-        const auto best = tempo_.best();
-        const double period = 60.0 / std::max(45.0, best.bpm);
-
-        if (!std::isfinite(phaseAnchorSeconds_) || best.confidence < 0.30f) {
+        double changedPeriod = 0.0;
+        if (detectTempoChange(seconds, changedPeriod)) {
+            pllPeriod_ = std::clamp(changedPeriod, 60.0 / 240.0, 60.0 / 40.0);
             phaseAnchorSeconds_ = seconds;
+            beatCounter_ = 0;
+            pllConsistency_ = 0.35f;
+            pllUpdates_ = 0;
+            lastObservedBeatIndex_ = std::numeric_limits<long long>::min();
+            tempo_.forgetOlderEvidence(0.25f);
+            intervalCount_ = 0;
+        }
+        const auto best = tempo_.best();
+        const double histogramPeriod = 60.0 / std::max(45.0, best.bpm);
+
+        // The inter-onset histogram is good at acquiring a tempo but slow to follow a drifting one, so a
+        // phase-locked loop on the beat period tracks gradual acceleration; the histogram re-seeds it whenever the
+        // loop is not locking onto anything.
+        if (pllPeriod_ <= 0.0 && best.confidence >= 0.30f) {
+            pllPeriod_ = histogramPeriod;
+            pllConsistency_ = 0.3f;
+            pllUpdates_ = 0;
+        } else if (pllPeriod_ > 0.0 && pllConsistency_ < 0.30f && best.confidence >= 0.50f &&
+                   std::abs(pllPeriod_ - histogramPeriod) > histogramPeriod * 0.04) {
+            pllPeriod_ = histogramPeriod;
+            pllConsistency_ = 0.3f;
+            pllUpdates_ = 0;
+        }
+        const double period = pllPeriod_ > 0.0 ? pllPeriod_ : histogramPeriod;
+
+        if (!std::isfinite(phaseAnchorSeconds_) || (best.confidence < 0.30f && pllConsistency_ < 0.30f)) {
+            phaseAnchorSeconds_ = seconds;
+            beatCounter_ = 0;
         } else {
             const double beatPosition = (seconds - phaseAnchorSeconds_) / period;
             const long long nearestBeat = static_cast<long long>(std::llround(beatPosition));
             const double predicted = phaseAnchorSeconds_ + static_cast<double>(nearestBeat) * period;
             const double error = seconds - predicted;
             if (std::abs(error) <= period * 0.22) {
-                phaseAnchorSeconds_ += std::clamp(error * 0.25, -0.020, 0.020);
-                if (best.confidence >= 0.30f && nearestBeat != lastObservedBeatIndex_) {
-                    downbeat_.observeBeatAt(nearestBeat, std::clamp(strength, 0.0f, 1.0f));
-                    lastObservedBeatIndex_ = nearestBeat;
+                const long long absoluteBeat = beatCounter_ + nearestBeat;
+                // Re-anchor on the grid point this onset belongs to (phase-corrected), so the next period error is
+                // measured over a short horizon and the loop can follow a drifting tempo.
+                phaseAnchorSeconds_ = predicted + std::clamp(error * 0.25, -0.020, 0.020);
+                beatCounter_ = absoluteBeat;
+                if (nearestBeat >= 1 && pllPeriod_ > 0.0) {
+                    const double correction = std::clamp(0.35 * error / static_cast<double>(nearestBeat), -0.004, 0.004);
+                    pllPeriod_ = std::clamp(pllPeriod_ + correction, 60.0 / 240.0, 60.0 / 40.0);
+                    ++pllUpdates_;
                 }
+                const float onGrid = std::abs(error) < period * 0.08 ? 1.0f : 0.45f;
+                pllConsistency_ += (onGrid - pllConsistency_) * 0.15f;
+                if ((best.confidence >= 0.30f || pllConsistency_ >= 0.30f) && absoluteBeat != lastObservedBeatIndex_) {
+                    downbeat_.observeBeatAt(absoluteBeat, std::clamp(strength, 0.0f, 1.0f));
+                    lastObservedBeatIndex_ = absoluteBeat;
+                }
+            } else {
+                pllConsistency_ *= 0.93f;
             }
         }
         lastOnsetSeconds_ = seconds;
@@ -104,15 +181,35 @@ private:
 
     void updateState(double nowSeconds) noexcept {
         const auto best = tempo_.best();
-        const double filteredTempo = state_.tempoConfidence > 0.25f
-            ? state_.tempoBpm + std::clamp(best.bpm - state_.tempoBpm, -3.0, 3.0) * 0.18
-            : best.bpm;
+        // Prefer the phase-locked loop while it is locking and agrees (within a plausible drift) with the histogram.
+        double targetBpm = best.bpm;
+        float targetConfidence = best.confidence;
+        if (pllPeriod_ > 0.0 && pllConsistency_ >= 0.30f) {
+            const double pllBpm = 60.0 / pllPeriod_;
+            const double ratio = pllBpm / std::max(1.0, best.bpm);
+            const float evidence = std::clamp(static_cast<float>(pllUpdates_) / 8.0f, 0.0f, 1.0f);
+            const float pllConfidence = std::clamp(pllConsistency_ * 1.1f, 0.0f, 1.0f) * evidence;
+            // A loop that is solidly locked wins even when the (slower) histogram has wandered to an octave.
+            if ((ratio > 0.70 && ratio < 1.45) || pllConsistency_ >= 0.60f) {
+                targetBpm = pllBpm;
+                targetConfidence = std::max(best.confidence, pllConfidence);
+            }
+        }
+        // While still acquiring (low confidence) a clearly better estimate is taken directly; once locked, changes
+        // are filtered so a momentary octave or outlier cannot yank the tempo.
+        const bool acquiring = state_.tempoConfidence <= 0.25f ||
+                               (state_.tempoConfidence < 0.50f && targetConfidence >= 0.45f && std::abs(targetBpm - state_.tempoBpm) > 0.12 * state_.tempoBpm);
+        const double filteredTempo = acquiring
+            ? targetBpm
+            : state_.tempoBpm + std::clamp(targetBpm - state_.tempoBpm, -3.0, 3.0) * 0.18;
         const double dt = std::max(1.0e-3, nowSeconds - lastUpdateSeconds_);
-        state_.tempoVelocity = (filteredTempo - previousTempo_) / dt;
+        movement_.update(filteredTempo, nowSeconds, targetConfidence);
+        state_.movement = movement_.movement();
+        state_.tempoVelocity = movement_.velocityBpmPerSecond();
         previousTempo_ = filteredTempo;
         lastUpdateSeconds_ = nowSeconds;
         state_.tempoBpm = filteredTempo;
-        state_.tempoConfidence = best.confidence;
+        state_.tempoConfidence = targetConfidence;
 
         const double period = 60.0 / std::max(45.0, state_.tempoBpm);
         if (std::isfinite(phaseAnchorSeconds_)) {
@@ -139,7 +236,12 @@ private:
         }
         state_.beatConfidence = std::clamp(state_.tempoConfidence * (0.45f + 0.55f * recency), 0.0f, 1.0f);
         // A lock needs recent onsets; the tempo histogram alone would keep a stale lock through silence.
-        state_.locked = recency > 0.0f && state_.tempoConfidence >= 0.38f && state_.beatConfidence >= 0.30f;
+        // Hysteresis (SPEC 13): entering needs clearly better confidence than staying locked.
+        if (lockLatched_)
+            lockLatched_ = recency > 0.0f && state_.tempoConfidence >= 0.28f && state_.beatConfidence >= 0.20f;
+        else
+            lockLatched_ = recency > 0.0f && state_.tempoConfidence >= 0.38f && state_.beatConfidence >= 0.30f;
+        state_.locked = lockLatched_;
     }
 
     double sampleRate_{48000.0};
@@ -149,6 +251,15 @@ private:
     double lastUpdateSeconds_{0.0};
     double previousTempo_{120.0};
     long long lastObservedBeatIndex_{std::numeric_limits<long long>::min()};
+    TempoMovementClassifier movement_{};
+    std::array<double, 4> intervals_{};
+    std::size_t intervalHead_{0};
+    std::size_t intervalCount_{0};
+    long long beatCounter_{0};
+    double pllPeriod_{0.0};
+    float pllConsistency_{0.0f};
+    int pllUpdates_{0};
+    bool lockLatched_{false};
     AdaptiveOnsetDetector detector_{};
     TempoTracker tempo_{};
     DownbeatTracker downbeat_{};

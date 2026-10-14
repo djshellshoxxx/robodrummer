@@ -13,6 +13,10 @@ struct TimingAuthoritySettings {
     float leadership{0.5f};
     double followRangeBpm{15.0};
     FollowResponse response{FollowResponse::Balanced};
+    // SPEC 12 controls. The defaults reproduce the behaviour of the response preset alone.
+    float followStrength{1.0f};          // 0-1 scales how much of the guitar's authority is applied
+    float tempoInertia{0.5f};            // 0 = nimble, 1 = heavy (scales the tempo slew rate; 0.5 = preset)
+    float confidenceSensitivity{0.5f};   // 0 = demands strong evidence, 1 = trusts weak evidence (0.5 = preset)
 };
 
 struct TimingAuthorityState {
@@ -27,7 +31,7 @@ public:
         currentBpm_ = sanitizeBpm(bpm);
         trustedGuitarBpm_ = currentBpm_;
         hasTrustedGuitar_ = false;
-        initialized_ = false;
+        guitarOffset_ = 0.0;
     }
 
     [[nodiscard]] TimingAuthorityState update(double baseBpm,
@@ -41,8 +45,10 @@ public:
         if (settings.mode == LeadershipMode::DrummerLeads) leadership = 0.0f;
         if (settings.mode == LeadershipMode::GuitaristLeads) leadership = 1.0f;
 
-        const float confidenceAuthority = confidenceGain(guitar.tempoConfidence, guitar.beatConfidence, guitar.locked);
-        const float effectiveAuthority = leadership * confidenceAuthority;
+        const float sensitivity = std::clamp(settings.confidenceSensitivity, 0.0f, 1.0f);
+        const float confidenceAuthority = confidenceGain(guitar.tempoConfidence * (0.7f + 0.6f * sensitivity),
+                                                         guitar.beatConfidence * (0.7f + 0.6f * sensitivity), guitar.locked);
+        const float effectiveAuthority = leadership * confidenceAuthority * std::clamp(settings.followStrength, 0.0f, 1.0f);
 
         if (guitar.locked && guitar.tempoConfidence >= 0.60f && guitar.beatConfidence >= 0.50f) {
             trustedGuitarBpm_ = sanitizeBpm(guitar.tempoBpm);
@@ -52,21 +58,18 @@ public:
         double guitarTarget = hasTrustedGuitar_ ? trustedGuitarBpm_ : sanitizeBpm(guitar.tempoBpm);
         const double range = std::clamp(settings.followRangeBpm, 0.0, 80.0);
         guitarTarget = std::clamp(guitarTarget, baseBpm - range, baseBpm + range);
-        const double desired = baseBpm + (guitarTarget - baseBpm) * effectiveAuthority;
-
-        if (!initialized_) {
-            currentBpm_ = baseBpm;
-            initialized_ = true;
-        }
-
-        const double maxRate = responseRate(settings.response);
+        // Only the guitar's contribution is slew-limited. The base tempo (host, MIDI clock, tap or manual BPM) is
+        // authoritative and passes straight through, so a host tempo change is never smeared by the follow response.
+        const double desiredOffset = (guitarTarget - baseBpm) * effectiveAuthority;
+        const double inertiaScale = std::pow(2.0, (0.5 - static_cast<double>(std::clamp(settings.tempoInertia, 0.0f, 1.0f))) * 2.0);
+        const double maxRate = responseRate(settings.response) * inertiaScale;
         const double maxStep = maxRate * deltaSeconds;
         if (maxStep > 0.0)
-            currentBpm_ += std::clamp(desired - currentBpm_, -maxStep, maxStep);
+            guitarOffset_ += std::clamp(desiredOffset - guitarOffset_, -maxStep, maxStep);
         else
-            currentBpm_ = desired;
+            guitarOffset_ = desiredOffset;
 
-        currentBpm_ = sanitizeBpm(currentBpm_);
+        currentBpm_ = sanitizeBpm(baseBpm + guitarOffset_);
         return {currentBpm_, effectiveAuthority, effectiveAuthority >= 0.10f};
     }
 
@@ -98,7 +101,7 @@ private:
     double currentBpm_{120.0};
     double trustedGuitarBpm_{120.0};
     bool hasTrustedGuitar_{false};
-    bool initialized_{false};
+    double guitarOffset_{0.0};
 };
 
 } // namespace robodrummer

@@ -52,9 +52,6 @@ juce::File RoboDrummerAudioProcessorEditor::settingsFile() {
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
     : AudioProcessorEditor(&p), processor_(p) {
     setLookAndFeel(&lookAndFeel_);
-    setResizable(true, true);
-    setResizeLimits(900, 640, 1600, 1100);
-    setSize(1040, 720);
 
     title_.setText("RoboDrummer", juce::dontSendNotification);
     title_.setFont(juce::FontOptions(26.0f, juce::Font::bold));
@@ -84,7 +81,6 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     panels_[6] = std::make_unique<rdui::AnalysisPanel>(processor_);
     panels_[7] = std::make_unique<rdui::SettingsPanel>(processor_, [this](bool on) { applyTooltipSetting(on); }, tooltipsOn, [this] { showHelp(); });
     for (auto& panel : panels_) addChildComponent(*panel);
-    tabButtons_[0].setToggleState(true, juce::dontSendNotification);
 
     for (int t = 0; t < robodrummer::kPresetTypeCount; ++t)
         presetType_.addItem(robodrummer::PresetManager::typeName(static_cast<robodrummer::PresetType>(t)), t + 1);
@@ -129,6 +125,10 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
 
     applyTooltipSetting(tooltipsOn);
     selectTab(0);
+    // Sized last: every child must exist before the first resized() call.
+    setResizable(true, true);
+    setResizeLimits(900, 640, 1600, 1100);
+    setSize(1040, 720);
     startTimerHz(20);
 }
 
@@ -163,7 +163,8 @@ void RoboDrummerAudioProcessorEditor::selectTab(int index) {
     currentTab_ = juce::jlimit(0, TabCount - 1, index);
     for (int i = 0; i < TabCount; ++i) panels_[static_cast<std::size_t>(i)]->setVisible(i == currentTab_);
     panels_[static_cast<std::size_t>(currentTab_)]->refresh();
-    tabButtons_[static_cast<std::size_t>(currentTab_)].setToggleState(true, juce::dontSendNotification);
+    for (int i = 0; i < TabCount; ++i)
+        tabButtons_[static_cast<std::size_t>(i)].setToggleState(i == currentTab_, juce::dontSendNotification);
 }
 
 void RoboDrummerAudioProcessorEditor::rebuildPresetList() {
@@ -217,7 +218,8 @@ void RoboDrummerAudioProcessorEditor::resized() {
     for (auto& b : tabButtons_) b.setBounds(tabs.removeFromLeft(tabWidth).reduced(2, 0));
     area.removeFromTop(6);
     footer_.setBounds(area.removeFromBottom(20));
-    for (auto& panel : panels_) panel->setBounds(area);
+    for (auto& panel : panels_)
+        if (panel != nullptr) panel->setBounds(area);
 
     if (helpText_.isVisible()) {
         auto helpArea = getLocalBounds().reduced(48, 44);

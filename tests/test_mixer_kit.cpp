@@ -63,4 +63,14 @@ int main() {
     assert(kickL[10] > 0.4f && kickR[10] > 0.4f);   // kick on its aux bus
     assert(mainL[10] > 0.4f);                       // snare bus disabled -> main
     assert(std::abs(mainL[10] - 0.5f) < 1.0e-5f);   // ...and kick did not leak into main
+
+    // The send feed hears every voice regardless of routing.
+    DrumSamplePlayer sendPlayer;
+    sendPlayer.setSample(DrumInstrument::Kick, s);
+    sendPlayer.setInstrumentBus(DrumInstrument::Kick, 1);
+    float m2L[64]{}, m2R[64]{}, k2L[64]{}, k2R[64]{}, sendL[64]{}, sendR[64]{};
+    float* l2[2] { m2L, k2L }; float* r2[2] { m2R, k2R };
+    sendPlayer.trigger({DrumInstrument::Kick, 0, 1.0f, 0});
+    sendPlayer.renderBuses(l2, r2, 2, 64, sendL, sendR);
+    assert(m2L[10] == 0.0f && k2L[10] > 0.4f && sendL[10] > 0.4f && sendR[10] > 0.4f);
 }

@@ -52,7 +52,11 @@ foreach(test_name IN ITEMS
     midi_tools
     input_conditioner
     mixer_kit
-    realtime_safety)
+    realtime_safety
+    tracking_fixtures
+    performance_features
+    follow_controls
+    lookahead)
   add_executable(test_${test_name} tests/test_${test_name}.cpp)
   target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
   if(MSVC)
@@ -116,6 +120,24 @@ if(ROBODRUMMER_BUILD_JUCE)
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
   )
+
+  # Headless end-to-end checks against the real AudioProcessor (no host or audio device needed).
+  juce_add_console_app(RoboDrummerHarness PRODUCT_NAME "RoboDrummerHarness")
+  juce_generate_juce_header(RoboDrummerHarness)
+  target_sources(RoboDrummerHarness PRIVATE tests/harness/PluginHarness.cpp)
+  target_include_directories(RoboDrummerHarness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_compile_definitions(RoboDrummerHarness PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
+  target_link_libraries(RoboDrummerHarness PRIVATE
+    RoboDrummer
+    juce::juce_audio_utils
+    juce::juce_dsp
+    juce::juce_recommended_config_flags)
+  if(MSVC)
+    target_compile_options(RoboDrummerHarness PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(RoboDrummerHarness PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME plugin_harness COMMAND RoboDrummerHarness)
 
   if(ROBODRUMMER_BUILD_CLAP)
     FetchContent_Declare(
