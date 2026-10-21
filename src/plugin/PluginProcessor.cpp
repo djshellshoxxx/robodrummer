@@ -133,6 +133,9 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     rawKitTune_ = cache(ids::kitTune);
     rawMidiOutChannel_ = cache(ids::midiOutChannel);
     rawGuitarMonitor_ = cache(ids::guitarMonitor);
+    rawRlAmount_ = cache(ids::rlAmount);
+    rawRlSensitivity_ = cache(ids::rlSensitivity);
+    rawRlAccent_ = cache(ids::rlAccentCrash);
     dspParams_ = { cache(ids::drumBusEnabled), cache(ids::drumBusThreshold), cache(ids::drumBusRatio), cache(ids::drumBusKnee),
                    cache(ids::drumBusAttack), cache(ids::drumBusRelease), cache(ids::drumBusMakeup), cache(ids::drumBusDetect),
                    cache(ids::drumBusScHpf), cache(ids::drumBusMix), cache(ids::drumBusDrive), cache(ids::transientShaperEnabled),
@@ -301,6 +304,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
         juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 100.0f, labelled("%")));
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::transientShaperOutput, 1}, "Shaper Output",
         juce::NormalisableRange<float>(-12.0f, 12.0f, 0.1f), 0.0f, labelled("dB")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::rlAmount, 1}, "Riff Lock",
+        juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 0.0f, labelled("%")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::rlSensitivity, 1}, "Riff Sensitivity",
+        juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 50.0f, labelled("%")));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::rlAccentCrash, 1}, "Riff Crash Accents", false));
     return layout;
 }
 
@@ -520,6 +528,10 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
     lastAudioMode_ = leadershipMode_.load(std::memory_order_relaxed);
     midiOut_.ensureSize(8192);
+    if (jam_.lastRiffResult().applied) {
+        riffAdded_.store(jam_.lastRiffResult().added, std::memory_order_relaxed);
+        riffRemoved_.store(jam_.lastRiffResult().removed, std::memory_order_relaxed);
+    }
     drummerStopped_.store(jam_.state().stopped, std::memory_order_relaxed);
     timeScale_.store(jam_.state().timeScale, std::memory_order_relaxed);
 
@@ -534,6 +546,10 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     drumBus_.setParams(readDrumBusParams());
     drumBus_.prepare(sampleRate_, samplesPerBlock);
     setLatencySamples(shaper_.latencySamples() + drumBus_.latencySamples());
+    riffLock_.reset();
+    lowBand_.prepare(sampleRate_);
+    riffBar_ = -1;
+    publishRiffSnapshot(riffLock_.snapshot());
     lastRoomSize_ = -1.0f;
     lastMonitorGain_ = rawGuitarMonitor_ != nullptr ? juce::jlimit(0.0f, 1.0f, rawGuitarMonitor_->load()) : 0.0f;
     masterGain_.reset(sampleRate_, 0.02);
@@ -570,6 +586,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     namespace rd = robodrummer;
 
     const int numSamples = buffer.getNumSamples();
+    blockOnsetCount_ = 0;
     // Output channels that have no matching input (mono or disabled guitar input) contain garbage;
     // this also clears any enabled aux output buses.
     for (int channel = getTotalNumInputChannels(); channel < getTotalNumOutputChannels(); ++channel)
@@ -678,8 +695,11 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             const int n = std::min(AnalysisChunk, numSamples - position);
             conditioner_.process(left + position, right != nullptr ? right + position : nullptr, analysisScratch_.data(), n);
             rhythmAnalyzer_.processBlock(analysisScratch_.data(), n);
+            const float lowRatio = lowBand_.processBlock(analysisScratch_.data(), n);
             for (std::size_t i = 0; i < rhythmAnalyzer_.lastBlockOnsetCount(); ++i) {
                 const auto& onset = rhythmAnalyzer_.lastBlockOnset(i);
+                if (blockOnsetCount_ < blockOnsets_.size())
+                    blockOnsets_[blockOnsetCount_++] = { position + static_cast<int>(onset.sampleOffset), onset.strength, lowRatio };
                 performanceAnalyzer_.noteOnset(static_cast<double>(rhythmAnalyzer_.lastBlockStartSample() + onset.sampleOffset) / sampleRate_, onset.strength);
             }
             performanceAnalyzer_.processBlock(analysisScratch_.data(), n);
@@ -1155,6 +1175,9 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     for (std::size_t i = 0; i < midiCommandCount; ++i)
         handleCommand(midiCommands[i], arrangementEnabled);
 
+    // Riff Lock: learn the guitar's rhythm on the drummer's bar grid and hand the engine the latest snapshot.
+    feedRiffLock(numSamples, rhythm.locked || (hostPositionAvailable && settings.mode == robodrummer::LeadershipMode::DrummerLeads));
+
     // No new hits while the transport is stopped (Drummer Leads) or before the adaptive modes have
     // joined the guitarist; already-ringing voices still render so tails decay naturally instead of freezing.
     const bool hostStopped = transportStopped && settings.mode == robodrummer::LeadershipMode::DrummerLeads;
@@ -1284,6 +1307,78 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     }
     outputPeak_.store(outPeak, std::memory_order_relaxed);
     midi.swapWith(midiOut_);
+}
+
+void RoboDrummerAudioProcessor::publishRiffSnapshot(const robodrummer::RiffSnapshot& snapshot) noexcept {
+    for (std::size_t i = 0; i < riffConsistency_.size(); ++i) {
+        riffConsistency_[i].store(snapshot.consistency[i], std::memory_order_relaxed);
+        riffStrength_[i].store(snapshot.strength[i], std::memory_order_relaxed);
+    }
+    riffConfidence_.store(snapshot.confidence, std::memory_order_relaxed);
+    riffRepetition_.store(snapshot.repetition, std::memory_order_relaxed);
+    riffBarsSeen_.store(snapshot.barsSeen, std::memory_order_relaxed);
+    riffSlots_.store(snapshot.grid.slots, std::memory_order_relaxed);
+    riffSlotsPerBeat_.store(snapshot.grid.slotsPerBeat, std::memory_order_relaxed);
+    riffNumerator_.store(snapshot.grid.numerator, std::memory_order_relaxed);
+    riffDenominator_.store(snapshot.grid.denominator, std::memory_order_relaxed);
+    riffTriplet_.store(snapshot.grid.triplet, std::memory_order_relaxed);
+    riffLocked_.store(snapshot.locked, std::memory_order_release);
+}
+
+robodrummer::RiffSnapshot RoboDrummerAudioProcessor::getRiffSnapshot() const noexcept {
+    robodrummer::RiffSnapshot snapshot;
+    for (std::size_t i = 0; i < riffConsistency_.size(); ++i) {
+        snapshot.consistency[i] = riffConsistency_[i].load(std::memory_order_relaxed);
+        snapshot.strength[i] = riffStrength_[i].load(std::memory_order_relaxed);
+    }
+    snapshot.confidence = riffConfidence_.load(std::memory_order_relaxed);
+    snapshot.repetition = riffRepetition_.load(std::memory_order_relaxed);
+    snapshot.barsSeen = riffBarsSeen_.load(std::memory_order_relaxed);
+    snapshot.grid.slots = riffSlots_.load(std::memory_order_relaxed);
+    snapshot.grid.slotsPerBeat = riffSlotsPerBeat_.load(std::memory_order_relaxed);
+    snapshot.grid.numerator = riffNumerator_.load(std::memory_order_relaxed);
+    snapshot.grid.denominator = riffDenominator_.load(std::memory_order_relaxed);
+    snapshot.grid.triplet = riffTriplet_.load(std::memory_order_relaxed);
+    snapshot.locked = riffLocked_.load(std::memory_order_acquire);
+    return snapshot;
+}
+
+// Audio thread, once per block after the meter and the drummer's bar grid are known. Onsets are quantised onto the
+// drummer's grid (that is where the kick will land); a finished bar is committed before the engine generates the next one.
+void RoboDrummerAudioProcessor::feedRiffLock(int numSamples, bool trackerLocked) noexcept {
+    namespace rd = robodrummer;
+    const auto amountRaw = rawRlAmount_ != nullptr ? rawRlAmount_->load(std::memory_order_relaxed) : 0.0f;
+    const auto sensitivityRaw = rawRlSensitivity_ != nullptr ? rawRlSensitivity_->load(std::memory_order_relaxed) : 50.0f;
+    rd::RiffLockParams params;
+    params.amount = std::isfinite(amountRaw) ? juce::jlimit(0.0f, 1.0f, amountRaw / 100.0f) : 0.0f;
+    params.sensitivity = std::isfinite(sensitivityRaw) ? juce::jlimit(0.0f, 1.0f, sensitivityRaw / 100.0f) : 0.5f;
+    params.accentCrash = rawRlAccent_ != nullptr && rawRlAccent_->load(std::memory_order_relaxed) >= 0.5f;
+
+    riffLock_.configure(effectiveMeterNumerator_.load(std::memory_order_relaxed), effectiveMeterDenominator_.load(std::memory_order_relaxed),
+                        rd::styleFor(getJamStyle()).swing);
+    riffLock_.setTrackerLocked(trackerLocked);
+    bool committed = false;
+    const auto advanceTo = [&](long long bar) {
+        if (riffBar_ < 0 || bar < riffBar_) { riffBar_ = bar; return; } // first block, or a seek / loop wrap: no bar to commit
+        int guard = 0;
+        while (riffBar_ < bar) {
+            ++riffBar_;
+            if (guard++ < 8) { riffLock_.endBar(); committed = true; } // silent bars decay the histogram; a long gap needs no more
+        }
+    };
+    for (std::size_t i = 0; i < blockOnsetCount_; ++i) {
+        long long bar = 0; double phase = 0.0;
+        jam_.barPhaseAt(blockOnsets_[i].offset, bar, phase);
+        advanceTo(bar);
+        riffLock_.addOnset(phase, blockOnsets_[i].strength, blockOnsets_[i].low);
+    }
+    long long lastBar = 0; double ignored = 0.0;
+    jam_.barPhaseAt(std::max(0, numSamples - 1), lastBar, ignored);
+    advanceTo(lastBar);
+    const auto snapshot = riffLock_.snapshot();
+    if (committed) publishRiffSnapshot(snapshot);
+    else riffLocked_.store(snapshot.locked, std::memory_order_release);
+    jam_.setRiffLock(snapshot, params);
 }
 
 void RoboDrummerAudioProcessor::handleCommand(robodrummer::MidiCommand command, bool arrangementEnabled) noexcept {

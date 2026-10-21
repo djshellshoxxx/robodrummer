@@ -107,7 +107,7 @@ juce::StringArray idsFor(PresetType type, RoboDrummerAudioProcessor& processor) 
         case PresetType::Style: add({ ids::jamStyle }); break;
         case PresetType::Drummer:
             add({ ids::drummer, ids::humanize, ids::feel, ids::complexity, ids::fillFrequency, ids::fillLength,
-                  ids::fillComplexity, ids::fillSurprise, ids::crashTendency });
+                  ids::fillComplexity, ids::fillSurprise, ids::crashTendency, ids::rlAmount, ids::rlSensitivity, ids::rlAccentCrash });
             break;
         case PresetType::Kit:
             add({ ids::kit, ids::outputMode, ids::roomSize, ids::kitTune, ids::midiOutChannel,

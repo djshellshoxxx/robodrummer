@@ -12,6 +12,7 @@
 #include "analysis/JamCoordinator.h"
 #include "analysis/PerformanceAnalyzer.h"
 #include "analysis/PhaseFollower.h"
+#include "analysis/RiffLock.h"
 #include "analysis/ResyncPlanner.h"
 #include "analysis/RhythmAnalyzer.h"
 #include "analysis/TimingAuthorityController.h"
@@ -100,6 +101,9 @@ inline constexpr const char* transientShaperAttack = "transientShaperAttack";
 inline constexpr const char* transientShaperSustain = "transientShaperSustain";
 inline constexpr const char* transientShaperMix = "transientShaperMix";
 inline constexpr const char* transientShaperOutput = "transientShaperOutput";
+inline constexpr const char* rlAmount = "rlAmount";
+inline constexpr const char* rlSensitivity = "rlSensitivity";
+inline constexpr const char* rlAccentCrash = "rlAccentCrash";
 inline constexpr std::array<const char*, 8> mixGain { "gain_kick", "gain_snare", "gain_toms", "gain_hihat", "gain_ride", "gain_cymbals", "gain_room", "gain_master" };
 inline constexpr std::array<const char*, 7> mixPan { "pan_kick", "pan_snare", "pan_toms", "pan_hihat", "pan_ride", "pan_cymbals", "pan_room" };
 inline constexpr std::array<const char*, 8> mixMute { "mute_kick", "mute_snare", "mute_toms", "mute_hihat", "mute_ride", "mute_cymbals", "mute_room", "mute_master" };
@@ -291,6 +295,12 @@ public:
     float getDrumBusGainReductionDb() const noexcept { return drumBus_.gainReductionDb(); }
     float getTransientShaperGainDb() const noexcept { return shaper_.gainDb(); }
 
+    // ---- Riff Lock (ANALYSIS tab): copy of the learned riff, safe from any thread ----
+    robodrummer::RiffSnapshot getRiffSnapshot() const noexcept;
+    // Last transform on the audio thread: kicks added / removed / accented in the most recent bar it touched.
+    int getRiffLastAdded() const noexcept { return riffAdded_.load(std::memory_order_relaxed); }
+    int getRiffLastRemoved() const noexcept { return riffRemoved_.load(std::memory_order_relaxed); }
+
     // ---- tempo tools ----
     void tapTempo();
     bool isMidiClockActive() const noexcept { return midiClockActive_.load(std::memory_order_relaxed); }
@@ -413,6 +423,25 @@ private:
         std::atomic<float>* shEnabled{nullptr}; std::atomic<float>* shAttack{nullptr}; std::atomic<float>* shSustain{nullptr};
         std::atomic<float>* shMix{nullptr}; std::atomic<float>* shOutput{nullptr};
     } dspParams_;
+    // Riff Lock learning (audio thread) and its published snapshot (any thread).
+    struct BlockOnset { int offset{0}; float strength{0.0f}; float low{1.0f}; };
+    static constexpr std::size_t MaxBlockOnsets = 64;
+    std::array<BlockOnset, MaxBlockOnsets> blockOnsets_{};
+    std::size_t blockOnsetCount_{0};
+    robodrummer::RiffLock riffLock_;
+    robodrummer::LowBandMeter lowBand_;
+    long long riffBar_{-1};
+    std::atomic<float>* rawRlAmount_{nullptr};
+    std::atomic<float>* rawRlSensitivity_{nullptr};
+    std::atomic<float>* rawRlAccent_{nullptr};
+    std::array<std::atomic<float>, robodrummer::RiffGrid::MaxSlots> riffConsistency_{}, riffStrength_{};
+    std::atomic<float> riffConfidence_{0.0f}, riffRepetition_{0.0f};
+    std::atomic<bool> riffLocked_{false};
+    std::atomic<int> riffBarsSeen_{0}, riffSlots_{16}, riffSlotsPerBeat_{4}, riffNumerator_{4}, riffDenominator_{4};
+    std::atomic<bool> riffTriplet_{false};
+    std::atomic<int> riffAdded_{0}, riffRemoved_{0};
+    void feedRiffLock(int numSamples, bool trackerLocked) noexcept;
+    void publishRiffSnapshot(const robodrummer::RiffSnapshot& snapshot) noexcept;
     robodrummer::dsp::DrumBusParams readDrumBusParams() const noexcept;
     robodrummer::dsp::TransientShaperParams readShaperParams() const noexcept;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> masterGain_;

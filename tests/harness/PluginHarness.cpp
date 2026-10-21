@@ -926,6 +926,78 @@ void setupDeterministic(Rig& rig) {
     rig.param("tempoSource", 1); rig.param("bpm", 120.0f); rig.param("humanize", 0.0f); rig.param("outputMode", 0);
 }
 
+// Low palm-muted guitar hits on the given 16th-note slots of a 4/4 bar (E2 with a short decay).
+float riffGuitar(long long sample, double bpm, const std::vector<int>& slots) {
+    const double slotLen = kSampleRate * 60.0 / bpm / 4.0;
+    const double barLen = slotLen * 16.0;
+    const double pos = std::fmod(static_cast<double>(sample), barLen);
+    float out = 0.0f;
+    for (const int slot : slots) {
+        const double d = pos - slot * slotLen;
+        if (d >= 0.0 && d < 0.15 * kSampleRate)
+            out += static_cast<float>(0.7 * std::exp(-d / (0.035 * kSampleRate)) * std::sin(6.2831853 * 82.4 * d / kSampleRate));
+    }
+    return out;
+}
+
+// Kick slots (16th grid, 4/4) per bar from a captured MIDI-only render; position p corresponds to cursor p + 512.
+std::vector<std::array<int, 16>> kickSlotsPerBar(const juce::MidiBuffer& midi, double bpm, int bars) {
+    std::vector<std::array<int, 16>> result(static_cast<std::size_t>(bars));
+    const double slotLen = kSampleRate * 60.0 / bpm / 4.0;
+    const double barLen = slotLen * 16.0;
+    for (const auto m : midi) {
+        const auto msg = m.getMessage();
+        if (!msg.isNoteOn() || msg.getChannel() != 10 || msg.getNoteNumber() != 36) continue;
+        const double cursor = static_cast<double>(m.samplePosition) + kBlock;
+        const int bar = static_cast<int>(cursor / barLen);
+        const int slot = static_cast<int>(std::lround(std::fmod(cursor, barLen) / slotLen)) % 16;
+        if (bar >= 0 && bar < bars) ++result[static_cast<std::size_t>(bar)][static_cast<std::size_t>(slot)];
+    }
+    return result;
+}
+
+void testRiffLock() {
+    section("riff lock wiring");
+    const std::vector<int> riff { 0, 3, 6, 10, 11, 14 };
+    const int bars = 14;
+    const int blocks = static_cast<int>(bars * 16.0 * kSampleRate * 60.0 / 120.0 / 4.0 / kBlock);
+    const auto render = [&](float amount, float sensitivity, bool crash, juce::MidiBuffer* midi, Rig* keep = nullptr) {
+        Rig local; Rig& rig = keep != nullptr ? *keep : local;
+        rig.param("outputMode", 1); rig.param("humanize", 0.0f); rig.param("rlAmount", amount); rig.param("rlSensitivity", sensitivity); rig.param("rlAccentCrash", crash ? 1.0f : 0.0f);
+        rig.playHead.bpm = 120.0;
+        return renderAudio(rig, blocks, [&](long long s) { return riffGuitar(s, 120.0, riff); }, kNoMidi, kNoBlockHook, midi);
+    };
+    juce::MidiBuffer offMidi, onMidi;
+    const Audio off = render(0.0f, 50.0f, false, &offMidi);
+    // amount 0 is bit-identical whatever the other riff parameters say.
+    const Audio offOther = render(0.0f, 100.0f, true, nullptr);
+    CHECK(off == offOther);
+    Rig onRig;
+    render(100.0f, 100.0f, false, &onMidi, &onRig);
+    const auto base = kickSlotsPerBar(offMidi, 120.0, bars);
+    const auto locked = kickSlotsPerBar(onMidi, 120.0, bars);
+    const std::vector<int> offBeat { 3, 6, 11, 14 }; // riff slots the plain Rock groove never plays a kick on
+    const auto count = [&](const std::vector<std::array<int, 16>>& k, int from, int to) { int n = 0; for (int b = from; b < to; ++b) for (const int s : offBeat) n += k[static_cast<std::size_t>(b)][static_cast<std::size_t>(s)]; return n; };
+    const int baseHits = count(base, 6, bars), lockedHits = count(locked, 6, bars);
+    CHECK_MSG(lockedHits >= baseHits + 6, "riff kicks after lock %d vs baseline %d", lockedHits, baseHits);
+    CHECK_MSG(count(locked, 0, 2) <= count(base, 0, 2) + 1, "no riff kicks before the riff is learned (%d)", count(locked, 0, 2));
+    const auto countNote = [](const juce::MidiBuffer& m, int note) { int n = 0; for (const auto e : m) if (e.getMessage().isNoteOn() && e.getMessage().getNoteNumber() == note) ++n; return n; };
+    CHECK_MSG(countNote(onMidi, 38) == countNote(offMidi, 38), "snare hits %d vs %d", countNote(onMidi, 38), countNote(offMidi, 38));
+    CHECK(countNote(onMidi, 36) > countNote(offMidi, 36));
+    const auto snap = onRig.processor.getRiffSnapshot();
+    CHECK_MSG(snap.locked && snap.confidence > 0.5f, "locked %d confidence %f", snap.locked ? 1 : 0, static_cast<double>(snap.confidence));
+    CHECK_MSG(snap.consistency[3] > 0.5f && snap.consistency[6] > 0.5f && snap.consistency[1] < 0.3f, "consistency %f %f %f", static_cast<double>(snap.consistency[3]), static_cast<double>(snap.consistency[6]), static_cast<double>(snap.consistency[1]));
+    // Random input never locks the kick: a noise burst stream leaves the groove (nearly) alone.
+    {
+        std::uint32_t rng = 7u;
+        juce::MidiBuffer noiseMidi;
+        Rig rig; rig.param("outputMode", 1); rig.param("humanize", 0.0f); rig.param("rlAmount", 100.0f); rig.param("rlSensitivity", 50.0f);
+        renderAudio(rig, blocks, [&](long long s) { if (s % 3000 == 0) rng = rng * 1664525u + 1013904223u; const double d = std::fmod(static_cast<double>(s), 3000.0) + (rng >> 20) * 0.0; return static_cast<float>(((rng >> 8) % 1000) / 1000.0 * 0.5 * std::exp(-d / 500.0)); }, kNoMidi, kNoBlockHook, &noiseMidi);
+        const auto noisy = kickSlotsPerBar(noiseMidi, 120.0, bars);
+        CHECK_MSG(count(noisy, 6, bars) <= baseHits + 3, "noise added %d riff-slot kicks", count(noisy, 6, bars) - baseHits);
+    }
+}
+
 void testDrumBusAndShaper() {
     section("drum bus and transient shaper wiring");
     const auto render = [](const std::function<void(Rig&)>& setup, float* minGr = nullptr, float* maxShaperDb = nullptr, float* minShaperDb = nullptr) {
@@ -1198,6 +1270,7 @@ int main(int argc, char** argv) {
     testFuzz();
     testDrumBusAndShaper();
     testBaselineAndMigration();
+    testRiffLock();
     testNewParameterFuzz();
     testSoak(soakMinutes);
     if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, 1040, 720); renderScreenshots(screenshotDir, 900, 640); }

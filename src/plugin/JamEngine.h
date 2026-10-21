@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
 #pragma once
+#include "analysis/RiffLock.h"
 #include "core/FillGenerator.h"
 #include "core/GrooveGenerator.h"
 #include "core/JamState.h"
@@ -37,6 +38,29 @@ public:
         const double clamped = scale < 0.75 ? 0.5 : (scale > 1.5 ? 2.0 : 1.0);
         if (std::abs(clamped - state_.timeScale) > 1.0e-9) { state_.timeScale = clamped; clearBarTargets(); }
     }
+    // Riff Lock: the snapshot is latched per bar (on the first block that touches the bar) so a bar that spans several
+    // audio blocks is generated identically in each of them. amount <= 0 leaves the generator path untouched.
+    void setRiffLock(const RiffSnapshot& snapshot, const RiffLockParams& params) noexcept {
+        pendingRiff_ = snapshot;
+        riffParams_ = params;
+        if (!(riffParams_.amount > 0.0f) || !std::isfinite(riffParams_.amount)) riffParams_.amount = 0.0f;
+    }
+    [[nodiscard]] const RiffLockResult& lastRiffResult() const noexcept { return lastRiffResult_; }
+
+    // Bar index and phase (0..1) of the position `offset` samples after the current cursor, in the current feel.
+    void barPhaseAt(long long offset, long long& bar, double& phase) const noexcept {
+        const long long barSamples = currentBarSamples();
+        const long long position = std::max<long long>(0, sampleCursor_ + offset);
+        bar = position / barSamples;
+        phase = static_cast<double>(position - bar * barSamples) / static_cast<double>(barSamples);
+    }
+    [[nodiscard]] long long currentBarSamples() const noexcept {
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return 1;
+        const double spb = sampleRate_ * 60.0 / effectiveBpm * (4.0 / static_cast<double>(denominator_));
+        return std::max<long long>(1, static_cast<long long>(std::llround(spb * numerator_)));
+    }
+
     void syncToPpq(double ppqPosition) noexcept {
         if (!std::isfinite(ppqPosition)) return;
         if (!(bpm_ > 0.0) || !(sampleRate_ > 0.0)) return;
@@ -177,8 +201,26 @@ public:
             ctx.feelMs = feelMs_;
             ctx.complexity = complexity_;
             ctx.crashScale = crashScale_;
-            const auto eventCount = generator_.generateBar(style_, ctx, events);
             const long long barStart = bar * barSamples;
+            std::size_t eventCount;
+            if (riffParams_.amount > 0.0f) {
+                if (bar != riffLatchBar_) { riffSnapshot_ = pendingRiff_; riffLatchBar_ = bar; }
+                const bool fillBar = fillPlanned && barStart < fillEndSample && barStart + barSamples > fillStartSample;
+                if (riffSnapshot_.locked && !fillBar) {
+                    // Generate un-humanized, let the kick follow the riff, then humanize so added hits get the same feel.
+                    GrooveContext plain = ctx;
+                    plain.humanize = 0.0f;
+                    plain.feelMs = 0.0f;
+                    eventCount = generator_.generateBar(style_, plain, events);
+                    lastRiffResult_ = RiffLockTransform::apply(events, eventCount, ctx, style_, riffSnapshot_, riffParams_, ctx.seed);
+                    eventCount = lastRiffResult_.count;
+                    GrooveGenerator::humanizeBar(style_, ctx, static_cast<int>(barSamples), events, eventCount);
+                } else {
+                    eventCount = generator_.generateBar(style_, ctx, events);
+                }
+            } else {
+                eventCount = generator_.generateBar(style_, ctx, events);
+            }
             for (std::size_t i = 0; i < eventCount && count < capacity; ++i) {
                 const long long absolute = barStart + events[i].sampleOffset;
                 if (absolute >= blockStart && absolute < blockEnd && absolute < outroCutoff) {
@@ -249,5 +291,10 @@ private:
     Style style_{Style::basicRock()};
     GrooveGenerator generator_{};
     JamState state_{};
+    RiffSnapshot pendingRiff_{};
+    RiffSnapshot riffSnapshot_{};
+    RiffLockParams riffParams_{};
+    RiffLockResult lastRiffResult_{};
+    long long riffLatchBar_{-1};
 };
 }

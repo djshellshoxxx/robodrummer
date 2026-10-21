@@ -1,5 +1,7 @@
 # 03 Riff Lock
 
+Status: Implemented (core+processor wiring); UI pending
+
 ## Purpose & user value
 The kick (and optionally a crash accent) mirrors the guitarist's low-note / palm-muted riff rhythm, so the drummer plays WITH the riff instead of beside it. It learns the riff continuously, only acts when the riff is clearly repeating, and does nothing on noodling.
 

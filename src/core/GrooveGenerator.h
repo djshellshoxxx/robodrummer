@@ -207,6 +207,14 @@ public:
         return count;
     }
 
+    // Public so a post-generation transform (Riff Lock) can run on the un-humanized bar and the humanizer afterwards.
+    // generateBar() calls this with the same context, so humanizing a transformed bar here matches its normal timing feel.
+    template <std::size_t Capacity>
+    static void humanizeBar(const Style& style, const GrooveContext& context, int barSamples,
+                            std::array<DrumEvent, Capacity>& out, std::size_t count) noexcept {
+        humanize(style, context, barSamples, out, count);
+    }
+
 private:
     // Style-aware microtiming: triangular (not uniform) jitter scaled by the style's looseness and by tempo,
     // plus a limb-specific bias (snare sits behind the kick, hats slightly ahead) and a global push/lay-back feel.
