@@ -12,6 +12,7 @@
 #include "core/LiveControlPolicy.h"
 #include "core/StyleLibrary.h"
 #include <array>
+#include <chrono>
 #include <cmath>
 
 namespace robodrummer {
@@ -153,11 +154,30 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     for (std::size_t i = 0; i < 6; ++i) rawMixSolo_[i] = cache(ids::mixSolo[i]);
     resetMidiMappingsToDefault();
     syncAllParametersToAtomics();
+    sweepStaleCaptureFiles();
+    {
+        std::error_code ignored;
+        captureDirectory_ = std::filesystem::temp_directory_path(ignored) / "RoboDrummer" / "Capture" /
+                            juce::String::toHexString(juce::Random::getSystemRandom().nextInt64()).toStdString();
+    }
     startTimerHz(30);
 }
 
 RoboDrummerAudioProcessor::~RoboDrummerAudioProcessor() {
     stopTimer();
+    // Drag files must outlive the drop (the target may copy asynchronously), so only files older than 5 minutes go now.
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        if (!captureDirectory_.empty() && fs::exists(captureDirectory_, ec)) {
+            const auto cutoff = fs::file_time_type::clock::now() - std::chrono::minutes(5);
+            for (const auto& entry : fs::directory_iterator(captureDirectory_, ec)) {
+                std::error_code fileError;
+                if (entry.is_regular_file(fileError) && entry.last_write_time(fileError) < cutoff) fs::remove(entry.path(), fileError);
+            }
+            fs::remove(captureDirectory_, ec); // only succeeds when empty
+        }
+    }
     kitLoader_.removeAllJobs(true, 15000);
     for (const auto* id : kParameterIds)
         parameters_.removeParameterListener(id, this);
@@ -384,6 +404,7 @@ void RoboDrummerAudioProcessor::timerCallback() {
         publish(robodrummer::ParamIDs::jamStyle, static_cast<float>(jamStyle_.load(std::memory_order_relaxed)));
 
     drainMidiLearnToParameters();
+    capture_.drain();
 
     // Kit selection and loading happen here (message thread) and on the loader thread, never on the audio thread.
     const int kitChoice = choiceIndex(rawKit_, robodrummer::kKitChoiceCount);
@@ -1298,6 +1319,18 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                              roomL_.data() + from, roomR_.data() + from);
     };
 
+    {
+        robodrummer::CaptureBlock captureBlock;
+        captureBlock.hostPpqValid = hasPpq;
+        captureBlock.ppq = hostPpq;
+        captureBlock.playing = !(hostStopped || waitingToJoin);
+        captureBlock.bpm = authority.outputBpm;
+        captureBlock.numerator = numerator;
+        captureBlock.denominator = denominator;
+        captureBlock.numSamples = numSamples;
+        captureBlock.sampleRate = sampleRate_;
+        capture_.onBlock(captureBlock);
+    }
     int renderedUntil = 0;
     for (std::size_t i = 0; i < eventCount; ++i) {
         const auto offset = juce::jlimit(0, juce::jmax(0, numSamples - 1), events[i].sampleOffset);
@@ -1313,6 +1346,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                 midiOut_.addEvent(juce::MidiMessage::noteOff(outChannel, note), juce::jmin(numSamples - 1, offset + 1));
             }
         }
+        if (midiNoteFor(events[i].instrument) >= 0)
+            capture_.noteAtSample(offset, events[i].instrument, events[i].velocity);
         renderedUntil = std::max(renderedUntil, offset);
     }
     renderSpan(renderedUntil, numSamples - renderedUntil);
@@ -1391,6 +1426,101 @@ void RoboDrummerAudioProcessor::publishRiffSnapshot(const robodrummer::RiffSnaps
     riffDenominator_.store(snapshot.grid.denominator, std::memory_order_relaxed);
     riffTriplet_.store(snapshot.grid.triplet, std::memory_order_relaxed);
     riffLocked_.store(snapshot.locked, std::memory_order_release);
+}
+
+robodrummer::DrumMap RoboDrummerAudioProcessor::captureDrumMap() const noexcept {
+    robodrummer::DrumMap map;
+    for (std::size_t i = 0; i < map.note.size(); ++i)
+        map.note[i] = static_cast<std::int16_t>(drumNotes_[i].load(std::memory_order_relaxed));
+    return map;
+}
+
+void RoboDrummerAudioProcessor::drainCapture() { capture_.drain(); }
+void RoboDrummerAudioProcessor::requestCaptureClear() { capture_.requestClear(); }
+
+robodrummer::CaptureResult RoboDrummerAudioProcessor::buildCaptureFile(int bars, juce::MemoryBlock& midiFile) {
+    capture_.drain();
+    robodrummer::CaptureRequest request;
+    request.bars = bars;
+    request.map = captureDrumMap();
+    std::vector<std::uint8_t> bytes;
+    const auto result = capture_.exportSmf(request, bytes);
+    midiFile.reset();
+    if (result.status == robodrummer::CaptureStatus::Ok) midiFile.append(bytes.data(), bytes.size());
+    return result;
+}
+
+juce::File RoboDrummerAudioProcessor::writeCaptureTempFile(int bars, robodrummer::CaptureResult* resultOut) {
+    namespace fs = std::filesystem;
+    juce::MemoryBlock data;
+    const auto result = buildCaptureFile(bars, data);
+    if (resultOut != nullptr) *resultOut = result;
+    if (result.status != robodrummer::CaptureStatus::Ok || captureDirectory_.empty()) return {};
+
+    std::error_code ec;
+    fs::create_directories(captureDirectory_, ec);
+    if (ec) { if (resultOut != nullptr) resultOut->status = robodrummer::CaptureStatus::WriteFailed; return {}; }
+
+    // File names are limited to [A-Za-z0-9_-]; the style, tempo and length make a dropped clip self-describing.
+    const auto styleIndex = juce::jlimit(0, robodrummer::kJamStyleCount - 1, static_cast<int>(getJamStyle()));
+    const juce::String style = juce::String(robodrummer::kJamStyleNames[static_cast<std::size_t>(styleIndex)]).retainCharacters("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789");
+    const auto bpm = juce::roundToInt(effectiveDrummerBpm_.load(std::memory_order_relaxed));
+    const juce::String stem = "RoboDrummer_" + (style.isEmpty() ? juce::String("Groove") : style) + "_" + juce::String(bpm) + "bpm_" + juce::String(result.bars) + "bars";
+    fs::path path = captureDirectory_ / (stem + ".mid").toStdString();
+    for (int n = 2; fs::exists(path, ec) && n < 1000; ++n)
+        path = captureDirectory_ / (stem + "_" + juce::String(n) + ".mid").toStdString();
+    const juce::File file(juce::String(path.string()));
+    if (!file.replaceWithData(data.getData(), data.getSize())) {
+        if (resultOut != nullptr) resultOut->status = robodrummer::CaptureStatus::WriteFailed;
+        return {};
+    }
+    // Keep at most 20 drag files per instance (oldest first).
+    std::vector<std::pair<fs::file_time_type, fs::path>> files;
+    for (const auto& entry : fs::directory_iterator(captureDirectory_, ec)) {
+        std::error_code fileError;
+        if (entry.is_regular_file(fileError)) files.emplace_back(entry.last_write_time(fileError), entry.path());
+    }
+    std::sort(files.begin(), files.end());
+    for (std::size_t i = 0; files.size() - i > 20; ++i) { std::error_code removeError; fs::remove(files[i].second, removeError); }
+    return file;
+}
+
+juce::String RoboDrummerAudioProcessor::getCaptureStatusText(int bars) {
+    capture_.drain();
+    robodrummer::CaptureRequest request;
+    request.bars = bars;
+    request.map = captureDrumMap();
+    robodrummer::MidiExportData data;
+    const auto result = capture_.buildExport(request, data);
+    switch (result.status) {
+        case robodrummer::CaptureStatus::Ok: {
+            juce::String text = "Ready: " + juce::String(result.bars) + (result.bars == 1 ? " bar (" : " bars (") + juce::String(juce::roundToInt(result.seconds)) + " s)";
+            if (capture_.droppedCount() > 0) text << ". Capture full, oldest bars dropped";
+            return text;
+        }
+        case robodrummer::CaptureStatus::Empty: return "Nothing captured yet";
+        case robodrummer::CaptureStatus::InvalidRequest: return "Pick a capture length";
+        case robodrummer::CaptureStatus::WriteFailed: break;
+    }
+    return "Could not create MIDI file";
+}
+
+void RoboDrummerAudioProcessor::sweepStaleCaptureFiles() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const auto root = fs::temp_directory_path(ec) / "RoboDrummer" / "Capture";
+    if (ec || !fs::exists(root, ec)) return;
+    const auto cutoff = fs::file_time_type::clock::now() - std::chrono::hours(24);
+    for (const auto& instance : fs::directory_iterator(root, ec)) {
+        std::error_code entryError;
+        if (!instance.is_directory(entryError)) continue;
+        for (const auto& file : fs::directory_iterator(instance.path(), entryError)) {
+            std::error_code fileError;
+            if (file.is_regular_file(fileError) && file.last_write_time(fileError) < cutoff) fs::remove(file.path(), fileError);
+        }
+        std::error_code removeError;
+        fs::remove(instance.path(), removeError); // only succeeds when the directory is empty
+    }
 }
 
 void RoboDrummerAudioProcessor::resetAutoMeter() noexcept {

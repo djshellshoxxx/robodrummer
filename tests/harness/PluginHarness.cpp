@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <functional>
 #include <new>
+#include "../smf_test_parser.h"
 
 static std::atomic<long long> gAllocations{0};
 static std::atomic<bool> gCounting{false};
@@ -1119,6 +1120,74 @@ void testAutoMeter() {
     }
 }
 
+void testMidiCapture() {
+    section("MIDI capture and export wiring");
+    {   // empty before anything played
+        Rig rig;
+        juce::MemoryBlock block;
+        const auto result = rig.processor.buildCaptureFile(4, block);
+        CHECK(result.status == robodrummer::CaptureStatus::Empty && block.getSize() == 0);
+        CHECK(rig.processor.getCaptureStatusText(4) == "Nothing captured yet");
+    }
+    Rig rig;
+    rig.param("humanize", 0.6f);   // humanization offsets must survive into the file
+    rig.processor.setMidiDrumNote(robodrummer::DrumInstrument::Kick, 35);
+    const int blocks = 1000;
+    juce::MidiBuffer played;
+    renderAudio(rig, blocks, kSilence, kNoMidi, kNoBlockHook, &played);
+    rig.processor.drainCapture();
+    CHECK_MSG(rig.processor.getCaptureStatusText(4).startsWith("Ready: 4 bars ("), "status '%s'", rig.processor.getCaptureStatusText(4).toRawUTF8());
+    juce::MemoryBlock block;
+    const auto result = rig.processor.buildCaptureFile(4, block);
+    CHECK(result.status == robodrummer::CaptureStatus::Ok && result.bars == 4);
+    std::vector<std::uint8_t> bytes(static_cast<const std::uint8_t*>(block.getData()), static_cast<const std::uint8_t*>(block.getData()) + block.getSize());
+    const auto file = smf::parse(bytes);
+    CHECK(file.format == 1 && file.ntrks == 2 && file.division == 960);
+    int fileNotes = 0, fileKicks = 0, wrongNote = 0;
+    bool tempoSeen = false, meterSeen = false;
+    for (const auto& track : file.tracks)
+        for (const auto& e : track.ev) {
+            if (e.status == 0x99) { ++fileNotes; fileKicks += e.d1 == 35 ? 1 : 0; if (e.d1 == 36) ++wrongNote; }
+            if (e.status == 0xFF && e.metaType == 0x51) tempoSeen = true;
+            if (e.status == 0xFF && e.metaType == 0x58) meterSeen = true;
+        }
+    CHECK(tempoSeen && meterSeen);
+    CHECK_MSG(wrongNote == 0 && fileKicks > 0, "custom drum map not applied (kick %d, GM kick %d)", fileKicks, wrongNote);
+    // Expected count: drum hits inside the last four completed bars of the host timeline.
+    const double barLen = kSampleRate * 60.0 / 120.0 * 4.0;
+    const double latest = static_cast<double>(blocks + 1) * kBlock;
+    const int completed = static_cast<int>(latest / barLen);
+    int expected = 0;
+    for (const auto m : played) {
+        const auto msg = m.getMessage();
+        if (!msg.isNoteOn() || msg.getChannel() != 10) continue;
+        const double cursor = static_cast<double>(m.samplePosition) + kBlock;
+        if (cursor >= (completed - 4) * barLen && cursor < completed * barLen) ++expected;
+    }
+    CHECK_MSG(fileNotes == expected, "file has %d notes, expected %d", fileNotes, expected);
+    CHECK(fileNotes > 20);
+    // Temp file for drag-and-drop.
+    robodrummer::CaptureResult dragResult;
+    const auto temp = rig.processor.writeCaptureTempFile(4, &dragResult);
+    CHECK(temp.existsAsFile() && temp.getSize() == static_cast<juce::int64>(block.getSize()));
+    CHECK_MSG(temp.getFileName().matchesWildcard("RoboDrummer_*_*bpm_4bars.mid", false), "name %s", temp.getFileName().toRawUTF8());
+    CHECK(temp.getFullPathName().contains("RoboDrummer"));
+    const auto second = rig.processor.writeCaptureTempFile(4);
+    CHECK(second.existsAsFile() && second != temp);
+    for (int i = 0; i < 25; ++i) rig.processor.writeCaptureTempFile(8);
+    int remaining = 0;
+    for (const auto& f : temp.getParentDirectory().findChildFiles(juce::File::findFiles, false, "*.mid")) { ++remaining; (void) f; }
+    CHECK_MSG(remaining <= 20, "%d drag files kept", remaining);
+    // Start-up sweep removes stale files from earlier sessions and empty instance directories.
+    const auto stale = temp.getParentDirectory().getParentDirectory().getChildFile("0000stale").getChildFile("old.mid");
+    stale.create();
+    stale.setLastModificationTime(juce::Time::getCurrentTime() - juce::RelativeTime::days(3));
+    RoboDrummerAudioProcessor::sweepStaleCaptureFiles();
+    CHECK(!stale.exists() && !stale.getParentDirectory().exists());
+    rig.processor.requestCaptureClear();
+    CHECK(rig.processor.buildCaptureFile(4, block).status == robodrummer::CaptureStatus::Empty);
+}
+
 void testDrumBusAndShaper() {
     section("drum bus and transient shaper wiring");
     const auto render = [](const std::function<void(Rig&)>& setup, float* minGr = nullptr, float* maxShaperDb = nullptr, float* minShaperDb = nullptr) {
@@ -1394,6 +1463,7 @@ int main(int argc, char** argv) {
     testRiffLock();
     testVirtualLimbs();
     testAutoMeter();
+    testMidiCapture();
     testNewParameterFuzz();
     testSoak(soakMinutes);
     if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, 1040, 720); renderScreenshots(screenshotDir, 900, 640); }

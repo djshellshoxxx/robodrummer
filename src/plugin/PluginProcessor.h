@@ -30,6 +30,7 @@
 #include "core/JamStyleProfile.h"
 #include "core/Lookahead.h"
 #include "core/MeterSelection.h"
+#include "core/MidiCapture.h"
 #include "core/MidiClockTracker.h"
 #include "core/MidiLearn.h"
 #include "core/Mixer.h"
@@ -41,6 +42,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 
 namespace robodrummer::ParamIDs {
@@ -323,6 +325,22 @@ public:
     int getRiffLastAdded() const noexcept { return riffAdded_.load(std::memory_order_relaxed); }
     int getRiffLastRemoved() const noexcept { return riffRemoved_.load(std::memory_order_relaxed); }
 
+    // ---- MIDI capture and export (message thread only, except where noted) ----
+    // The recorder runs on the audio thread all the time. drainCapture() moves recorded hits into history (the 30 Hz
+    // timer already does this; call it before reading a summary or exporting). bars: 4 / 8 / 16 / 32, or 0 for everything
+    // since the start (capped at 10 minutes). The drum map in the file is the user's MIDI drum map (SETTINGS -> EDIT DRUM MAP).
+    void drainCapture();
+    void requestCaptureClear();
+    robodrummer::CaptureResult buildCaptureFile(int bars, juce::MemoryBlock& midiFile);
+    // Same data written to <temp>/RoboDrummer/Capture/<instance>/RoboDrummer_<style>_<bpm>bpm_<N>bars.mid for drag-and-drop;
+    // returns an invalid File (and the reason in `result`) when there is nothing to export or the write failed.
+    juce::File writeCaptureTempFile(int bars, robodrummer::CaptureResult* result = nullptr);
+    // Status line for the Capture panel: "Ready: 8 bars (16 s)", "Nothing captured yet", ...
+    juce::String getCaptureStatusText(int bars);
+    std::uint32_t getCaptureDroppedCount() const noexcept { return capture_.droppedCount(); }
+    // Removes stale drag files (older than 24 h) left by earlier sessions; also runs once at start-up.
+    static void sweepStaleCaptureFiles();
+
     // ---- Automatic meter (ANALYSIS tab, under the meter selector) ----
     robodrummer::AutoMeterStatus getAutoMeterStatus() const noexcept;
     juce::String getAutoMeterReadout() const; // "Auto meter: 3/4 (82%)", "Auto meter: --" or "Auto meter: off"
@@ -470,6 +488,9 @@ private:
     std::atomic<bool> riffTriplet_{false};
     std::atomic<int> riffAdded_{0}, riffRemoved_{0};
     void feedRiffLock(int numSamples, bool trackerLocked) noexcept;
+    robodrummer::MidiCapture<> capture_;
+    std::filesystem::path captureDirectory_;
+    robodrummer::DrumMap captureDrumMap() const noexcept;
     // Automatic meter (audio thread).
     robodrummer::MeterDetector meterDetector_;
     robodrummer::AutoMeterGate meterGate_;
