@@ -903,6 +903,7 @@ public:
             const int t = target_.getSelectedId() - 1;
             if (map.armedTarget() == t) map.cancelLearn(); else map.armTarget(t);
         };
+        clearCc_.setTooltip("Remove the controller assigned to the selected target.");
         clearCc_.onClick = [this] { processor_.getMidiLearn().unbindTarget(target_.getSelectedId() - 1); refresh(); };
         defaults_.setTooltip("Restore the default note commands (channel 16) and the expression-pedal controllers.");
         defaults_.onClick = [this] { processor_.resetMidiMappingsToDefault(); refresh(); };

@@ -1707,6 +1707,60 @@ void testPresetFuzz() {
     CHECK_MSG(original->getChildByName("Arrangement") != nullptr, "Jam presets must carry the arrangement slots");
 }
 
+
+// Feature audit: every parameter driven to its extremes (0, 1, random) while MIDI commands, CCs and odd block sizes arrive,
+// with parameters re-rolled in mid-run (the host-automation case). Output must stay finite, tempo sane, MIDI valid.
+void testExtremeParameterFuzz() {
+    section("fuzz: all 110 parameters at extremes with commands, CCs and random block sizes");
+    std::uint32_t rng = 0xA11F0004u;
+    const auto next = [&] { rng = rng * 1664525u + 1013904223u; return rng >> 8; };
+    int badOutput = 0, badBpm = 0, badMidi = 0, badParam = 0;
+    for (int round = 0; round < 60; ++round) {
+        Rig rig(round % 4 == 0);
+        const auto reroll = [&] {
+            for (auto* parameter : rig.processor.getParameters().processor.getParameters()) {
+                switch (next() % 5) {
+                    case 0: parameter->setValueNotifyingHost(0.0f); break;
+                    case 1: parameter->setValueNotifyingHost(1.0f); break;
+                    case 2: parameter->setValueNotifyingHost(static_cast<float>(next() % 1001) / 1000.0f); break;
+                    default: break;
+                }
+            }
+        };
+        reroll();
+        if (round % 2 == 0) { rig.processor.startAutoSetup(1.0f); }
+        for (int b = 0; b < 140; ++b) {
+            if (b % 25 == 24) { reroll(); if (round % 5 == 0) pump(5); }
+            const int size = round % 7 == 0 ? 1 + static_cast<int>(next() % 40) : 1 + static_cast<int>(next() % 1500);
+            juce::AudioBuffer<float> buffer(rig.numChannels, size);
+            for (int c = 0; c < rig.numChannels; ++c) for (int i = 0; i < size; ++i) buffer.setSample(c, i, c < 2 ? (((next() % 2000) / 1000.0f - 1.0f) * 0.6f) : 0.0f);
+            juce::MidiBuffer midi;
+            for (int e = static_cast<int>(next() % 6); e > 0; --e) {
+                const int pos = static_cast<int>(next() % static_cast<unsigned>(size));
+                switch (next() % 4) {
+                    case 0: midi.addEvent(juce::MidiMessage::noteOn(16, 36 + static_cast<int>(next() % 20), 1.0f), pos); break;
+                    case 1: midi.addEvent(juce::MidiMessage::controllerEvent(1 + static_cast<int>(next() % 16), static_cast<int>(next() % 128), static_cast<int>(next() % 128)), pos); break;
+                    case 2: midi.addEvent(juce::MidiMessage(0xF8), pos); break;
+                    default: midi.addEvent(juce::MidiMessage::noteOn(1 + static_cast<int>(next() % 16), static_cast<int>(next() % 128), static_cast<juce::uint8>(1 + next() % 127)), pos); break;
+                }
+            }
+            rig.processor.processBlock(buffer, midi);
+            for (int c = 0; c < 2; ++c) for (int i = 0; i < size; ++i) { const float v = buffer.getSample(c, i); if (!std::isfinite(v) || std::abs(v) > 64.0f) { ++badOutput; c = 2; break; } }
+            for (const auto m : midi) if (m.samplePosition < 0 || m.samplePosition >= size) ++badMidi;
+            const double bpm = rig.processor.getEffectiveDrummerBpm();
+            if (!(std::isfinite(bpm) && bpm >= 20.0 && bpm <= 400.0)) ++badBpm;
+        }
+        for (auto* parameter : rig.processor.getParameters().processor.getParameters()) { const float v = parameter->getValue(); if (!(v >= 0.0f && v <= 1.0f)) ++badParam; }
+        rig.processor.cancelAutoSetup();
+        rig.processor.requestCaptureClear();
+        rig.processor.drainCapture();
+    }
+    CHECK_MSG(badOutput == 0, "%d blocks with non-finite or huge output", badOutput);
+    CHECK_MSG(badBpm == 0, "%d blocks with out-of-range tempo", badBpm);
+    CHECK_MSG(badMidi == 0, "%d MIDI events outside their block", badMidi);
+    CHECK_MSG(badParam == 0, "%d parameters out of range", badParam);
+}
+
 // Feature audit: the limb model must judge hits against the EFFECTIVE tempo, so double-time, half-time and riff-locked kicks stay playable.
 void testLimbsWithTimeFeelAndRiffLock() {
     section("feature audit: virtual limbs x double-time / half-time x riff lock x fills");
@@ -2004,7 +2058,7 @@ void testEditorUi() {
         for (int tab = 0; tab < RoboDrummerAudioProcessorEditor::TabCount; ++tab) {
             ed.showTabForTest(tab);
             pump(30);
-            int untitled = 0, tiny = 0, outside = 0;
+            int untitled = 0, tiny = 0, outside = 0, noTooltip = 0, noHandler = 0;
             visitAll(ed, [&](juce::Component& c) {
                 if (!c.isVisible() || c.getParentComponent() == nullptr) return;
                 const bool widget = dynamic_cast<juce::Slider*>(&c) || dynamic_cast<juce::ComboBox*>(&c) || dynamic_cast<juce::ToggleButton*>(&c) || dynamic_cast<juce::TextButton*>(&c);
@@ -2015,10 +2069,19 @@ void testEditorUi() {
                     if (c.getTitle().isEmpty() && c.getName().isEmpty()) ++untitled;
                     if (c.getTitle().isEmpty() && c.getName().isNotEmpty() && dynamic_cast<juce::Slider*>(&c)) ++untitled;
                 }
+                if (auto* button = dynamic_cast<juce::TextButton*>(&c)) {   // every push button explains itself (tooltip or accessibility description)
+                    if (button->getTooltip().isEmpty() && button->getDescription().isEmpty()) { ++noTooltip; std::printf("   no tooltip: tab %d button '%s' id '%s'\n", tab, button->getButtonText().toRawUTF8(), button->getComponentID().toRawUTF8()); }
+                }
+                if (auto* button = dynamic_cast<juce::Button*>(&c)) {       // a visible button that does nothing is a dead control
+                    const bool bound = c.getProperties().contains("paramID") || button->getRadioGroupId() != 0;
+                    if (!bound && !button->onClick && !button->onStateChange) { ++noHandler; std::printf("   no handler: tab %d button '%s' id '%s'\n", tab, button->getButtonText().toRawUTF8(), button->getComponentID().toRawUTF8()); }
+                }
                 if (c.getWidth() < 18 || c.getHeight() < 14) ++tiny;
                 if (!ed.getLocalBounds().contains(ed.getLocalArea(&c, c.getLocalBounds()))) ++outside;
             });
             CHECK_MSG(untitled == 0 && tiny == 0 && outside == 0, "tab %s size %d: untitled %d tiny %d outside %d", RoboDrummerAudioProcessorEditor::tabName(tab), size, untitled, tiny, outside);
+            CHECK_MSG(noHandler == 0, "tab %s size %d: %d buttons without a click handler", RoboDrummerAudioProcessorEditor::tabName(tab), size, noHandler);
+            CHECK_MSG(noTooltip == 0, "tab %s size %d: %d push buttons without tooltip/description", RoboDrummerAudioProcessorEditor::tabName(tab), size, noTooltip);
         }
     }
 
@@ -2482,6 +2545,7 @@ int main(int argc, char** argv) {
 
     if (featuresOnly) {
         testPresetFuzz();
+        testExtremeParameterFuzz();
         testLimbsWithTimeFeelAndRiffLock();
         testFeatureInteractionsAndRealtime();
         std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
@@ -2520,6 +2584,7 @@ int main(int argc, char** argv) {
     testPracticeMode();
     testNewParameterFuzz();
     testPresetFuzz();
+    testExtremeParameterFuzz();
     testLimbsWithTimeFeelAndRiffLock();
     testFeatureInteractionsAndRealtime();
     testEditorUi();
