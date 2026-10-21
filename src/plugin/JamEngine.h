@@ -8,6 +8,7 @@
 #include "core/FillGenerator.h"
 #include "core/GrooveGenerator.h"
 #include "core/JamState.h"
+#include "core/LimbModel.h"
 #include "core/Style.h"
 #include <algorithm>
 #include <array>
@@ -46,6 +47,13 @@ public:
         if (!(riffParams_.amount > 0.0f) || !std::isfinite(riffParams_.amount)) riffParams_.amount = 0.0f;
     }
     [[nodiscard]] const RiffLockResult& lastRiffResult() const noexcept { return lastRiffResult_; }
+
+    // Virtual limbs: 0 = off (the original emission path, bit-exact), 1 = fully realistic. With the model on, each bar's
+    // groove, riff-locked kicks and planned fill hits are merged into one bar before it is sliced into audio blocks.
+    void setLimbAmount(float amount) noexcept { limbAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 0.0f; }
+    [[nodiscard]] const LimbReport& limbReport() const noexcept { return limbReport_; }
+    // Increments every time the model processed a bar (lets the processor publish a fresh summary only when it changed).
+    [[nodiscard]] std::uint32_t limbRevision() const noexcept { return limbRevision_; }
 
     // Bar index and phase (0..1) of the position `offset` samples after the current cursor, in the current feel.
     void barPhaseAt(long long offset, long long& bar, double& phase) const noexcept {
@@ -221,6 +229,45 @@ public:
             } else {
                 eventCount = generator_.generateBar(style_, ctx, events);
             }
+            if (limbAmount_ > 0.0f) {
+                std::array<DrumEvent, 192> bar{};
+                std::size_t n = 0;
+                for (std::size_t i = 0; i < eventCount && n < bar.size(); ++i) {
+                    const long long absolute = barStart + events[i].sampleOffset;
+                    if (absolute >= outroCutoff) continue;
+                    if (fillPlanned && absolute >= fillStartSample && absolute < fillEndSample && events[i].instrument != DrumInstrument::Crash) continue;
+                    bar[n] = events[i];
+                    bar[n].sequence = static_cast<std::uint32_t>(n);
+                    ++n;
+                }
+                if (fillPlanned) {
+                    const auto push = [&](DrumInstrument instrument, long long absolute, float velocity) {
+                        if (absolute >= barStart && absolute < barStart + barSamples && n < bar.size()) {
+                            bar[n] = { instrument, static_cast<int>(absolute - barStart), velocity, static_cast<std::uint32_t>(n) };
+                            ++n;
+                        }
+                    };
+                    for (std::size_t i = 0; i < fillHitCount_; ++i)
+                        push(fillHits_[i].instrument, fillStartSample + static_cast<long long>(std::llround(spb * fillHits_[i].beatOffset)), fillHits_[i].velocity);
+                    if (FillGenerator::endsWithCrash(fillTotalBeats_) && outroFinalBeat_ < 0) push(DrumInstrument::Crash, fillEndSample, 0.95f);
+                }
+                LimbContext limbContext;
+                limbContext.bpm = effectiveBpm;
+                limbContext.sampleRate = sampleRate_;
+                limbContext.numerator = numerator_;
+                limbContext.denominator = denominator_;
+                n = limbs_.process(bar.data(), n, limbContext, limbAmount_, &limbReport_);
+                ++limbRevision_;
+                for (std::size_t i = 0; i < n && count < capacity; ++i) {
+                    const long long absolute = barStart + bar[i].sampleOffset;
+                    if (absolute >= blockStart && absolute < blockEnd) {
+                        auto e = bar[i];
+                        e.sampleOffset = static_cast<int>(absolute - blockStart);
+                        out[count++] = e;
+                    }
+                }
+                continue;
+            }
             for (std::size_t i = 0; i < eventCount && count < capacity; ++i) {
                 const long long absolute = barStart + events[i].sampleOffset;
                 if (absolute >= blockStart && absolute < blockEnd && absolute < outroCutoff) {
@@ -236,13 +283,16 @@ public:
         }
 
         if (fillPlanned) {
-            for (std::size_t i = 0; i < fillHitCount_ && count < capacity; ++i) {
-                const long long absolute = fillStartSample + static_cast<long long>(std::llround(spb * fillHits_[i].beatOffset));
-                if (absolute >= blockStart && absolute < blockEnd)
-                    out[count++] = { fillHits_[i].instrument, static_cast<int>(absolute - blockStart), fillHits_[i].velocity, static_cast<std::uint32_t>(count) };
+            // With the limb model on, fill hits were already merged into (and filtered with) their bar above.
+            if (limbAmount_ <= 0.0f) {
+                for (std::size_t i = 0; i < fillHitCount_ && count < capacity; ++i) {
+                    const long long absolute = fillStartSample + static_cast<long long>(std::llround(spb * fillHits_[i].beatOffset));
+                    if (absolute >= blockStart && absolute < blockEnd)
+                        out[count++] = { fillHits_[i].instrument, static_cast<int>(absolute - blockStart), fillHits_[i].velocity, static_cast<std::uint32_t>(count) };
+                }
+                if (FillGenerator::endsWithCrash(fillTotalBeats_) && outroFinalBeat_ < 0 && fillEndSample >= blockStart && fillEndSample < blockEnd && count < capacity)
+                    out[count++] = { DrumInstrument::Crash, static_cast<int>(fillEndSample - blockStart), 0.95f, static_cast<std::uint32_t>(count) };
             }
-            if (FillGenerator::endsWithCrash(fillTotalBeats_) && outroFinalBeat_ < 0 && fillEndSample >= blockStart && fillEndSample < blockEnd && count < capacity)
-                out[count++] = { DrumInstrument::Crash, static_cast<int>(fillEndSample - blockStart), 0.95f, static_cast<std::uint32_t>(count) };
             if (blockEnd >= fillEndSample) {
                 state_.fillRequested = false;
                 state_.fillImmediate = false;
@@ -296,5 +346,9 @@ private:
     RiffLockParams riffParams_{};
     RiffLockResult lastRiffResult_{};
     long long riffLatchBar_{-1};
+    float limbAmount_{0.0f};
+    LimbModel limbs_{};
+    LimbReport limbReport_{};
+    std::uint32_t limbRevision_{0};
 };
 }

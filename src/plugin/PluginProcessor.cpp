@@ -133,6 +133,7 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     rawKitTune_ = cache(ids::kitTune);
     rawMidiOutChannel_ = cache(ids::midiOutChannel);
     rawGuitarMonitor_ = cache(ids::guitarMonitor);
+    rawLimbAmount_ = cache(ids::limbModelAmount);
     rawRlAmount_ = cache(ids::rlAmount);
     rawRlSensitivity_ = cache(ids::rlSensitivity);
     rawRlAccent_ = cache(ids::rlAccentCrash);
@@ -309,6 +310,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::rlSensitivity, 1}, "Riff Sensitivity",
         juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 50.0f, labelled("%")));
     layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::rlAccentCrash, 1}, "Riff Crash Accents", false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::limbModelAmount, 1}, "Playability",
+        juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 0.0f, labelled("%")));
     return layout;
 }
 
@@ -528,10 +531,6 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
     lastAudioMode_ = leadershipMode_.load(std::memory_order_relaxed);
     midiOut_.ensureSize(8192);
-    if (jam_.lastRiffResult().applied) {
-        riffAdded_.store(jam_.lastRiffResult().added, std::memory_order_relaxed);
-        riffRemoved_.store(jam_.lastRiffResult().removed, std::memory_order_relaxed);
-    }
     drummerStopped_.store(jam_.state().stopped, std::memory_order_relaxed);
     timeScale_.store(jam_.state().timeScale, std::memory_order_relaxed);
 
@@ -996,6 +995,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
     jam_.setTempo(authority.outputBpm);
     jam_.setMeter(numerator, denominator);
+    {
+        const float limbRaw = rawLimbAmount_ != nullptr ? rawLimbAmount_->load(std::memory_order_relaxed) : 0.0f;
+        jam_.setLimbAmount(std::isfinite(limbRaw) ? limbRaw / 100.0f : 0.0f);
+    }
     jam_.setIntensity(effectiveIntensity);
     const auto phraseState = getPhraseState();
     const float phraseAmount = phraseState == robodrummer::PhraseState::Break ? 1.0f : 0.75f;
@@ -1186,6 +1189,23 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     const auto eventCount = (hostStopped || waitingToJoin)
         ? std::size_t{0}
         : jam_.processBlock(numSamples, events.data(), events.size());
+    if (jam_.limbRevision() != limbRevisionSeen_) {
+        limbRevisionSeen_ = jam_.limbRevision();
+        const auto& r = jam_.limbReport();
+        limbValues_[0].store(static_cast<int>(r.inputCount), std::memory_order_relaxed);
+        limbValues_[1].store(static_cast<int>(r.keptCount), std::memory_order_relaxed);
+        limbValues_[2].store(static_cast<int>(r.removedCount), std::memory_order_relaxed);
+        for (std::size_t i = 0; i < 4; ++i) limbValues_[3 + i].store(static_cast<int>(r.removedByReason[i]), std::memory_order_relaxed);
+        limbValues_[7].store(static_cast<int>(r.nonDefaultLimb), std::memory_order_relaxed);
+        limbValues_[8].store(static_cast<int>(r.protectedKept), std::memory_order_relaxed);
+        limbValues_[9].store(static_cast<int>(r.protectedDropped), std::memory_order_relaxed);
+        limbValues_[10].store(r.overflow ? 1 : 0, std::memory_order_relaxed);
+        limbRevisionPublished_.store(limbRevisionSeen_, std::memory_order_release);
+    }
+    if (jam_.lastRiffResult().applied) {
+        riffAdded_.store(jam_.lastRiffResult().added, std::memory_order_relaxed);
+        riffRemoved_.store(jam_.lastRiffResult().removed, std::memory_order_relaxed);
+    }
     drummerStopped_.store(jam_.state().stopped, std::memory_order_relaxed);
     timeScale_.store(jam_.state().timeScale, std::memory_order_relaxed);
     drummerBeatInBar_.store(jam_.currentBeatInBar(), std::memory_order_relaxed);
@@ -1323,6 +1343,20 @@ void RoboDrummerAudioProcessor::publishRiffSnapshot(const robodrummer::RiffSnaps
     riffDenominator_.store(snapshot.grid.denominator, std::memory_order_relaxed);
     riffTriplet_.store(snapshot.grid.triplet, std::memory_order_relaxed);
     riffLocked_.store(snapshot.locked, std::memory_order_release);
+}
+
+robodrummer::LimbSummary RoboDrummerAudioProcessor::getLimbSummary() const noexcept {
+    robodrummer::LimbSummary summary;
+    summary.revision = limbRevisionPublished_.load(std::memory_order_acquire);
+    summary.input = limbValues_[0].load(std::memory_order_relaxed);
+    summary.kept = limbValues_[1].load(std::memory_order_relaxed);
+    summary.removed = limbValues_[2].load(std::memory_order_relaxed);
+    for (std::size_t i = 0; i < 4; ++i) summary.byReason[i] = limbValues_[3 + i].load(std::memory_order_relaxed);
+    summary.nonDefaultLimb = limbValues_[7].load(std::memory_order_relaxed);
+    summary.protectedKept = limbValues_[8].load(std::memory_order_relaxed);
+    summary.protectedDropped = limbValues_[9].load(std::memory_order_relaxed);
+    summary.overflow = limbValues_[10].load(std::memory_order_relaxed) != 0;
+    return summary;
 }
 
 robodrummer::RiffSnapshot RoboDrummerAudioProcessor::getRiffSnapshot() const noexcept {

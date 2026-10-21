@@ -998,6 +998,82 @@ void testRiffLock() {
     }
 }
 
+// Re-checks captured MIDI bars with an independent LimbModel run: a bar a drummer could play comes back untouched.
+// Returns the number of hits the model would still remove across all full bars (0 = every captured bar is playable).
+int unplayableHits(const juce::MidiBuffer& midi, double bpm, int bars, int* totalHits = nullptr) {
+    using robodrummer::DrumInstrument;
+    const double barLen = kSampleRate * 60.0 / bpm * 4.0;
+    std::vector<std::vector<robodrummer::DrumEvent>> perBar(static_cast<std::size_t>(bars));
+    for (const auto m : midi) {
+        const auto msg = m.getMessage();
+        if (!msg.isNoteOn() || msg.getChannel() != 10) continue;
+        const double cursor = static_cast<double>(m.samplePosition) + kBlock;
+        const int bar = static_cast<int>(cursor / barLen);
+        if (bar < 0 || bar >= bars) continue;
+        DrumInstrument instrument;
+        switch (msg.getNoteNumber()) {
+            case 36: instrument = DrumInstrument::Kick; break;
+            case 38: instrument = DrumInstrument::Snare; break;
+            case 42: instrument = DrumInstrument::ClosedHat; break;
+            case 46: instrument = DrumInstrument::OpenHat; break;
+            case 51: instrument = DrumInstrument::Ride; break;
+            case 49: instrument = DrumInstrument::Crash; break;
+            case 50: instrument = DrumInstrument::HighTom; break;
+            case 47: instrument = DrumInstrument::MidTom; break;
+            case 43: instrument = DrumInstrument::FloorTom; break;
+            case 37: instrument = DrumInstrument::Rimshot; break;
+            default: continue;
+        }
+        const int offset = static_cast<int>(std::llround(cursor - bar * barLen));
+        perBar[static_cast<std::size_t>(bar)].push_back({ instrument, offset, msg.getFloatVelocity(), static_cast<std::uint32_t>(perBar[static_cast<std::size_t>(bar)].size()) });
+    }
+    int removed = 0, total = 0;
+    for (auto& events : perBar) {
+        if (events.empty() || events.size() > 400) continue;
+        robodrummer::LimbModel model;
+        robodrummer::LimbReport report;
+        robodrummer::LimbContext context; context.bpm = bpm; context.sampleRate = kSampleRate;
+        total += static_cast<int>(events.size());
+        const auto kept = model.process(events.data(), events.size(), context, 1.0f, &report);
+        removed += static_cast<int>(events.size() - kept);
+    }
+    if (totalHits != nullptr) *totalHits = total;
+    return removed;
+}
+
+void testVirtualLimbs() {
+    section("virtual limb model wiring");
+    const int bars = 12;
+    const double bpm = 240.0;
+    const int blocks = static_cast<int>(bars * 4.0 * kSampleRate * 60.0 / bpm / kBlock);
+    const auto render = [&](float amount, juce::MidiBuffer& midi, RoboDrummerAudioProcessor** keep = nullptr, Rig* rig = nullptr) {
+        Rig local; Rig& r = rig != nullptr ? *rig : local;
+        r.param("outputMode", 1); r.param("humanize", 0.0f); r.param("tempoSource", 1); r.param("bpm", static_cast<float>(bpm));
+        r.param("jamStyle", 20); r.param("intensity", 1.0f); r.param("complexity", 1.0f); r.param("fillFrequency", 1.0f);
+        r.param("limbModelAmount", amount);
+        if (keep != nullptr) *keep = &r.processor;
+        return renderAudio(r, blocks, kSilence, [](long long b, juce::MidiBuffer& m) { if (b == 40) m.addEvent(juce::MidiMessage::noteOn(16, 50, 1.0f), 0); }, kNoBlockHook, &midi);
+    };
+    juce::MidiBuffer offMidi, onMidi;
+    render(0.0f, offMidi);
+    Rig on; render(100.0f, onMidi, nullptr, &on);
+    int offTotal = 0, onTotal = 0;
+    const int offBad = unplayableHits(offMidi, bpm, bars, &offTotal);
+    const int onBad = unplayableHits(onMidi, bpm, bars, &onTotal);
+    CHECK_MSG(offBad > 10, "unplayable hits without the model: %d of %d", offBad, offTotal);
+    CHECK_MSG(onBad == 0, "unplayable hits with the model at 100%%: %d of %d", onBad, onTotal);
+    CHECK_MSG(onTotal < offTotal && onTotal > offTotal / 3, "hits kept %d of %d", onTotal, offTotal);
+    const auto summary = on.processor.getLimbSummary();
+    CHECK_MSG(summary.revision > 0 && summary.input >= summary.kept, "limb summary rev %u in %d kept %d", summary.revision, summary.input, summary.kept);
+    // Partial amount removes less than full amount; amount 0 with a shuffled parameter is untouched.
+    juce::MidiBuffer halfMidi, zeroMidi;
+    render(40.0f, halfMidi); render(0.0f, zeroMidi);
+    int halfTotal = 0, zeroTotal = 0;
+    unplayableHits(halfMidi, bpm, bars, &halfTotal); unplayableHits(zeroMidi, bpm, bars, &zeroTotal);
+    CHECK_MSG(halfTotal >= onTotal && halfTotal <= offTotal, "partial amount hits %d (full %d, off %d)", halfTotal, onTotal, offTotal);
+    CHECK(zeroTotal == offTotal);
+}
+
 void testDrumBusAndShaper() {
     section("drum bus and transient shaper wiring");
     const auto render = [](const std::function<void(Rig&)>& setup, float* minGr = nullptr, float* maxShaperDb = nullptr, float* minShaperDb = nullptr) {
@@ -1271,6 +1347,7 @@ int main(int argc, char** argv) {
     testDrumBusAndShaper();
     testBaselineAndMigration();
     testRiffLock();
+    testVirtualLimbs();
     testNewParameterFuzz();
     testSoak(soakMinutes);
     if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, 1040, 720); renderScreenshots(screenshotDir, 900, 640); }

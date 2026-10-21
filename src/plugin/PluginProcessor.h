@@ -104,6 +104,7 @@ inline constexpr const char* transientShaperOutput = "transientShaperOutput";
 inline constexpr const char* rlAmount = "rlAmount";
 inline constexpr const char* rlSensitivity = "rlSensitivity";
 inline constexpr const char* rlAccentCrash = "rlAccentCrash";
+inline constexpr const char* limbModelAmount = "limbModelAmount";
 inline constexpr std::array<const char*, 8> mixGain { "gain_kick", "gain_snare", "gain_toms", "gain_hihat", "gain_ride", "gain_cymbals", "gain_room", "gain_master" };
 inline constexpr std::array<const char*, 7> mixPan { "pan_kick", "pan_snare", "pan_toms", "pan_hihat", "pan_ride", "pan_cymbals", "pan_room" };
 inline constexpr std::array<const char*, 8> mixMute { "mute_kick", "mute_snare", "mute_toms", "mute_hihat", "mute_ride", "mute_cymbals", "mute_room", "mute_master" };
@@ -127,6 +128,15 @@ struct CalibrationSummary {
     int state{0}; // 0 idle, 1 running, 2 complete
     float progress{0.0f};
     CalibrationResult result{};
+};
+
+// Counts from the virtual-limb model's most recent bar ("Limbs: 3 hits removed (2 rate, 1 travel)").
+struct LimbSummary {
+    int input{0}, kept{0}, removed{0};
+    int byReason[4]{ 0, 0, 0, 0 }; // LimbRemoval: Rate, Travel, NoLimb, Evicted
+    int nonDefaultLimb{0}, protectedKept{0}, protectedDropped{0};
+    bool overflow{false};
+    std::uint32_t revision{0};     // increments each time a bar was processed
 };
 
 struct LearnTarget {
@@ -301,6 +311,9 @@ public:
     int getRiffLastAdded() const noexcept { return riffAdded_.load(std::memory_order_relaxed); }
     int getRiffLastRemoved() const noexcept { return riffRemoved_.load(std::memory_order_relaxed); }
 
+    // ---- Virtual limbs (ANALYSIS tab) ----
+    robodrummer::LimbSummary getLimbSummary() const noexcept;
+
     // ---- tempo tools ----
     void tapTempo();
     bool isMidiClockActive() const noexcept { return midiClockActive_.load(std::memory_order_relaxed); }
@@ -441,6 +454,10 @@ private:
     std::atomic<bool> riffTriplet_{false};
     std::atomic<int> riffAdded_{0}, riffRemoved_{0};
     void feedRiffLock(int numSamples, bool trackerLocked) noexcept;
+    std::atomic<float>* rawLimbAmount_{nullptr};
+    std::array<std::atomic<int>, 12> limbValues_{}; // input, kept, removed, 4 reasons, nonDefault, protKept, protDropped, overflow, spare
+    std::atomic<std::uint32_t> limbRevisionPublished_{0};
+    std::uint32_t limbRevisionSeen_{0};
     void publishRiffSnapshot(const robodrummer::RiffSnapshot& snapshot) noexcept;
     robodrummer::dsp::DrumBusParams readDrumBusParams() const noexcept;
     robodrummer::dsp::TransientShaperParams readShaperParams() const noexcept;

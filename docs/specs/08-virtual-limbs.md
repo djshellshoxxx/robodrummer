@@ -1,5 +1,7 @@
 # 08 Virtual limb model (SPEC 22 "future")
 
+Status: Implemented (core+processor wiring); UI pending
+
 ## Purpose & user value
 Generated grooves and fills should be physically playable by one four-limb drummer. The limb model post-processes a
 bar of `DrumEvent`s, assigns every hit to RH/LH/RF/LF, and removes only what a real drummer could not play (too fast
