@@ -2,7 +2,7 @@
 
 RoboDrummer is a real-time adaptive virtual drummer designed to jam with a single live guitarist.
 
-The intended product is a VST3/CLAP/AU instrument plus a standalone application. It can either lead at a fixed/host tempo, follow a guitarist's changing tempo and beat, or operate in a hybrid mode where the drummer provides stability while allowing the guitarist to push and pull the time.
+The intended product is a VST3/CLAP/AU instrument plus a standalone application. The current build guide covers VST3, CLAP and Standalone targets; AU remains a target rather than a verified deliverable. It can either lead at a fixed/host tempo, follow a guitarist's changing tempo and beat, or operate in a hybrid mode where the drummer provides stability while allowing the guitarist to push and pull the time.
 
 The design target is roughly 90% autonomous performance with the remaining 10% exposed as optional MIDI intervention: fills, next section, intensity changes, half/double time, crash, break, stop/resume, and listening reset.
 
