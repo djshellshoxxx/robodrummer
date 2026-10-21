@@ -13,7 +13,7 @@ Semantic Versioning with pre-release tags: `MAJOR.MINOR.PATCH[-beta.N | -rc.N]`.
 * Current code: `project(RoboDrummer VERSION 0.3.0 ...)` in `CMakeLists.txt` (numeric only; JUCE derives `JucePlugin_VersionString` from it).
 * This release line: `0.4.0-beta.1`, `0.4.0-beta.2`, ... then `0.4.0-rc.1` if needed, then `1.0.0` when the release criteria below are met. Fixes after a release: `1.0.1`.
 * Git tag: `v0.4.0-beta.1` (annotated). Release name: `RoboDrummer 0.4.0-beta.1`. GitHub release marked **pre-release** for beta and rc.
-* Source of truth: the numeric part stays in `project(RoboDrummer VERSION X.Y.Z)`; add `set(ROBODRUMMER_PRERELEASE "beta.1" CACHE STRING "")` so `ROBODRUMMER_FULL_VERSION` = `X.Y.Z-beta.1` is passed as a compile definition (shown in About) and to the installer. Windows file/product version stays numeric `X.Y.Z.0` (Windows resources cannot carry the tag); the installer `AppVersion` uses the full string. The existing workflow's regex `project\(RoboDrummer VERSION ([0-9.]+)` keeps working for the numeric part.
+* Source of truth: the numeric part stays in `project(RoboDrummer VERSION X.Y.Z)`; the cache variable `ROBODRUMMER_PRERELEASE_TAG` (for example `beta.1`; release CI derives it from the part of the version after the first `-`) is written to a generated `RoboDrummerBuildInfo.h` and shown in Help/About as `X.Y.Z-beta.1`; the installer gets the numeric `X.Y.Z` only. Windows file/product version stays numeric `X.Y.Z.0` (Windows resources cannot carry the tag); the installer `AppVersion` uses the full string. The existing workflow's regex `project\(RoboDrummer VERSION ([0-9.]+)` keeps working for the numeric part.
 * Parameter and state compatibility rule: parameter IDs never change or disappear; additions are appended; state version bumps are documented in release notes (state version is 3 in 0.3.x). A change that would remap host automation (like growing `jamStyle`) is a MINOR bump at least and is called out in the notes.
 * A `CHANGELOG`-style notes file per release: `docs/RELEASE_NOTES_<version>.md` (existing pattern, `RELEASE_NOTES_0.3.0.md`).
 
@@ -120,7 +120,7 @@ xattr -dr com.apple.quarantine ~/Library/Audio/Plug-Ins/VST3/RoboDrummer.vst3 ~/
 
 ### Release steps (maintainer checklist)
 
-1. Create `release/<version>` branch from the integration branch; bump `project(... VERSION X.Y.Z)` and `ROBODRUMMER_PRERELEASE`; regenerate `docs/PARAMETERS.md`; write `docs/RELEASE_NOTES_<version>.md`; update README status and QA.md.
+1. Create `release/<version>` branch from the integration branch; bump `project(... VERSION X.Y.Z)` and `ROBODRUMMER_PRERELEASE_TAG`; regenerate `docs/PARAMETERS.md`; write `docs/RELEASE_NOTES_<version>.md`; update README status and QA.md.
 2. Push; wait for Core CI and package jobs green.
 3. Run manual checks (`12`, SPEC 37 scenario); record results in QA.md.
 4. Tag `vX.Y.Z[-pre]` on the release commit; the tag workflow builds, signs (if configured), checksums and creates a **draft** release.
@@ -164,4 +164,4 @@ CDL 9 (documentation) and 10 (required links): release notes, install guide and 
 
 ## Integration hook points
 
-`CMakeLists.txt` (`ROBODRUMMER_PRERELEASE`, definitions), `.github/workflows/release-build.yml` (release job, blocking pluginval, checksum step, AU ad-hoc signing for unsigned builds, Linux archive), `installer/RoboDrummer.iss` (`AppVersion` from the full version), `docs/INSTALL.md` (checksum step, AU class note), `docs/QA.md` (release record).
+`CMakeLists.txt` (`ROBODRUMMER_PRERELEASE_TAG`, definitions), `.github/workflows/release-build.yml` (release job, blocking pluginval, checksum step, AU ad-hoc signing for unsigned builds, Linux archive), `installer/RoboDrummer.iss` (`AppVersion` from the full version), `docs/INSTALL.md` (checksum step, AU class note), `docs/QA.md` (release record).

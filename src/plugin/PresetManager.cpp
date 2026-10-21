@@ -5,6 +5,7 @@
 
 #include "PresetManager.h"
 #include "PluginProcessor.h"
+#include <cmath>
 
 namespace robodrummer {
 namespace {
@@ -135,10 +136,13 @@ juce::StringArray idsFor(PresetType type, RoboDrummerAudioProcessor& processor) 
     return result;
 }
 
+// Preset files are plain XML users can edit or share: non-finite values are ignored (the parameter keeps its value)
+// and out-of-range ones are clamped, so a damaged file can never put NaN/Inf on the audio thread.
 void setPlain(RoboDrummerAudioProcessor& processor, const juce::String& id, float plain) {
+    if (!std::isfinite(plain)) return;
     if (auto* parameter = processor.getParameters().getParameter(id)) {
         parameter->beginChangeGesture();
-        parameter->setValueNotifyingHost(parameter->convertTo0to1(plain));
+        parameter->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, parameter->convertTo0to1(plain)));
         parameter->endChangeGesture();
     }
 }

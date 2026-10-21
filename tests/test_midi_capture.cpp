@@ -372,5 +372,23 @@ int main() {
         assert(s.cap.exportSmf({}, b).status == CaptureStatus::Ok);
         smf::parse(b);
     }
+    // ---- spec 05 acceptance: 1M-event soak (334k blocks x 3 hits), bounded memory, no drops, still exports ----
+    {
+        Sim<Cap> s;
+        std::size_t events = 0;
+        for (int i = 0; i < 334000; ++i) {
+            s.block(kBlock, {0, 100, 200});
+            events += 3;
+            if (i % 50 == 0) s.cap.drain();
+        }
+        s.cap.drain();
+        assert(events >= 1000000);
+        assert(s.cap.droppedCount() == 0);
+        assert(s.cap.takes().size() <= kMaxTakes);
+        for (auto& t : s.cap.takes()) assert(t.notes.size() <= kMaxNotesPerTake);
+        std::vector<std::uint8_t> b;
+        assert(s.cap.exportSmf({}, b).status == CaptureStatus::Ok);
+        smf::parse(b);
+    }
     return 0;
 }

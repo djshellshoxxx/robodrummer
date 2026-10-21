@@ -1670,6 +1670,43 @@ void testNewParameterFuzz() {
 // ---------------------------------------------------------------------------------------------------------------
 
 
+
+// Feature audit: a hand-edited or corrupted preset file must never put NaN/Inf/out-of-range values on the audio thread.
+void testPresetFuzz() {
+    section("fuzz: corrupted preset files (NaN / inf / huge / negative values for every parameter)");
+    using robodrummer::PresetManager; using robodrummer::PresetType;
+    Rig rig;
+    rig.param("arrangementEnabled", 1);
+    CHECK(PresetManager::saveUser(rig.processor, PresetType::Jam, "harness fuzz preset"));
+    const auto file = PresetManager::userDirectory(PresetType::Jam).getChildFile("harness fuzz preset.rdpreset");
+    const auto original = juce::XmlDocument::parse(file);
+    CHECK(original != nullptr);
+    if (original == nullptr) return;
+    const char* bad[] = { "nan", "-nan", "inf", "-inf", "1e99", "-1e99", "-1", "7", "garbage", "" };
+    for (const char* value : bad) {
+        auto copy = std::make_unique<juce::XmlElement>(*original);
+        for (auto* node : copy->getChildWithTagNameIterator("Param")) node->setAttribute("value", value);
+        if (auto* arrangement = copy->getChildByName("Arrangement"))   // slot values are part of the file too
+            for (int a = 0; a < arrangement->getNumAttributes(); ++a)
+                if (!arrangement->getAttributeName(a).endsWithIgnoreCase("Name")) arrangement->setAttribute(arrangement->getAttributeName(a), value);
+        CHECK(copy->writeTo(file));
+        for (const auto& entry : PresetManager::list(PresetType::Jam))
+            if (entry.name == "harness fuzz preset" && !entry.factory) PresetManager::load(rig.processor, PresetType::Jam, entry);
+        const Audio a = renderAudio(rig, 80, [](long long s) { return pluck(s, 118.0); }, kNoMidi, kNoBlockHook);
+        CHECK_MSG(finiteAudio(a), "non-finite audio after preset value '%s'", value);
+        for (auto* parameter : rig.processor.getParameters().processor.getParameters()) {
+            const float v = parameter->getValue();
+            if (!(v >= 0.0f && v <= 1.0f)) { CHECK_MSG(false, "parameter %s out of range after preset value '%s': %f", parameter->getName(64).toRawUTF8(), value, static_cast<double>(v)); break; }
+            if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter)) {
+                const float raw = rig.value(withId->paramID.toRawUTF8());
+                if (!std::isfinite(raw)) { CHECK_MSG(false, "raw value of %s is not finite after preset value '%s'", withId->paramID.toRawUTF8(), value); break; }
+            }
+        }
+    }
+    PresetManager::deleteUser(PresetType::Jam, "harness fuzz preset");
+    CHECK_MSG(original->getChildByName("Arrangement") != nullptr, "Jam presets must carry the arrangement slots");
+}
+
 // Feature audit: the limb model must judge hits against the EFFECTIVE tempo, so double-time, half-time and riff-locked kicks stay playable.
 void testLimbsWithTimeFeelAndRiffLock() {
     section("feature audit: virtual limbs x double-time / half-time x riff lock x fills");
@@ -2444,6 +2481,7 @@ int main(int argc, char** argv) {
     }
 
     if (featuresOnly) {
+        testPresetFuzz();
         testLimbsWithTimeFeelAndRiffLock();
         testFeatureInteractionsAndRealtime();
         std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
@@ -2481,6 +2519,7 @@ int main(int argc, char** argv) {
     testAutoSetup();
     testPracticeMode();
     testNewParameterFuzz();
+    testPresetFuzz();
     testLimbsWithTimeFeelAndRiffLock();
     testFeatureInteractionsAndRealtime();
     testEditorUi();
