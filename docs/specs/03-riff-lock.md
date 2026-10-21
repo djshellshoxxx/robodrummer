@@ -15,7 +15,7 @@ Code: `src/analysis/RiffLock.h` (header-only, JUCE-free, namespace `robodrummer`
 **Transform (`RiffLockTransform::apply`, pure, deterministic).** Inputs: generated bar (`std::array<DrumEvent,N>` + count), `GrooveContext`, `Style`, `RiffSnapshot`, `RiffLockParams`, seed. Passthrough (bytes identical, no change) when: amount <= 0 or non-finite, snapshot not `locked` (tracker unlocked), grid mismatch with ctx meter, confidence < gate, invalid ctx.
 - Sensitivity s in 0..1: slot threshold = 0.85 - 0.45*s; confidence gate = 0.75 - 0.40*s.
 - Effective strength e = amount * (0.35 + 0.65*smoothstep((conf-gate)/(1-gate))).
-- (a) Add kicks on slots with consistency >= threshold: no existing kick there; not on a snare backbeat (meter backbeat beat, or an existing Snare event with velocity >= 0.5) unless style allows; not adjacent (+-1 slot) to a kick unless style allows; accepted with probability e*(0.4+0.6*consistency) via a seeded hash of (seed, slot), so results are reproducible. Priority: consistency desc, on-beat first, lower slot first. Caps from style (see below).
+- (a) Add kicks on slots with consistency >= threshold: no existing kick there; not on a snare backbeat (meter backbeat beat, or an existing Snare event with velocity >= 0.5) unless style allows; not adjacent (+-1 slot) to a kick unless style allows; accepted with probability min(1, e*(0.3+0.9*consistency)) via a seeded hash of (seed, slot), so results are reproducible. Priority: consistency desc, on-beat first, lower slot first. Caps from style (see below).
 - (b) Remove conflicting kicks: kick sitting on a slot with consistency < 0.2, only when >= 3 slots are locked, never slot 0 (beat 1), never on a meter kick-anchor beat; probability 0.85*e (hash).
 - (c) Accent: existing/added kicks on locked slots get velocity + 0.10*e*slotStrength (clamped to 1). With `accentCrash`, a Crash is added on the strongest on-beat locked accent slot (not slot 0) if the bar has no crash there, probability e (hash).
 - Snare events are never added, removed or moved. Event offsets for added hits use the generator formula `llround(beatPos*samplesPerBeat)` (pre-humanization grid), so the humanizer treats them like generated hits.
@@ -60,3 +60,5 @@ Labels with units, tooltips explain product effect, state shown as text, no tool
 3. At each bar boundary, BEFORE generating the next bar: `riffLock.setTrackerLocked(tempoTrackerLocked)`, `riffLock.endBar()`.
 4. After `GrooveGenerator::generateBar` (and fills/phrase modifiers), BEFORE the humanizer and scheduler push: `RiffLockTransform::apply(events, count, ctx, style, riffLock.snapshot(), params, barSeed)`; use returned `count`. Skip on fill bars.
 5. UI timer: copy `snapshot()` for ANALYSIS tab.
+
+6. Build: add `riff_lock` to the explicit test-name list in `CMakeLists.txt` (tests are NOT auto-globbed in this repo); the test is verified standalone (g++ -std=c++20 -UNDEBUG, also under ASan/UBSan).
