@@ -31,7 +31,16 @@ CMake downloads the pinned JUCE release and clap-juce-extensions during configur
 
 Every main control is a host-automatable parameter with a stable ID. The complete, generated table (IDs, ranges, choices, defaults) is in [PARAMETERS.md](PARAMETERS.md); regenerate it with `RoboDrummerHarness --dump-parameters docs/PARAMETERS.md`. Parameters are only ever appended; an ID is never reused for a different meaning.
 
-Intensity and Jam Style can also be changed by the audio thread (MIDI intensity notes, programmed sections). Those changes are published back to the host from the message thread. Non-parameter state saved with the session (state version 3): arrangement slots and names, MIDI learn map, MIDI drum map and the user-kit folder path. Versions 1 and 2 are migrated on load.
+Intensity and Jam Style can also be changed by the audio thread (MIDI intensity notes, programmed sections). Those changes are published back to the host from the message thread. Non-parameter state saved with the session (state version 4): arrangement slots and names, MIDI learn map, MIDI drum map and the user-kit folder path. Versions 1, 2 and 3 are migrated on load: parameters a session does not contain (everything added in 0.4.0) are reset to their defaults, so an old session sounds exactly as before. A running practice session is never restored (the Practice settings are).
+
+### Added in 0.4.0 (all off or neutral by default)
+
+* **Drum bus compressor and transient shaper** (`drumBus*`, `transientShaper*`): processed on the main drum mix only; the room return and the aux stems stay dry. Latency is reported to the host.
+* **Riff Lock** (`rlAmount`, `rlSensitivity`, `rlAccentCrash`): the kick follows the repeated guitar riff.
+* **Practice mode** (`practiceEnabled`, `pracCountInLen`, `pracCountInSound`, `pracCountInStartOnly`, `pracLoopOn`, `pracLoopMode`, `pracLoopBars`, `pracLoopSecFirst`, `pracLoopSecLast`, `pracTrain*`): count-in, bar or section loop, tempo trainer. The trainer sets the base tempo only when the timing authority allows (Drummer Leads with the internal tempo, or Hybrid with leadership at or below 50%); with a host or MIDI-clock tempo, or when the guitarist leads, it is only shown as a hint. Section numbers are positions among the enabled arrangement sections.
+* **MIDI capture** (SMF export of what the drummer played, including the drum map) and drag-and-drop temp files in `<system temp>/RoboDrummer/<instance>/`; stale files from earlier sessions are removed at start-up and when an instance closes.
+* **Auto Setup** ("Learn My Playing"): proposals only; nothing changes until Apply, and Undo restores exactly the applied fields.
+* **Auto meter** (`autoMeterEnabled`, `autoMeterThreshold`) and **Playability** (`limbModelAmount`).
 
 ## Targets
 
@@ -119,7 +128,7 @@ The core sampler now supports velocity layers, up to four round-robin variants p
 
 ## Real-time notes
 
-The audio thread does not perform disk I/O or network I/O. The current generated starter kit is created during `prepareToPlay`. The event scheduler, sampler trigger path, timing-authority controller and phase follower use fixed/preallocated state in the processing path.
+The audio thread does not perform disk I/O or network I/O. MIDI capture only copies note events into a preallocated ring; exporting, temp-file writing and the start-up sweep run on the message thread. Auto Setup and the practice parameter toggles from MIDI commands are finalized or applied on the message thread. The current generated starter kit is created during `prepareToPlay`. The event scheduler, sampler trigger path, timing-authority controller and phase follower use fixed/preallocated state in the processing path.
 
 ## VST3 compatibility
 

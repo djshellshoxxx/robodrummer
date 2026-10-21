@@ -1,6 +1,6 @@
 # CDL Shared Audio Plugin Standard — compliance record
 
-Applies to RoboDrummer 0.3.0. Standard: [`standards/CDL_PLUGIN_BASELINE.md`](standards/CDL_PLUGIN_BASELINE.md) (required baseline). Product specification: [`../SPEC.md`](../SPEC.md).
+Applies to RoboDrummer 0.4.0. Standard: [`standards/CDL_PLUGIN_BASELINE.md`](standards/CDL_PLUGIN_BASELINE.md) (required baseline). Product specification: [`../SPEC.md`](../SPEC.md).
 
 ## Product profile (§1.2)
 
@@ -17,10 +17,10 @@ Buses: stereo guitar/analysis input (mono, stereo or disabled); stereo main outp
 | 2.3 Gestures | Partial | Double-click resets a slider; tooltips can be turned off globally (SETTINGS). Right-click on sliders offers reset to default and copy/paste of the value (pasted text is range-checked and rejected when malformed); combo boxes and toggles have no context menu yet. |
 | 2.4 Accessibility | Partial | State is conveyed by text as well as colour; resizable editor (900×640 minimum). Full keyboard navigation relies on JUCE defaults; no reduced-motion option because the UI has no decorative animation beyond live meters. |
 | 3.1 Host responsibilities | Implemented | Plug-in never opens or configures audio devices. |
-| 3.2 Real-time safety | Implemented | No allocation/locks/I/O on the audio thread — verified by an allocation audit (0 allocations over 1500 blocks with aux buses, reverb, MIDI clock, calibration). Variable and zero-length blocks, 11–192 kHz sample rates, NaN/Inf input covered by the harness. Latency 0, `ScopedNoDenormals`, tail 2 s. |
+| 3.2 Real-time safety | Implemented | 0.4.0 additions (drum bus, transient shaper, riff lock, practice mode, MIDI capture, Auto Setup, auto meter, virtual limbs) use fixed storage and atomics only; capture export, temp files and Auto Setup finalization run on the message thread. No allocation/locks/I/O on the audio thread — verified by an allocation audit (0 allocations over 1500 blocks with aux buses, reverb, MIDI clock, calibration). Variable and zero-length blocks, 11–192 kHz sample rates, NaN/Inf input covered by the harness. Latency 0, `ScopedNoDenormals`, tail 2 s. |
 | 3.3 Formats, buses, transport | Implemented | See profile. Stopped transport silences new hits (Drummer Leads); missing host tempo falls back to Internal BPM; seeks/loops re-sync the bar position (`JamEngine::syncToPpq`). Internal-BPM-only and MIDI-clock tempo sources are available. |
 | 3.4 Bypass, levels, meters | Implemented | Instrument: no MIDI → free-running drummer by design; All Sound Off / All Notes Off silence the sampler. Meters: "Input level" = analysis signal after gain/gate (dBFS peak); "Output" = main mix peak. |
-| 4.1 Host state | Implemented | State version 3; v1 and v2 migrate; malformed, truncated and mutated state is fuzzed (400 mutations + 100 garbage blobs) without crashes or out-of-range values. Non-parameter state: arrangement slots, MIDI map, drum map, user-kit folder path (not the samples). |
+| 4.1 Host state | Implemented | State version 4; v1, v2 and v3 migrate (parameters absent from an older session reset to their defaults, so old sessions sound identical); new parameters are NaN/range sanitised on restore; a running practice session and an Auto Setup undo are never restored; malformed, truncated and mutated state is fuzzed (400 mutations + 100 garbage blobs) without crashes or out-of-range values. Non-parameter state: arrangement slots, MIDI map, drum map, user-kit folder path (not the samples). |
 | 4.2 Presets | Implemented | Jam/Drummer/Style/Kit/Song/Analysis presets as XML in the user application-data folder; atomic (values applied only after the file parsed); factory presets listed in the UI; Jam factory presets are also host programs. No A/B compare (optional). |
 | 4.3 File loading | Implemented | User kits: WAV/AIFF/FLAC, mono/stereo, any sample rate (resampled), ≤ 20 s per file; unrecognised/unreadable files are skipped with a status line; loading is asynchronous with fallback to the built-in kit. No audio export. |
 | 5 MIDI/automation | Implemented | Note-on/off, velocity, channel handling, All Notes Off documented in help; MIDI Learn shows armed state, mapping result, can be cancelled/cleared/reset; conflicting mappings are resolved by replacing the previous binding. Controller-over-automation precedence: last writer wins (the CC updates the host parameter). Invalid/dense streams fuzzed. |
@@ -29,6 +29,8 @@ Buses: stereo guitar/analysis input (mono, stereo or disabled); stereo main outp
 | 7.2 Help/About | Implemented | HELP button (full help), SETTINGS → About with version, formats, privacy statement and link to <https://djshellshoxxx.github.io/circuitdriftlabs/>. Help text lives in `PluginEditor.cpp` and `docs/`. |
 | 8 Privacy/security | Implemented | **No network access, telemetry, analytics, licensing or update checks.** Parsers validate ranges and bound sizes; paths are handled through `juce::File`. |
 | 9 Documentation | Implemented | README, `docs/INSTALL.md`, `docs/JUCE_BUILD.md`, `docs/PARAMETERS.md`, `docs/QA.md`, `docs/feature-audit/`. |
+| 8.1 Files written (0.4.0) | Implemented | MIDI capture drag files are written only on the user's request to `<system temp>/RoboDrummer/<instance>/` (std::filesystem), kept to the most recent 20 per instance, and stale files (older than 24 h, or left by a crashed instance) are removed at start-up. No other files are created outside user-chosen locations. |
+| 7.3 First run / learn (0.4.0) | Partial | Auto Setup is implemented in the processor (proposal, Apply, Undo, visible reasons); the review card and the optional first-run tour are UI work and pending. |
 | 10 Required links | Implemented | Standard stored in `docs/standards/`, linked from README and SPEC. |
 
 ## Exceptions
