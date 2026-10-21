@@ -12,6 +12,10 @@
 #include "plugin/MidiCommandMapper.h"
 #include <atomic>
 #include <cmath>
+#if defined(__GLIBC__)
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,22 +27,38 @@
 
 static std::atomic<long long> gAllocations{0};
 static std::atomic<bool> gCounting{false};
+static thread_local bool tCountThisThread = false; // only the thread that armed the audit is counted (worker threads may be alive)
 static bool gAuditRun = false; // Rig::run counts allocations inside processBlock only
 // JUCE containers (HeapBlock, Array, MidiBuffer, AudioBuffer) allocate with malloc/realloc, not operator new, so on glibc
 // the C allocator is interposed as well; elsewhere only operator new is counted (documented limitation in docs/QA.md).
 #if defined(__GLIBC__)
 #define RD_ALLOC_HOOK_MALLOC 1
+static bool gTraceAllocations = false;   // RD_ALLOC_TRACE=1: print the call stack of the first audited allocations (symbolise with addr2line)
 extern "C" {
 void* __libc_malloc(std::size_t);
 void* __libc_calloc(std::size_t, std::size_t);
 void* __libc_realloc(void*, std::size_t);
-void* malloc(std::size_t n) { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); return __libc_malloc(n); }
-void* calloc(std::size_t a, std::size_t b) { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); return __libc_calloc(a, b); }
-void* realloc(void* p, std::size_t n) { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); return __libc_realloc(p, n); }
+}
+static void rdNoteAllocation() {
+    static thread_local bool inside = false;
+    if (inside) return;
+    inside = true;
+    if (gAllocations.fetch_add(1) < 3 && gTraceAllocations) {
+        void* frames[16];
+        const int count = backtrace(frames, 16);
+        backtrace_symbols_fd(frames, count, 2);
+        if (write(2, "----- audited allocation\n", 25) < 0) {}
+    }
+    inside = false;
+}
+extern "C" {
+void* malloc(std::size_t n) { if (gCounting.load(std::memory_order_relaxed) && tCountThisThread) rdNoteAllocation(); return __libc_malloc(n); }
+void* calloc(std::size_t a, std::size_t b) { if (gCounting.load(std::memory_order_relaxed) && tCountThisThread) rdNoteAllocation(); return __libc_calloc(a, b); }
+void* realloc(void* p, std::size_t n) { if (gCounting.load(std::memory_order_relaxed) && tCountThisThread) rdNoteAllocation(); return __libc_realloc(p, n); }
 }
 static inline void rdCountNew() {}
 #else
-static inline void rdCountNew() { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); }
+static inline void rdCountNew() { if (gCounting.load(std::memory_order_relaxed) && tCountThisThread) gAllocations.fetch_add(1); }
 #endif
 void* operator new(std::size_t n) { rdCountNew(); if (void* p = std::malloc(n)) return p; throw std::bad_alloc(); }
 void* operator new[](std::size_t n) { rdCountNew(); if (void* p = std::malloc(n)) return p; throw std::bad_alloc(); }
@@ -125,9 +145,9 @@ struct Rig {
             midi.clear();
             midiFor(blockIndex, midi);
             playHead.ppq += kBlock / kSampleRate * playHead.bpm / 60.0;
-            if (gAuditRun) gCounting = true;
+            if (gAuditRun) { tCountThisThread = true; gCounting = true; }
             processor.processBlock(buffer, midi);
-            if (gAuditRun) gCounting = false;
+            if (gAuditRun) { gCounting = false; tCountThisThread = false; }
             for (const auto m : midi) {
                 const auto msg = m.getMessage();
                 if (msg.isNoteOn() && msg.getChannel() == 10) { ++result.noteOns; ++result.notes[static_cast<std::size_t>(msg.getNoteNumber())]; }
@@ -1648,6 +1668,166 @@ void testNewParameterFuzz() {
 // ---------------------------------------------------------------------------------------------------------------
 // Editor UI wiring (spec 01-08, 15, 17): every new control exists, is attached, titled, reachable and works.
 // ---------------------------------------------------------------------------------------------------------------
+
+
+// Feature audit: the limb model must judge hits against the EFFECTIVE tempo, so double-time, half-time and riff-locked kicks stay playable.
+void testLimbsWithTimeFeelAndRiffLock() {
+    section("feature audit: virtual limbs x double-time / half-time x riff lock x fills");
+    struct Case { double baseBpm; int commandNote; double scale; bool riff; };
+    const Case cases[] = { { 130.0, 36 + static_cast<int>(robodrummer::MidiCommand::DoubleTime), 2.0, false },
+                           { 130.0, 36 + static_cast<int>(robodrummer::MidiCommand::DoubleTime), 2.0, true },
+                           { 220.0, 36 + static_cast<int>(robodrummer::MidiCommand::HalfTime), 0.5, true } };
+    for (const auto& c : cases) {
+        const double effective = c.baseBpm * c.scale;
+        const int bars = 10;
+        const int blocks = static_cast<int>(bars * 4.0 * kSampleRate * 60.0 / effective / kBlock);
+        for (int limbs = 0; limbs < 2; ++limbs) {
+            Rig rig;
+            rig.param("outputMode", 1); rig.param("humanize", 0.0f); rig.param("tempoSource", 1); rig.param("bpm", static_cast<float>(c.baseBpm));
+            rig.param("jamStyle", 20); rig.param("intensity", 1.0f); rig.param("complexity", 1.0f); rig.param("fillFrequency", 1.0f);
+            rig.param("limbModelAmount", limbs ? 100.0f : 0.0f);
+            if (c.riff) { rig.param("rlAmount", 100.0f); rig.param("rlAccentCrash", 1); }
+            juce::MidiBuffer midi;
+            const Audio a = renderAudio(rig, blocks, [&](long long s) { return riffGuitar(s, effective, { 0, 1, 3, 4, 6, 8, 9, 11, 12, 14 }); },
+                                        [&](long long b, juce::MidiBuffer& m) { if (b == 0) m.addEvent(juce::MidiMessage::noteOn(16, c.commandNote, 1.0f), 0); if (b == 40) m.addEvent(juce::MidiMessage::noteOn(16, 50, 1.0f), 0); },
+                                        kNoBlockHook, &midi);
+            CHECK(finiteAudio(a));
+            CHECK_MSG(std::abs(rig.processor.getEffectiveDrummerBpm() - c.baseBpm) < 3.0, "authority tempo %f (the feel scale lives inside the engine)", rig.processor.getEffectiveDrummerBpm());
+            int total = 0;
+            const int bad = unplayableHits(midi, effective, bars, &total);
+            if (limbs) CHECK_MSG(bad == 0 && total > 20, "base %.0f x%.1f riff %d: %d unplayable of %d hits with the limb model on", c.baseBpm, c.scale, c.riff ? 1 : 0, bad, total);
+            else CHECK_MSG(total > 20, "base %.0f x%.1f riff %d: only %d hits", c.baseBpm, c.scale, c.riff ? 1 : 0, total);
+        }
+    }
+}
+
+// ---- feature audit: every 0.4.0 feature at once, at several sample rates and block sizes ----------------------------------
+struct RateRig {
+    RoboDrummerAudioProcessor processor;
+    TestPlayHead playHead;
+    juce::AudioBuffer<float> buffer;
+    juce::MidiBuffer hostMidi;
+    double sr;
+    int block;
+    long long sampleIndex{0};
+    long long blockIndex{0};
+    long long allocations{0};
+    bool finite{true};
+    double peak{0.0};
+    int badMidi{0};
+    RateRig(double rate, int blockSize) : sr(rate), block(blockSize) {
+        processor.setPlayHead(&playHead);
+        processor.prepareToPlay(sr, block);
+        buffer.setSize(std::max(2, processor.getTotalNumOutputChannels()), block);
+        hostMidi.ensureSize(16384);
+    }
+    ~RateRig() { processor.releaseResources(); }
+    void param(const char* id, float plain) {
+        if (auto* p = processor.getParameters().getParameter(id)) { p->beginChangeGesture(); p->setValueNotifyingHost(p->convertTo0to1(plain)); p->endChangeGesture(); }
+    }
+    float value(const char* id) { return processor.getParameters().getRawParameterValue(id)->load(); }
+    // A syncopated palm-muted riff with a lead note on the beat; deterministic in the sample index.
+    float guitar(long long s) const {
+        const double t = static_cast<double>(s) / sr;
+        const double beat = t * 2.0, inBeat = std::fmod(t, 0.5), eighth = std::fmod(t, 0.25);
+        const int slot = static_cast<int>(std::fmod(std::floor(t / 0.25), 8.0));
+        const bool hit = slot == 0 || slot == 1 || slot == 3 || slot == 4 || slot == 6;
+        double v = hit ? 0.6 * std::exp(-eighth * 28.0) * std::sin(6.2831853 * 82.4 * eighth) : 0.0;
+        if (std::fmod(std::floor(beat), 2.0) == 0.0) v += 0.15 * std::exp(-inBeat * 6.0) * std::sin(6.2831853 * 330.0 * inBeat);
+        return static_cast<float>(v);
+    }
+    template <typename MidiFn, typename Hook>
+    void run(double seconds, bool audit, MidiFn&& midiFor, Hook&& beforeBlock) {
+        const long long blocks = static_cast<long long>(seconds * sr / block);
+        for (long long b = 0; b < blocks; ++b, ++blockIndex) {
+            beforeBlock(blockIndex);
+            buffer.clear();
+            for (int i = 0; i < block; ++i) { const float s = guitar(sampleIndex++); buffer.setSample(0, i, s); buffer.setSample(1, i, s); }
+            hostMidi.clear();
+            midiFor(blockIndex, hostMidi);
+            playHead.ppq += block / sr * playHead.bpm / 60.0;
+            if (audit) { gAllocations = 0; tCountThisThread = true; gCounting = true; }
+            processor.processBlock(buffer, hostMidi);
+            if (audit) { gCounting = false; tCountThisThread = false; allocations += gAllocations.load(); }
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < block; ++i) {
+                    const float v = buffer.getSample(c, i);
+                    if (!std::isfinite(v) || std::abs(v) > 64.0f) finite = false;
+                    peak = std::max(peak, static_cast<double>(std::abs(v)));
+                }
+            for (const auto m : hostMidi) {
+                const auto msg = m.getMessage();
+                if (msg.isNoteOn() && (msg.getNoteNumber() < 0 || msg.getNoteNumber() > 127 || m.samplePosition < 0 || m.samplePosition >= block)) ++badMidi;
+            }
+        }
+    }
+};
+
+void testFeatureInteractionsAndRealtime() {
+    section("feature audit: all 0.4.0 features together, sample rates 44.1-192k, tiny and huge blocks");
+    struct Config { double sr; int block; double seconds; };
+    const Config configs[] = { { 44100.0, 512, 14.0 }, { 48000.0, 64, 12.0 }, { 96000.0, 31, 6.0 }, { 192000.0, 480, 12.0 }, { 48000.0, 4096, 14.0 }, { 96000.0, 1, 1.5 }, { 48000.0, 40000, 14.0 } };
+    for (const auto& cfg : configs) {
+        RateRig rig(cfg.sr, cfg.block);
+        rig.playHead.bpm = 120.0;
+        rig.param("tempoSource", 1); rig.param("bpm", 120.0f); rig.param("humanize", 0.5f); rig.param("fillFrequency", 0.9f);
+        rig.param("drumBusEnabled", 1); rig.param("drumBusThreshold", -30.0f); rig.param("drumBusRatio", 8.0f); rig.param("drumBusDrive", 0.5f);
+        rig.param("transientShaperEnabled", 1); rig.param("transientShaperAttack", 70.0f); rig.param("transientShaperSustain", -40.0f);
+        rig.param("rlAmount", 100.0f); rig.param("rlAccentCrash", 1); rig.param("limbModelAmount", 100.0f);
+        rig.param("autoMeterEnabled", 1); rig.param("leadershipMode", 1);
+        rig.param("pracCountInLen", 3); rig.param("pracLoopBars", 1); rig.param("pracTrainOn", 1); rig.param("pracTrainStart", 90.0f);
+        rig.param("pracTrainTarget", 130.0f); rig.param("pracTrainStep", 10.0f); rig.param("pracTrainEvery", 1); rig.param("pracTrainGate", 1);
+        rig.param("pracTrainRest", 1);
+        rig.param("pracLoopOn", 1); rig.param("practiceEnabled", 1);
+        rig.processor.startAutoSetup(2.0f);
+        const auto rate = [&](double fraction) { return static_cast<long long>(cfg.seconds * fraction * cfg.sr / cfg.block); };
+        const long long applyAt = rate(0.30), restoreAt = rate(0.45), meterAt = rate(0.55), modeAt = rate(0.65), outroAt = rate(0.80), resumeAt = rate(0.90);
+        juce::MemoryBlock saved;
+        float maxGr = 0.0f; unsigned limbRev = 0; bool riffSeen = false, practiceSeen = false, autoMeterOn = false;
+        // Warm-up (not counted) lets lazily sized storage settle, then the whole run is audited block by block.
+        rig.run(1.5, false, [](long long, juce::MidiBuffer&) {}, [](long long) {});
+        const long long base = rig.blockIndex;
+        int command = 0;
+        rig.run(cfg.seconds, true,
+            [&](long long b, juce::MidiBuffer& m) {
+                const long long local = b - base;
+                const long long perSecond = std::max<long long>(1, static_cast<long long>(cfg.sr / cfg.block));
+                if (local % perSecond == 3 && local / perSecond % 2 == 0) {   // cycle every learned command except Stop / EndJam, which have their own moments
+                    int c = command++ % 20;
+                    if (c == static_cast<int>(robodrummer::MidiCommand::Stop) || c == static_cast<int>(robodrummer::MidiCommand::EndJam)) c = 0;
+                    m.addEvent(juce::MidiMessage::noteOn(16, 36 + c, 1.0f), 0);
+                }
+                if (local == outroAt) m.addEvent(juce::MidiMessage::noteOn(16, 36 + static_cast<int>(robodrummer::MidiCommand::EndJam), 1.0f), 0);
+                if (local == resumeAt) m.addEvent(juce::MidiMessage::noteOn(16, 36 + static_cast<int>(robodrummer::MidiCommand::Resume), 1.0f), 0);
+                if (local % 5 == 0 && local < rate(0.4)) m.addEvent(juce::MidiMessage::controllerEvent(1, 11, static_cast<int>(local % 127)), 0); // expression CC
+            },
+            [&](long long b) {
+                const long long local = b - base;
+                maxGr = std::max(maxGr, std::abs(rig.processor.getDrumBusGainReductionDb()));
+                limbRev = std::max<unsigned>(limbRev, rig.processor.getLimbSummary().revision);
+                riffSeen = riffSeen || rig.processor.getRiffSnapshot().barsSeen > 0;
+                practiceSeen = practiceSeen || rig.processor.getPracticeStatus().phase != 0;
+                autoMeterOn = autoMeterOn || rig.processor.getAutoMeterStatus().enabled;
+                if (local == applyAt) { pump(120); rig.processor.applyAutoSetup(); }                                    // auto setup applied while playing
+                if (local == restoreAt) {                                                                                // state restored mid-practice
+                    rig.processor.getStateInformation(saved);
+                    rig.processor.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
+                }
+                if (local == meterAt) { rig.param("manualMeterEnabled", 1); rig.param("meterNumerator", 1); }            // 3/4 manual over auto
+                if (local == meterAt + rate(0.05)) rig.param("manualMeterEnabled", 0);
+                if (local == modeAt) { rig.param("leadershipMode", 2); rig.param("pracTrainOn", 1); rig.param("practiceEnabled", 1); }
+                if (local == modeAt + rate(0.05)) { rig.param("outputMode", 1); rig.param("jamStyle", 4); rig.param("practiceEnabled", 1); }
+            });
+        CHECK_MSG(rig.finite, "sr %.0f block %d: non-finite or huge output (peak %f)", cfg.sr, cfg.block, rig.peak);
+        // Exercised-feature check (very short runs and blocks beyond 0.1 s are robustness-only: the tracker cannot lock there).
+        const bool expectEngaged = cfg.seconds >= 6.0 && cfg.block <= 4096 && cfg.sr * 1.5 / cfg.block < 1.0e6 && cfg.block > 1;
+        CHECK_MSG(!expectEngaged || (maxGr > 0.05f && limbRev > 0 && riffSeen && practiceSeen && autoMeterOn), "sr %.0f block %d: features were not exercised (GR %f limb %u riff %d practice %d meter %d)", cfg.sr, cfg.block, static_cast<double>(maxGr), limbRev, riffSeen, practiceSeen, autoMeterOn);
+        CHECK_MSG(rig.badMidi == 0, "sr %.0f block %d: %d MIDI events outside the block", cfg.sr, cfg.block, rig.badMidi);
+        CHECK_MSG(rig.allocations == 0, "sr %.0f block %d: %lld allocations inside processBlock with every feature on", cfg.sr, cfg.block, rig.allocations);
+        pump(50);
+    }
+}
+
 void visitAll(juce::Component& root, const std::function<void(juce::Component&)>& fn) {
     fn(root);
     for (auto* child : root.getChildren()) visitAll(*child, fn);
@@ -2232,14 +2412,19 @@ void renderScreenshots(const juce::File& directory, int width, int height) {
 } // namespace
 
 int main(int argc, char** argv) {
+#if defined(__GLIBC__)
+    if (const char* trace = std::getenv("RD_ALLOC_TRACE")) gTraceAllocations = trace[0] == '1';
+    { void* prime[4]; backtrace(prime, 4); }   // the first backtrace() call allocates; do it before any audit
+#endif
     juce::ScopedJuceInitialiser_GUI juceInit;
     juce::File screenshotDir;
     double soakMinutes = 5.0;
     rdui::EditorSettings::fileOverride() = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("robodrummer-ui-test").getChildFile("settings.xml");
     rdui::EditorSettings::fileOverride().getParentDirectory().createDirectory();
     rdui::EditorSettings::fileOverride().replaceWithText("<RoboDrummerSettings tourSeen=\"1\"/>");
-    bool uiOnly = false;
+    bool uiOnly = false, featuresOnly = false;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--ui-only") uiOnly = true;
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--features-only") featuresOnly = true;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--screenshots") screenshotDir = juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1]);
         if (std::string(argv[i]) == "--soak-minutes") soakMinutes = std::atof(argv[i + 1]);
@@ -2247,6 +2432,12 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--dump-parameters") { dumpParameters(juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1])); return 0; }
     }
 
+    if (featuresOnly) {
+        testLimbsWithTimeFeelAndRiffLock();
+        testFeatureInteractionsAndRealtime();
+        std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
+        return gFailures == 0 ? 0 : 1;
+    }
     if (uiOnly) {
         testEditorUi();
         if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); }
@@ -2279,6 +2470,8 @@ int main(int argc, char** argv) {
     testAutoSetup();
     testPracticeMode();
     testNewParameterFuzz();
+    testLimbsWithTimeFeelAndRiffLock();
+    testFeatureInteractionsAndRealtime();
     testEditorUi();
     testSoak(soakMinutes);
     if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); }
