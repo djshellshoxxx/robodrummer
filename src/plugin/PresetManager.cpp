@@ -128,7 +128,8 @@ juce::StringArray idsFor(PresetType type, RoboDrummerAudioProcessor& processor) 
         case PresetType::Jam:
             for (auto* parameter : processor.getParameters().processor.getParameters())
                 if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter))
-                    result.add(withId->paramID);
+                    if (withId->paramID != ids::practiceEnabled && withId->paramID != ids::pracLoopOn) // a session never starts from a preset
+                        result.add(withId->paramID);
             break;
     }
     return result;

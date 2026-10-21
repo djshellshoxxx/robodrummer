@@ -93,6 +93,13 @@ RoboDrummer treats MIDI channel 16 as its intervention/control channel. Channel-
 | 48 | Solo support cue |
 | 49 | End jam: plays an outro (fill into a final crash + kick on a downbeat), then stops; Resume restarts |
 | 50 | Immediate fill (starts on the next beat; note 36 queues the fill instead) |
+| 51 | Practice mode on/off (starts or ends a practice session; a session always starts with its count-in) |
+| 52 | Practice loop on/off (arms at the next bar line; again releases the loop) |
+| 53 | Tempo trainer on/off |
+| 54 | Tempo trainer restart (back to the start tempo) |
+| 55 | Count-in on/off (switches between Off and the last count-in length, 1 bar by default) |
+
+Notes 51-55 flip the matching Practice parameters on the message thread (within about 30 ms), so the host and the editor always show the real state. The practice count-in sounds as a cowbell ("Click") or side stick ("Sticks") on the drum output and the MIDI output; count-in clicks are never written into the MIDI capture buffer.
 
 Break is implemented as a one-bar musical dropout. The request is consumed once, normal groove generation is suppressed for that bar, and RoboDrummer re-enters automatically on the following bar. If a fill is already queued, it is deferred until after the break rather than discarded.
 

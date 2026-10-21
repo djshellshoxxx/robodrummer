@@ -11,6 +11,7 @@
 #include "analysis/JamBrain.h"
 #include "analysis/JamCoordinator.h"
 #include "analysis/MeterDetector.h"
+#include "core/PracticeMode.h"
 #include "analysis/PerformanceAnalyzer.h"
 #include "analysis/PhaseFollower.h"
 #include "analysis/RiffLock.h"
@@ -110,6 +111,26 @@ inline constexpr const char* rlAccentCrash = "rlAccentCrash";
 inline constexpr const char* limbModelAmount = "limbModelAmount";
 inline constexpr const char* autoMeterEnabled = "autoMeterEnabled";
 inline constexpr const char* autoMeterThreshold = "autoMeterThreshold";
+inline constexpr const char* practiceEnabled = "practiceEnabled";
+inline constexpr const char* pracCountInLen = "pracCountInLen";
+inline constexpr const char* pracCountInSound = "pracCountInSound";
+inline constexpr const char* pracCountInStartOnly = "pracCountInStartOnly";
+inline constexpr const char* pracLoopOn = "pracLoopOn";
+inline constexpr const char* pracLoopMode = "pracLoopMode";
+inline constexpr const char* pracLoopBars = "pracLoopBars";
+inline constexpr const char* pracLoopSecFirst = "pracLoopSecFirst";
+inline constexpr const char* pracLoopSecLast = "pracLoopSecLast";
+inline constexpr const char* pracTrainOn = "pracTrainOn";
+inline constexpr const char* pracTrainStart = "pracTrainStart";
+inline constexpr const char* pracTrainTarget = "pracTrainTarget";
+inline constexpr const char* pracTrainStep = "pracTrainStep";
+inline constexpr const char* pracTrainEvery = "pracTrainEvery";
+inline constexpr const char* pracTrainUnit = "pracTrainUnit";
+inline constexpr const char* pracTrainDir = "pracTrainDir";
+inline constexpr const char* pracTrainGate = "pracTrainGate";
+inline constexpr const char* pracTrainGateMin = "pracTrainGateMin";
+inline constexpr const char* pracTrainRest = "pracTrainRest";
+inline constexpr const char* pracTrainStopEnd = "pracTrainStopEnd";
 inline constexpr std::array<const char*, 8> mixGain { "gain_kick", "gain_snare", "gain_toms", "gain_hihat", "gain_ride", "gain_cymbals", "gain_room", "gain_master" };
 inline constexpr std::array<const char*, 7> mixPan { "pan_kick", "pan_snare", "pan_toms", "pan_hihat", "pan_ride", "pan_cymbals", "pan_room" };
 inline constexpr std::array<const char*, 8> mixMute { "mute_kick", "mute_snare", "mute_toms", "mute_hihat", "mute_ride", "mute_cymbals", "mute_room", "mute_master" };
@@ -151,6 +172,20 @@ struct AutoMeterStatus {
     int numerator{4}, denominator{4}, pulsesPerBar{4};
     float confidence{0.0f};
     bool ternary{false};
+};
+
+// Practice mode snapshot for the UI (written by the audio thread, read on the message thread).
+struct PracticeStatus {
+    bool enabled{false};         // a practice session is running
+    int phase{0};                // PracticePhase: 0 idle, 1 waiting for the count-in, 2 count-in clicks, 3 playing
+    int countInBeat{0}, countInTotal{0};
+    bool loopArmed{false}, loopActive{false};
+    int loopPass{0};
+    bool trainerOn{false}, trainerFinished{false}, trainerDrives{false};
+    double trainerBpm{0.0};      // current rung (drives the tempo only when trainerDrives is true)
+    int trainerStep{0};
+    bool gateHeld{false};        // last due step was held back by "only speed up when I'm in time"
+    bool restBar{false};
 };
 
 struct LearnTarget {
@@ -341,6 +376,12 @@ public:
     // Removes stale drag files (older than 24 h) left by earlier sessions; also runs once at start-up.
     static void sweepStaleCaptureFiles();
 
+    // ---- Practice mode (count-in, bar loop, tempo trainer) ----
+    robodrummer::PracticeStatus getPracticeStatus() const noexcept;
+    // "Count-in 3/4", "Loop pass 3", "Trainer 95 BPM", "Trainer: hint only, guitarist leads", or "Practice: off".
+    juce::String getPracticeStatusText() const;
+    void restartPracticeTrainer() noexcept { requestCommand(robodrummer::MidiCommand::TrainerRestart); }
+
     // ---- Automatic meter (ANALYSIS tab, under the meter selector) ----
     robodrummer::AutoMeterStatus getAutoMeterStatus() const noexcept;
     juce::String getAutoMeterReadout() const; // "Auto meter: 3/4 (82%)", "Auto meter: --" or "Auto meter: off"
@@ -506,6 +547,40 @@ private:
     std::atomic<int> autoMeterNum_{4}, autoMeterDen_{4}, autoMeterPulses_{4};
     std::atomic<float> autoMeterConfidence_{0.0f};
     void resetAutoMeter() noexcept;
+    // Practice mode (audio thread unless noted).
+    static constexpr std::size_t kPracParamCount = 20;
+    std::array<std::atomic<float>*, kPracParamCount> rawPrac_{};
+    robodrummer::PracticeMode practice_;
+    bool practiceSessionWanted_{false};   // the practiceEnabled parameter as last seen
+    bool practiceSuspendedByTransport_{false};
+    bool practiceLoopWanted_{false};
+    long long practiceTimelineBar_{0};
+    int practiceTimelineNumerator_{0};
+    bool practiceTimelineValid_{false};
+    bool practiceNeedsResume_{false};
+    bool practiceMuted_{false};
+    bool practiceWasResting_{false};
+    bool practiceLoopIsRange_{false};
+    long long practiceOffsetSamples_{0};
+    robodrummer::LoopRange practiceRange_{};
+    std::size_t practiceRangeFirst_{0};
+    struct ArrangementSnapshot { bool valid{false}; std::size_t section{0}; int bars{0}; long long bar{0}; };
+    ArrangementSnapshot practiceLoopSnap_{}, practiceRestSnap_{};
+    robodrummer::PracticeAction practiceLast_{};
+    long long practiceAppliedDelta_{0};
+    float practiceLastCountIn_{4.0f};     // last non-off count-in length (message thread only)
+    std::atomic<std::uint32_t> pendingParamToggles_{0}; // bit n = flip practice parameter n on the message thread
+    std::atomic<bool> pracSession_{false}, pracLoopArmed_{false}, pracLoopActive_{false}, pracTrainOn_{false}, pracTrainFinished_{false},
+                      pracTrainDrives_{false}, pracGateHeld_{false}, pracRest_{false};
+    std::atomic<int> pracPhase_{0}, pracClickBeat_{0}, pracClickTotal_{0}, pracLoopPass_{0}, pracStep_{0};
+    std::atomic<double> pracBpm_{0.0};
+    void updatePracticeSettings(const robodrummer::TimingAuthoritySettings& settings, bool externalTempo) noexcept;
+    std::size_t processJamWithPractice(int numSamples, robodrummer::DrumEvent* out, std::size_t capacity, float trackerConfidence, bool arrangementEnabled) noexcept;
+    void restoreArrangementSnapshot(const ArrangementSnapshot& snapshot) noexcept;
+    void publishPracticeStatus() noexcept;
+    void resetPracticeRuntime() noexcept;
+    void drainParameterToggles();
+    float pracValue(std::size_t index, float fallback) const noexcept;
     std::atomic<float>* rawLimbAmount_{nullptr};
     std::array<std::atomic<int>, 12> limbValues_{}; // input, kept, removed, 4 reasons, nonDefault, protKept, protDropped, overflow, spare
     std::atomic<std::uint32_t> limbRevisionPublished_{0};

@@ -1,6 +1,6 @@
 # 04 - Practice Mode
 
-Status: spec for `src/core/PracticeMode.h` (JUCE-free, deterministic). Integration is a separate pass.
+Status: Implemented (core+processor wiring); UI pending
 
 ## 1. Purpose & user value
 Lets a guitarist rehearse with RoboDrummer: a count-in before the drums start, a bar loop (current groove or a programmed

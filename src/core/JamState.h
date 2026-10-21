@@ -31,6 +31,12 @@ inline void applyMidiCommand(JamState& state, MidiCommand command) noexcept {
         case MidiCommand::ResetListening: state.resetListeningRequested = true; break;
         case MidiCommand::SoloSupport: break;
         case MidiCommand::EndJam: break;
+        // Practice commands are handled by the processor, not by the groove engine.
+        case MidiCommand::PracticeToggle:
+        case MidiCommand::LoopToggle:
+        case MidiCommand::TrainerToggle:
+        case MidiCommand::TrainerRestart:
+        case MidiCommand::CountInToggle: break;
     }
 }
 }

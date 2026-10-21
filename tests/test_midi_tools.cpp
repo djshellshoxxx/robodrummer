@@ -46,6 +46,14 @@ int main() {
         assert(map.commandForNote(36, 16) == static_cast<int>(MidiCommand::Fill));
         assert(map.commandForNote(36, 1) == MidiLearnMap::NoCommand); // defaults live on channel 16 only
         assert(map.commandForNote(50, 16) == static_cast<int>(MidiCommand::ImmediateFill));
+        // Practice commands: notes 51-55 on channel 16 (note 50 is already the immediate fill).
+        assert(map.commandForNote(51, 16) == static_cast<int>(MidiCommand::PracticeToggle));
+        assert(map.commandForNote(52, 16) == static_cast<int>(MidiCommand::LoopToggle));
+        assert(map.commandForNote(53, 16) == static_cast<int>(MidiCommand::TrainerToggle));
+        assert(map.commandForNote(54, 16) == static_cast<int>(MidiCommand::TrainerRestart));
+        assert(map.commandForNote(55, 16) == static_cast<int>(MidiCommand::CountInToggle));
+        assert(map.commandForNote(56, 16) == MidiLearnMap::NoCommand);
+        assert(MidiLearnMap::CommandCount == 20);
         assert(map.handleCc(11) == MidiLearnMap::NoTarget);
         map.bindCc(11, 3);
         assert(map.handleCc(11) == 3 && map.ccForTarget(3) == 11);

@@ -17,7 +17,7 @@ public:
     static constexpr int NoTarget = -1;
     static constexpr int NoCommand = -1;
     static constexpr int DefaultChannel = 16;
-    static constexpr int CommandCount = static_cast<int>(MidiCommand::ImmediateFill) + 1;
+    static constexpr int CommandCount = static_cast<int>(MidiCommand::CountInToggle) + 1;
 
     MidiLearnMap() noexcept { clearAll(); resetNoteDefaults(); }
 

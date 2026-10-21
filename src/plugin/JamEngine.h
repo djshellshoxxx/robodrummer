@@ -81,6 +81,36 @@ public:
             clearBarTargets();
         sampleCursor_ = target;
     }
+    // Practice mode: a tempo step keeps the musical position (beats since the start) instead of the sample position, so the
+    // groove stays on the grid when the trainer changes the tempo.
+    void setTempoPreservingPosition(double bpm) noexcept {
+        const double next = std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0);
+        if (next != bpm_ && bpm_ > 0.0) {
+            sampleCursor_ = static_cast<long long>(std::llround(static_cast<double>(sampleCursor_) * bpm_ / next));
+            clearBarTargets();
+        }
+        bpm_ = next;
+    }
+    // First beat (in the current feel) that starts at least `from` samples after the cursor and inside the next
+    // `numSamples` samples. `offset` is relative to the cursor; `beatIndex` is the cursor-domain beat number.
+    [[nodiscard]] bool nextBeat(int from, int numSamples, int& offset, long long& beatIndex) const noexcept {
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return false;
+        const double spb = sampleRate_ * 60.0 / effectiveBpm * (4.0 / static_cast<double>(denominator_));
+        if (!(spb > 1.0)) return false;
+        const long long earliest = sampleCursor_ + std::max(0, from);
+        long long beat = static_cast<long long>(std::ceil(static_cast<double>(earliest) / spb));
+        while (static_cast<long long>(std::llround(static_cast<double>(beat) * spb)) < earliest) ++beat;
+        while (beat > 0 && static_cast<long long>(std::llround(static_cast<double>(beat - 1) * spb)) >= earliest) --beat;
+        const long long sample = static_cast<long long>(std::llround(static_cast<double>(beat) * spb));
+        if (sample - sampleCursor_ >= numSamples) return false;
+        offset = static_cast<int>(sample - sampleCursor_);
+        beatIndex = beat;
+        return true;
+    }
+    [[nodiscard]] int meterNumerator() const noexcept { return numerator_; }
+    // A deliberate jump (practice loop): like nudgePhaseSamples, and pending fill/break targets are re-planned.
+    void jumpPhaseSamples(long long deltaSamples) noexcept { nudgePhaseSamples(deltaSamples); clearBarTargets(); }
     void nudgePhaseSamples(long long deltaSamples) noexcept {
         sampleCursor_ = std::max<long long>(0, sampleCursor_ + deltaSamples);
     }

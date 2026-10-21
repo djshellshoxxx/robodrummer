@@ -1,5 +1,7 @@
 # 05 - MIDI Capture & Export
 
+Status: Implemented (core+processor wiring); UI pending
+
 ## Purpose & user value
 The drummer plays something great; the user wants it in their DAW as editable MIDI. The plug-in continuously records what it
 generates (always on, zero setup). The user presses "Capture last N bars" and drags a Standard MIDI File out of the editor into a

@@ -9,11 +9,13 @@
 #include "plugin/PluginProcessor.h"
 #include "plugin/PluginEditor.h"
 #include "plugin/PresetManager.h"
+#include "plugin/MidiCommandMapper.h"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <map>
 #include <new>
 #include "../smf_test_parser.h"
 
@@ -1120,6 +1122,158 @@ void testAutoMeter() {
     }
 }
 
+void testPracticeMode() {
+    section("practice mode: count-in, loop, tempo trainer, MIDI commands, state");
+    const double spb = kSampleRate * 60.0 / 120.0; // 24000 samples per beat at 120 BPM
+    const auto setupMidiOnly = [](Rig& rig) { setupDeterministic(rig); rig.param("outputMode", 1); };
+    {   // Everything off by default.
+        Rig rig;
+        CHECK(rig.processor.getPracticeStatusText() == "Practice: off");
+        CHECK(!rig.processor.getPracticeStatus().enabled && rig.value("practiceEnabled") < 0.5f);
+        CHECK(rig.value("pracCountInLen") < 0.5f && rig.value("pracLoopOn") < 0.5f && rig.value("pracTrainOn") < 0.5f);
+    }
+    for (int sound = 0; sound < 2; ++sound) {   // one-bar count-in: four clicks, groove starts on the next downbeat
+        Rig rig; setupMidiOnly(rig);
+        rig.param("pracCountInLen", 4); rig.param("pracCountInSound", static_cast<float>(sound)); rig.param("practiceEnabled", 1);
+        juce::MidiBuffer midi;
+        const Audio a = renderAudio(rig, 280, kSilence, kNoMidi, kNoBlockHook, &midi);
+        const int clickNote = sound == 0 ? 56 : 37;
+        std::vector<long long> clicks, others;
+        for (const auto m : midi) {
+            const auto msg = m.getMessage();
+            if (!msg.isNoteOn() || msg.getChannel() != 10) continue;
+            (msg.getNoteNumber() == clickNote ? clicks : others).push_back(m.samplePosition);
+        }
+        CHECK_MSG(clicks.size() == 4, "sound %d: %zu click notes", sound, clicks.size());
+        for (std::size_t i = 0; i < clicks.size() && i < 4; ++i)
+            CHECK_MSG(std::abs(static_cast<double>(clicks[i]) - spb * static_cast<double>(i)) < 1100.0, "click %zu at %lld", i, clicks[i]);
+        CHECK_MSG(!others.empty() && *std::min_element(others.begin(), others.end()) > static_cast<long long>(spb * 4.0 - 1100.0), "groove before the count-in ended (first %lld, %zu notes)", others.empty() ? -1LL : *std::min_element(others.begin(), others.end()), others.size());
+        CHECK(finiteAudio(a));
+    }
+    {   // 3/4 meter: a one-bar count-in is three beats.
+        Rig rig; setupMidiOnly(rig);
+        rig.param("manualMeterEnabled", 1); rig.param("meterNumerator", 1); /* 3 */ rig.param("pracCountInLen", 4); rig.param("practiceEnabled", 1);
+        juce::MidiBuffer midi;
+        renderAudio(rig, 180, kSilence, kNoMidi, kNoBlockHook, &midi);
+        int clicks = 0, early = 0;
+        for (const auto m : midi) {
+            const auto msg = m.getMessage();
+            if (!msg.isNoteOn() || msg.getChannel() != 10) continue;
+            if (msg.getNoteNumber() == 56) ++clicks; else if (m.samplePosition < static_cast<int>(spb * 2.9)) ++early;
+        }
+        CHECK_MSG(clicks == 3 && early == 0, "3/4 count-in clicks %d, early groove notes %d", clicks, early);
+    }
+    {   // Loop: one bar repeats, the drummer's bar number stays put while the pass counter grows.
+        Rig rig; setupMidiOnly(rig);
+        rig.param("practiceEnabled", 1); rig.param("pracLoopBars", 0); rig.param("pracLoopOn", 1);
+        juce::MidiBuffer midi;
+        const Audio a = renderAudio(rig, 1800, kSilence, kNoMidi, kNoBlockHook, &midi); // about 9.6 bars at 120 BPM
+        const auto status = rig.processor.getPracticeStatus();
+        CHECK_MSG(status.loopActive && status.loopPass >= 4, "loop pass %d active %d", status.loopPass, status.loopActive ? 1 : 0);
+        CHECK_MSG(rig.processor.getDrummerBarNumber() <= 3, "bar number %lld after a one-bar loop", rig.processor.getDrummerBarNumber());
+        CHECK(rig.processor.getPracticeStatusText().contains("Loop pass"));
+        // The looped bar is note-for-note identical on every pass.
+        const double barLen = spb * 4.0;
+        std::map<int, std::vector<std::pair<int, int>>> bars;
+        for (const auto m : midi) {
+            const auto msg = m.getMessage();
+            if (!msg.isNoteOn() || msg.getChannel() != 10) continue;
+            const double cursor = static_cast<double>(m.samplePosition) + kBlock;
+            const int bar = static_cast<int>(cursor / barLen);
+            bars[bar].push_back({ static_cast<int>(std::lround(std::fmod(cursor, barLen) / 100.0)), msg.getNoteNumber() });
+        }
+        int compared = 0, equal = 0;
+        for (int b = 2; b < 8; ++b) if (bars.count(b) != 0 && bars.count(b + 1) != 0) { ++compared; if (bars[b] == bars[b + 1]) ++equal; }
+        CHECK_MSG(compared >= 5 && equal == compared, "loop bars identical %d/%d", equal, compared);
+        if (equal != compared) for (int b = 2; b < 9; ++b) if (bars.count(b) != 0) { std::printf("   bar %d:", b); for (auto& e : bars[b]) std::printf(" %d/%d", e.first, e.second); std::printf("\n"); }
+        CHECK(finiteAudio(a));
+        // Disarming lets the groove run forward again.
+        const long long barBefore = rig.processor.getDrummerBarNumber();
+        rig.param("pracLoopOn", 0);
+        renderAudio(rig, 600, kSilence, kNoMidi, kNoBlockHook);
+        CHECK_MSG(rig.processor.getDrummerBarNumber() >= barBefore + 2 && !rig.processor.getPracticeStatus().loopActive, "bar %lld after disarm", rig.processor.getDrummerBarNumber());
+    }
+    {   // Tempo trainer drives the internal tempo: 80 -> 100 -> 120, one bar per step, then holds.
+        Rig rig; setupDeterministic(rig);
+        rig.param("pracTrainOn", 1); rig.param("pracTrainStart", 80.0f); rig.param("pracTrainTarget", 120.0f); rig.param("pracTrainStep", 20.0f);
+        rig.param("pracTrainEvery", 1); rig.param("practiceEnabled", 1);
+        renderAudio(rig, 60, kSilence, kNoMidi, kNoBlockHook);
+        CHECK_MSG(std::abs(rig.processor.getEffectiveDrummerBpm() - 80.0) < 0.6, "trainer start bpm %f", rig.processor.getEffectiveDrummerBpm());
+        CHECK(rig.processor.getPracticeStatus().trainerDrives);
+        CHECK_MSG(rig.processor.getPracticeStatusText().contains("Trainer 80 BPM"), "text '%s'", rig.processor.getPracticeStatusText().toRawUTF8());
+        double seenMid = 0.0;
+        for (int i = 0; i < 25; ++i) { renderAudio(rig, 40, kSilence, kNoMidi, kNoBlockHook); const double bpm = rig.processor.getEffectiveDrummerBpm(); if (std::abs(bpm - 100.0) < 0.6) seenMid = bpm; }
+        CHECK_MSG(seenMid > 0.0, "never saw the 100 BPM rung");
+        CHECK_MSG(std::abs(rig.processor.getEffectiveDrummerBpm() - 120.0) < 0.6 && rig.processor.getPracticeStatus().trainerFinished, "final bpm %f", rig.processor.getEffectiveDrummerBpm());
+        // Restart goes back to the start rung.
+        rig.processor.requestCommand(robodrummer::MidiCommand::TrainerRestart);
+        renderAudio(rig, 3, kSilence, kNoMidi, kNoBlockHook);
+        CHECK_MSG(std::abs(rig.processor.getEffectiveDrummerBpm() - 80.0) < 0.6, "restart bpm %f", rig.processor.getEffectiveDrummerBpm());
+    }
+    {   // The trainer is only a hint when the host owns the tempo, and when the guitarist leads.
+        Rig rig; rig.param("outputMode", 0); rig.param("tempoSource", 0); rig.playHead.bpm = 140.0;
+        rig.param("pracTrainOn", 1); rig.param("pracTrainStart", 80.0f); rig.param("practiceEnabled", 1);
+        renderAudio(rig, 120, kSilence, kNoMidi, kNoBlockHook);
+        CHECK_MSG(std::abs(rig.processor.getEffectiveDrummerBpm() - 140.0) < 1.0, "host tempo overridden: %f", rig.processor.getEffectiveDrummerBpm());
+        CHECK(!rig.processor.getPracticeStatus().trainerDrives);
+        CHECK_MSG(rig.processor.getPracticeStatusText().contains("hint only"), "text '%s'", rig.processor.getPracticeStatusText().toRawUTF8());
+        Rig guitarist; guitarist.param("tempoSource", 1); guitarist.param("bpm", 130.0f); guitarist.param("leadershipMode", 2);
+        guitarist.param("pracTrainOn", 1); guitarist.param("practiceEnabled", 1);
+        renderAudio(guitarist, 120, kSilence, kNoMidi, kNoBlockHook);
+        CHECK(!guitarist.processor.getPracticeStatus().trainerDrives);
+    }
+    {   // MIDI commands (channel 16, notes 51-55) flip the practice parameters through the message thread.
+        Rig rig; setupMidiOnly(rig);
+        const auto press = [&](int note) {
+            renderAudio(rig, 2, kSilence, [note](long long b, juce::MidiBuffer& m) { if (b % 2 == 0) m.addEvent(juce::MidiMessage::noteOn(16, note, 1.0f), 0); }, kNoBlockHook);
+            // Only the first of the two blocks carries the note; flush it through the timer.
+            pump(120);
+        };
+        press(51); CHECK_MSG(rig.value("practiceEnabled") > 0.5f, "PracticeToggle on");
+        press(52); CHECK_MSG(rig.value("pracLoopOn") > 0.5f, "LoopToggle on");
+        press(53); CHECK_MSG(rig.value("pracTrainOn") > 0.5f, "TrainerToggle on");
+        press(55); CHECK_MSG(rig.value("pracCountInLen") > 0.5f, "CountInToggle on");
+        press(54); // TrainerRestart has no parameter; it must simply not disturb anything
+        press(55); CHECK_MSG(rig.value("pracCountInLen") < 0.5f, "CountInToggle off");
+        press(53); CHECK_MSG(rig.value("pracTrainOn") < 0.5f, "TrainerToggle off");
+        press(52); CHECK_MSG(rig.value("pracLoopOn") < 0.5f, "LoopToggle off");
+        press(51); CHECK_MSG(rig.value("practiceEnabled") < 0.5f, "PracticeToggle off");
+        CHECK(robodrummer::mapNoteOn(51, 1.0f) == robodrummer::MidiCommand::PracticeToggle && robodrummer::mapNoteOn(55, 1.0f) == robodrummer::MidiCommand::CountInToggle);
+        CHECK(robodrummer::mapNoteOn(56, 1.0f) == std::nullopt);
+    }
+    {   // State: settings persist, a running session never resumes from a saved session.
+        juce::MemoryBlock blob;
+        { Rig rig; rig.param("pracTrainStart", 95.0f); rig.param("pracLoopBars", 3); rig.param("pracCountInLen", 2); rig.param("practiceEnabled", 1); rig.param("pracLoopOn", 1);
+          rig.processor.getStateInformation(blob); }
+        Rig rig; rig.processor.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        CHECK(std::abs(rig.value("pracTrainStart") - 95.0f) < 0.6f && std::abs(rig.value("pracLoopBars") - 3.0f) < 0.1f && std::abs(rig.value("pracCountInLen") - 2.0f) < 0.1f);
+        CHECK(rig.value("practiceEnabled") < 0.5f && rig.value("pracLoopOn") < 0.5f);
+    }
+    {   // Section-range loop over a programmed arrangement: the sequencer is rewound with the groove.
+        Rig rig; setupMidiOnly(rig);
+        rig.param("arrangementEnabled", 1);
+        rig.param("pracLoopMode", 1); rig.param("pracLoopSecFirst", 2); rig.param("pracLoopSecLast", 2); rig.param("pracLoopOn", 1); rig.param("practiceEnabled", 1);
+        const Audio a = renderAudio(rig, 4200, kSilence, kNoMidi, kNoBlockHook); // about 22 bars: verse (8) + three passes of the 4-bar pre-chorus
+        const auto status = rig.processor.getPracticeStatus();
+        CHECK_MSG(rig.processor.getCurrentArrangementSection() == 1, "arrangement left the looped section: slot %d", rig.processor.getCurrentArrangementSection());
+        CHECK_MSG(status.loopActive && status.loopPass >= 2, "range loop pass %d active %d", status.loopPass, status.loopActive ? 1 : 0);
+        CHECK(finiteAudio(a));
+        rig.param("pracLoopOn", 0);
+        renderAudio(rig, 2200, kSilence, kNoMidi, kNoBlockHook);
+        CHECK_MSG(rig.processor.getCurrentArrangementSection() >= 2, "arrangement did not continue after the loop: slot %d", rig.processor.getCurrentArrangementSection());
+    }
+    {   // Range loop with no arrangement falls back to the bar loop and stays finite; the session survives a transport stop.
+        Rig rig; setupMidiOnly(rig);
+        rig.param("pracLoopMode", 1); rig.param("pracLoopOn", 1); rig.param("practiceEnabled", 1); rig.param("pracCountInLen", 3);
+        renderAudio(rig, 400, kSilence, kNoMidi, kNoBlockHook);
+        rig.param("tempoSource", 0); rig.playHead.playing = false;
+        renderAudio(rig, 50, kSilence, kNoMidi, kNoBlockHook);
+        rig.playHead.playing = true;
+        const Audio a = renderAudio(rig, 400, kSilence, kNoMidi, kNoBlockHook);
+        CHECK(finiteAudio(a) && rig.processor.getPracticeStatus().enabled);
+    }
+}
+
 void testMidiCapture() {
     section("MIDI capture and export wiring");
     {   // empty before anything played
@@ -1464,6 +1618,7 @@ int main(int argc, char** argv) {
     testVirtualLimbs();
     testAutoMeter();
     testMidiCapture();
+    testPracticeMode();
     testNewParameterFuzz();
     testSoak(soakMinutes);
     if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, 1040, 720); renderScreenshots(screenshotDir, 900, 640); }

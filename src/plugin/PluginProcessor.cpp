@@ -55,7 +55,8 @@ const std::array<LearnTarget, kLearnTargetCount> kLearnTargets {{
 
 const std::array<const char*, MidiLearnMap::CommandCount> kCommandNames {
     "Fill", "Next Section", "Previous Section", "Crash", "Intensity Up", "Intensity Down", "Half-Time", "Double-Time",
-    "Break", "Stop", "Resume", "Reset Listening", "Solo Support", "End Jam", "Immediate Fill"
+    "Break", "Stop", "Resume", "Reset Listening", "Solo Support", "End Jam", "Immediate Fill",
+    "Practice On/Off", "Loop On/Off", "Trainer On/Off", "Trainer Restart", "Count-in On/Off"
 };
 }
 
@@ -88,6 +89,17 @@ int denominatorToIndex(int denominator) noexcept {
         if (kMeterDenominators[i] == denominator) return static_cast<int>(i);
     return 1;
 }
+
+namespace PracIdx {
+enum : std::size_t { Enabled, CountLen, CountSound, CountStartOnly, LoopOn, LoopMode, LoopBars, SecFirst, SecLast, TrainOn, TrainStart,
+                     TrainTarget, TrainStep, TrainEvery, TrainUnit, TrainDir, TrainGate, TrainGateMin, TrainRest, TrainStopEnd };
+}
+constexpr std::array<const char*, 20> kPracticeIds {
+    robodrummer::ParamIDs::practiceEnabled, robodrummer::ParamIDs::pracCountInLen, robodrummer::ParamIDs::pracCountInSound, robodrummer::ParamIDs::pracCountInStartOnly, robodrummer::ParamIDs::pracLoopOn,
+    robodrummer::ParamIDs::pracLoopMode, robodrummer::ParamIDs::pracLoopBars, robodrummer::ParamIDs::pracLoopSecFirst, robodrummer::ParamIDs::pracLoopSecLast, robodrummer::ParamIDs::pracTrainOn,
+    robodrummer::ParamIDs::pracTrainStart, robodrummer::ParamIDs::pracTrainTarget, robodrummer::ParamIDs::pracTrainStep, robodrummer::ParamIDs::pracTrainEvery, robodrummer::ParamIDs::pracTrainUnit,
+    robodrummer::ParamIDs::pracTrainDir, robodrummer::ParamIDs::pracTrainGate, robodrummer::ParamIDs::pracTrainGateMin, robodrummer::ParamIDs::pracTrainRest, robodrummer::ParamIDs::pracTrainStopEnd };
+constexpr unsigned kClickTag = 0xC11C0001u; // DrumEvent::sequence marker for practice clicks (kept out of MIDI capture)
 
 int choiceIndex(const std::atomic<float>* raw, int count) noexcept {
     return raw == nullptr ? 0 : juce::jlimit(0, count - 1, juce::roundToInt(raw->load(std::memory_order_relaxed)));
@@ -137,6 +149,7 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     rawAutoMeterEnabled_ = cache(ids::autoMeterEnabled);
     rawAutoMeterThreshold_ = cache(ids::autoMeterThreshold);
     rawLimbAmount_ = cache(ids::limbModelAmount);
+    for (std::size_t i = 0; i < kPracticeIds.size(); ++i) rawPrac_[i] = cache(kPracticeIds[i]);
     rawRlAmount_ = cache(ids::rlAmount);
     rawRlSensitivity_ = cache(ids::rlSensitivity);
     rawRlAccent_ = cache(ids::rlAccentCrash);
@@ -337,6 +350,37 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
         juce::NormalisableRange<float>(0.5f, 0.95f, 0.01f), 0.75f, percent));
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::limbModelAmount, 1}, "Playability",
         juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 0.0f, labelled("%")));
+    // Practice mode (0.4.0): everything defaults to off.
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::practiceEnabled, 1}, "Practice Mode", false));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::pracCountInLen, 1}, "Count-in",
+        juce::StringArray{"Off", "1 beat", "2 beats", "4 beats", "1 bar"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::pracCountInSound, 1}, "Count-in Sound",
+        juce::StringArray{"Click", "Sticks"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::pracCountInStartOnly, 1}, "Count-in Only On Start", true));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::pracLoopOn, 1}, "Practice Loop", false));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::pracLoopMode, 1}, "Loop Mode",
+        juce::StringArray{"Bars", "Section range"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::pracLoopBars, 1}, "Loop Length",
+        juce::StringArray{"1 bar", "2 bars", "4 bars", "8 bars"}, 2));
+    layout.add(std::make_unique<juce::AudioParameterInt>(ParameterID{ids::pracLoopSecFirst, 1}, "Loop First Section", 1, 16, 1));
+    layout.add(std::make_unique<juce::AudioParameterInt>(ParameterID{ids::pracLoopSecLast, 1}, "Loop Last Section", 1, 16, 1));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::pracTrainOn, 1}, "Tempo Trainer", false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::pracTrainStart, 1}, "Trainer Start BPM",
+        juce::NormalisableRange<float>(20.0f, 400.0f, 1.0f), 80.0f, labelled("BPM")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::pracTrainTarget, 1}, "Trainer Target BPM",
+        juce::NormalisableRange<float>(20.0f, 400.0f, 1.0f), 120.0f, labelled("BPM")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::pracTrainStep, 1}, "Trainer Step",
+        juce::NormalisableRange<float>(1.0f, 40.0f, 1.0f), 5.0f, labelled("BPM")));
+    layout.add(std::make_unique<juce::AudioParameterInt>(ParameterID{ids::pracTrainEvery, 1}, "Trainer Every", 1, 64, 4));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::pracTrainUnit, 1}, "Trainer Unit",
+        juce::StringArray{"Bars", "Loop passes"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::pracTrainDir, 1}, "Trainer Direction",
+        juce::StringArray{"Up", "Down", "Ping-pong"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::pracTrainGate, 1}, "Trainer Only When In Time", false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::pracTrainGateMin, 1}, "Trainer Gate Confidence",
+        juce::NormalisableRange<float>(0.2f, 0.95f, 0.01f), 0.6f, percent));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::pracTrainRest, 1}, "Trainer Rest Bar", false));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::pracTrainStopEnd, 1}, "Trainer Stop At Target", false));
     return layout;
 }
 
@@ -404,6 +448,7 @@ void RoboDrummerAudioProcessor::timerCallback() {
         publish(robodrummer::ParamIDs::jamStyle, static_cast<float>(jamStyle_.load(std::memory_order_relaxed)));
 
     drainMidiLearnToParameters();
+    drainParameterToggles();
     capture_.drain();
 
     // Kit selection and loading happen here (message thread) and on the loader thread, never on the audio thread.
@@ -572,6 +617,9 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     drumBus_.prepare(sampleRate_, samplesPerBlock);
     setLatencySamples(shaper_.latencySamples() + drumBus_.latencySamples());
     resetAutoMeter();
+    practice_.reset();
+    practiceSessionWanted_ = false;
+    resetPracticeRuntime();
     riffLock_.reset();
     lowBand_.prepare(sampleRate_);
     riffBar_ = -1;
@@ -939,6 +987,21 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     settings.confidenceSensitivity = rawConfidenceSensitivity_ != nullptr ? rawConfidenceSensitivity_->load(std::memory_order_relaxed) : 0.5f;
     const float beatCorrectionSpeed = rawBeatCorrection_ != nullptr ? rawBeatCorrection_->load(std::memory_order_relaxed) : 0.5f;
 
+    // ---- practice mode: session edges and settings. Nothing below runs while the session is off. ----
+    const bool practiceWanted = pracValue(PracIdx::Enabled, 0.0f) >= 0.5f;
+    if (practiceWanted != practiceSessionWanted_) {
+        practiceSessionWanted_ = practiceWanted;
+        resetPracticeRuntime();
+        if (practiceWanted) practice_.start(); else practice_.stop();
+    }
+    bool practiceDrivesTempo = false;
+    if (practiceSessionWanted_) {
+        const bool externalTempo = (tempoSource == 2 && clockValid) || (tempoSource != 1 && lastHostTempoValid_.load(std::memory_order_relaxed));
+        updatePracticeSettings(settings, externalTempo);
+        practiceDrivesTempo = pracValue(PracIdx::TrainOn, 0.0f) >= 0.5f && practice_.trainerDrivesBase();
+        if (practiceDrivesTempo) baseBpm = practice_.trainerBpm();
+    }
+
     const int modeValue = static_cast<int>(settings.mode);
     if (modeValue != lastAudioMode_) {
         adaptiveJoined_ = settings.mode == robodrummer::LeadershipMode::DrummerLeads;
@@ -1062,7 +1125,8 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         1.0f);
     effectiveDrummerIntensity_.store(effectiveIntensity, std::memory_order_relaxed);
 
-    jam_.setTempo(authority.outputBpm);
+    if (practiceDrivesTempo) jam_.setTempoPreservingPosition(authority.outputBpm); // a trainer step keeps the groove on the grid
+    else jam_.setTempo(authority.outputBpm);
     jam_.setMeter(numerator, denominator);
     {
         const float limbRaw = rawLimbAmount_ != nullptr ? rawLimbAmount_->load(std::memory_order_relaxed) : 0.0f;
@@ -1075,7 +1139,9 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         robodrummer::styleFor(getJamStyle()), phraseState, phraseAmount));
 
     if (hasPpq && settings.mode == robodrummer::LeadershipMode::DrummerLeads)
-        jam_.syncToPpq(hostPpq);
+        jam_.syncToPpq(practiceSessionWanted_ && practiceOffsetSamples_ != 0
+                           ? hostPpq + static_cast<double>(practiceOffsetSamples_) / (sampleRate_ * 60.0 / std::max(20.0, authority.outputBpm))
+                           : hostPpq);
 
     // Silence behavior follows the drummer's musical bar clock in every timing mode.
     const auto silenceBarIndex = jam_.currentBarIndex();
@@ -1255,9 +1321,15 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     const bool hostStopped = transportStopped && settings.mode == robodrummer::LeadershipMode::DrummerLeads;
     const bool waitingToJoin = settings.mode != robodrummer::LeadershipMode::DrummerLeads && !adaptiveJoined_;
     std::array<robodrummer::DrumEvent, 128> events{};
-    const auto eventCount = (hostStopped || waitingToJoin)
-        ? std::size_t{0}
-        : jam_.processBlock(numSamples, events.data(), events.size());
+    std::size_t eventCount = 0;
+    if (hostStopped || waitingToJoin) {
+        if (practiceSessionWanted_) practiceNeedsResume_ = true; // the next running block re-plans the count-in
+    } else if (practiceSessionWanted_ && practice_.isActive()) {
+        eventCount = processJamWithPractice(numSamples, events.data(), events.size(), rhythm.beatConfidence, arrangementEnabled);
+    } else {
+        eventCount = jam_.processBlock(numSamples, events.data(), events.size());
+    }
+    publishPracticeStatus();
     if (jam_.limbRevision() != limbRevisionSeen_) {
         limbRevisionSeen_ = jam_.limbRevision();
         const auto& r = jam_.limbReport();
@@ -1346,7 +1418,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                 midiOut_.addEvent(juce::MidiMessage::noteOff(outChannel, note), juce::jmin(numSamples - 1, offset + 1));
             }
         }
-        if (midiNoteFor(events[i].instrument) >= 0)
+        if (events[i].sequence != kClickTag && midiNoteFor(events[i].instrument) >= 0)
             capture_.noteAtSample(offset, events[i].instrument, events[i].velocity);
         renderedUntil = std::max(renderedUntil, offset);
     }
@@ -1631,6 +1703,245 @@ void RoboDrummerAudioProcessor::feedRiffLock(int numSamples, bool trackerLocked)
     jam_.setRiffLock(snapshot, params);
 }
 
+// ---- practice mode ---------------------------------------------------------------------------------------------------
+float RoboDrummerAudioProcessor::pracValue(std::size_t index, float fallback) const noexcept {
+    const auto* raw = index < rawPrac_.size() ? rawPrac_[index] : nullptr;
+    const float value = raw != nullptr ? raw->load(std::memory_order_relaxed) : fallback;
+    return std::isfinite(value) ? value : fallback;
+}
+
+void RoboDrummerAudioProcessor::resetPracticeRuntime() noexcept {
+    practiceTimelineValid_ = false;
+    practiceNeedsResume_ = false;
+    practiceMuted_ = false;
+    practiceWasResting_ = false;
+    practiceAppliedDelta_ = 0;
+    practiceOffsetSamples_ = 0;
+    practiceLoopWanted_ = false;
+    practiceLoopIsRange_ = false;
+    practiceLoopSnap_ = {};
+    practiceRestSnap_ = {};
+    practiceLast_ = {};
+}
+
+void RoboDrummerAudioProcessor::updatePracticeSettings(const robodrummer::TimingAuthoritySettings& settings, bool externalTempo) noexcept {
+    namespace rd = robodrummer;
+    rd::CountInSettings countIn;
+    countIn.length = static_cast<rd::CountInLength>(juce::jlimit(0, 4, juce::roundToInt(pracValue(PracIdx::CountLen, 0.0f))));
+    countIn.sound = pracValue(PracIdx::CountSound, 0.0f) >= 0.5f ? rd::CountInSound::Sticks : rd::CountInSound::Click;
+    countIn.onlyOnStart = pracValue(PracIdx::CountStartOnly, 1.0f) >= 0.5f;
+    practice_.setCountIn(countIn);
+
+    static constexpr int kLoopBars[4] = { 1, 2, 4, 8 };
+    rd::LoopSettings loop;
+    loop.bars = kLoopBars[juce::jlimit(0, 3, juce::roundToInt(pracValue(PracIdx::LoopBars, 2.0f)))];
+    if (pracValue(PracIdx::LoopMode, 0.0f) >= 0.5f && arrangementEnabled_.load(std::memory_order_relaxed) && !arrangement_.empty()) {
+        if (!practice_.loopActive()) { // the range is fixed once the loop has started
+            const auto a = static_cast<std::size_t>(juce::jlimit(1, 16, juce::roundToInt(pracValue(PracIdx::SecFirst, 1.0f))) - 1);
+            const auto b = static_cast<std::size_t>(juce::jlimit(1, 16, juce::roundToInt(pracValue(PracIdx::SecLast, 1.0f))) - 1);
+            practiceRangeFirst_ = std::min(std::min(a, b), arrangement_.size() - 1);
+            practiceRange_ = robodrummer::sectionLoopRange(arrangement_, std::min(a, b), std::max(a, b), lastArrangementBarIndex_);
+        }
+        if (practiceRange_.valid) {
+            loop.mode = rd::LoopMode::Range;
+            loop.rangeStartBar = practiceRange_.startBar;
+            loop.rangeBars = practiceRange_.lengthBars;
+        }
+    }
+    if (!practice_.loopActive()) practiceLoopIsRange_ = loop.mode == rd::LoopMode::Range;
+    practice_.setLoop(loop);
+
+    rd::TrainerSettings trainer;
+    trainer.enabled = pracValue(PracIdx::TrainOn, 0.0f) >= 0.5f;
+    trainer.startBpm = static_cast<double>(pracValue(PracIdx::TrainStart, 80.0f));
+    trainer.targetBpm = static_cast<double>(pracValue(PracIdx::TrainTarget, 120.0f));
+    trainer.stepBpm = static_cast<double>(pracValue(PracIdx::TrainStep, 5.0f));
+    trainer.every = juce::jlimit(1, 64, juce::roundToInt(pracValue(PracIdx::TrainEvery, 4.0f)));
+    trainer.unit = pracValue(PracIdx::TrainUnit, 0.0f) >= 0.5f ? rd::TrainerUnit::LoopPasses : rd::TrainerUnit::Bars;
+    trainer.direction = static_cast<rd::TrainerDirection>(juce::jlimit(0, 2, juce::roundToInt(pracValue(PracIdx::TrainDir, 0.0f))));
+    trainer.gate = pracValue(PracIdx::TrainGate, 0.0f) >= 0.5f;
+    trainer.gateMinConfidence = pracValue(PracIdx::TrainGateMin, 0.6f);
+    trainer.restBar = pracValue(PracIdx::TrainRest, 0.0f) >= 0.5f;
+    trainer.stopAtTarget = pracValue(PracIdx::TrainStopEnd, 0.0f) >= 0.5f;
+    practice_.setTrainer(trainer);
+
+    practice_.setAuthority(settings.mode, settings.leadership);
+    practice_.setExternalTempoSource(externalTempo);
+}
+
+void RoboDrummerAudioProcessor::restoreArrangementSnapshot(const ArrangementSnapshot& snapshot) noexcept {
+    if (!snapshot.valid || !arrangementEnabled_.load(std::memory_order_relaxed) || arrangement_.empty()) return;
+    const auto before = arrangement_.currentSectionIndex();
+    arrangement_.restorePosition(snapshot.section, snapshot.bars);
+    lastArrangementBarIndex_ = snapshot.bar; // the next block advances the sequencer from here to the rewound bar
+    if (arrangement_.currentSectionIndex() != before) {
+        publishArrangementSection();
+        applyCurrentArrangementSection();
+    }
+}
+
+std::size_t RoboDrummerAudioProcessor::processJamWithPractice(int numSamples, robodrummer::DrumEvent* out, std::size_t capacity,
+                                                              float trackerConfidence, bool arrangementEnabled) noexcept {
+    namespace rd = robodrummer;
+    if (practiceNeedsResume_) {
+        practiceNeedsResume_ = false;
+        practiceTimelineValid_ = false;
+        practice_.resume();
+    }
+    const bool loopWanted = pracValue(PracIdx::LoopOn, 0.0f) >= 0.5f;
+    if (loopWanted != practiceLoopWanted_) {
+        practiceLoopWanted_ = loopWanted;
+        if (loopWanted) practice_.armLoop(); else practice_.disarmLoop();
+    }
+
+    std::size_t count = 0;
+    int pos = 0;
+    int from = 0;
+    while (pos < numSamples) {
+        int offset = 0;
+        long long beat = 0;
+        const bool hasBeat = jam_.nextBeat(from, numSamples - pos, offset, beat);
+        const int segmentEnd = hasBeat ? pos + offset : numSamples;
+        if (segmentEnd > pos) {
+            std::array<rd::DrumEvent, 128> segment{};
+            const auto produced = jam_.processBlock(segmentEnd - pos, segment.data(), segment.size());
+            if (!practiceMuted_)
+                for (std::size_t i = 0; i < produced && count < capacity; ++i) {
+                    out[count] = segment[i];
+                    out[count].sampleOffset += pos;
+                    ++count;
+                }
+            pos = segmentEnd;
+        }
+        if (!hasBeat) break;
+        from = 1;
+
+        const int numerator = std::max(1, jam_.meterNumerator());
+        const int beatInBar = static_cast<int>(beat % numerator);
+        if (!practiceTimelineValid_ || numerator != practiceTimelineNumerator_) {
+            practiceTimelineBar_ = beat / numerator;
+            practiceTimelineNumerator_ = numerator;
+            practiceTimelineValid_ = true;
+        } else if (beatInBar == 0) {
+            ++practiceTimelineBar_;
+        }
+
+        rd::PracticeBeat practiceBeat;
+        practiceBeat.barIndex = practiceTimelineBar_;
+        practiceBeat.beatInBar = beatInBar;
+        practiceBeat.numerator = numerator;
+        practiceBeat.trackerConfidence = trackerConfidence;
+        const auto action = practice_.onBeat(practiceBeat);
+        practiceLast_ = action;
+        practiceMuted_ = action.muteGroove;
+
+        if (action.gateHeld) pracGateHeld_.store(true, std::memory_order_relaxed);
+        if (action.tempoStepped) pracGateHeld_.store(false, std::memory_order_relaxed);
+
+        if (action.restBar && !practiceWasResting_ && arrangementEnabled && !arrangement_.empty())
+            practiceRestSnap_ = { true, arrangement_.currentSectionIndex(), arrangement_.barsIntoSection(), lastArrangementBarIndex_ };
+        practiceWasResting_ = action.restBar;
+        if (action.loopStarted && arrangementEnabled && !arrangement_.empty()) {
+            practiceLoopSnap_ = practiceLoopIsRange_
+                ? ArrangementSnapshot{ true, practiceRangeFirst_, 0, practiceRange_.startBar }
+                : ArrangementSnapshot{ true, arrangement_.currentSectionIndex(), arrangement_.barsIntoSection(), lastArrangementBarIndex_ };
+        }
+        if (action.contentJump) {
+            const long long delta = action.contentBarDelta - practiceAppliedDelta_;
+            practiceAppliedDelta_ = action.contentBarDelta;
+            const long long samples = delta * jam_.currentBarSamples();
+            jam_.jumpPhaseSamples(samples);
+            practiceOffsetSamples_ += samples;
+            restoreArrangementSnapshot(action.loopWrapped ? practiceLoopSnap_ : practiceRestSnap_);
+        }
+        if (action.click.active && count < capacity) {
+            const auto instrument = action.click.sound == rd::CountInSound::Sticks ? rd::DrumInstrument::Sidestick : rd::DrumInstrument::Cowbell;
+            out[count++] = { instrument, pos, action.click.accent ? 1.0f : 0.7f, kClickTag };
+        }
+        if (action.stopRequested) handleCommand(rd::MidiCommand::Stop, arrangementEnabled);
+    }
+    return count;
+}
+
+void RoboDrummerAudioProcessor::publishPracticeStatus() noexcept {
+    const bool running = practiceSessionWanted_ && practice_.isActive();
+    pracSession_.store(running, std::memory_order_relaxed);
+    pracPhase_.store(running ? static_cast<int>(practice_.phase()) : 0, std::memory_order_relaxed);
+    const bool counting = running && practice_.phase() == robodrummer::PracticePhase::CountIn;
+    pracClickBeat_.store(counting ? practiceLast_.click.beatNumber : 0, std::memory_order_relaxed);
+    pracClickTotal_.store(counting ? practiceLast_.click.totalBeats : 0, std::memory_order_relaxed);
+    pracLoopArmed_.store(running && practice_.loopArmed(), std::memory_order_relaxed);
+    pracLoopActive_.store(running && practice_.loopActive(), std::memory_order_relaxed);
+    pracLoopPass_.store(running ? practice_.loopPass() : 0, std::memory_order_relaxed);
+    const bool trainerOn = running && pracValue(PracIdx::TrainOn, 0.0f) >= 0.5f;
+    pracTrainOn_.store(trainerOn, std::memory_order_relaxed);
+    pracTrainFinished_.store(trainerOn && practice_.trainerFinished(), std::memory_order_relaxed);
+    pracTrainDrives_.store(trainerOn && practice_.trainerDrivesBase(), std::memory_order_relaxed);
+    pracBpm_.store(trainerOn ? practice_.trainerBpm() : 0.0, std::memory_order_relaxed);
+    pracStep_.store(running ? practice_.trainerStepCount() : 0, std::memory_order_relaxed);
+    pracRest_.store(running && practiceLast_.restBar, std::memory_order_relaxed);
+    if (!trainerOn) pracGateHeld_.store(false, std::memory_order_relaxed);
+}
+
+robodrummer::PracticeStatus RoboDrummerAudioProcessor::getPracticeStatus() const noexcept {
+    robodrummer::PracticeStatus s;
+    s.enabled = pracSession_.load(std::memory_order_relaxed);
+    s.phase = pracPhase_.load(std::memory_order_relaxed);
+    s.countInBeat = pracClickBeat_.load(std::memory_order_relaxed);
+    s.countInTotal = pracClickTotal_.load(std::memory_order_relaxed);
+    s.loopArmed = pracLoopArmed_.load(std::memory_order_relaxed);
+    s.loopActive = pracLoopActive_.load(std::memory_order_relaxed);
+    s.loopPass = pracLoopPass_.load(std::memory_order_relaxed);
+    s.trainerOn = pracTrainOn_.load(std::memory_order_relaxed);
+    s.trainerFinished = pracTrainFinished_.load(std::memory_order_relaxed);
+    s.trainerDrives = pracTrainDrives_.load(std::memory_order_relaxed);
+    s.trainerBpm = pracBpm_.load(std::memory_order_relaxed);
+    s.trainerStep = pracStep_.load(std::memory_order_relaxed);
+    s.gateHeld = pracGateHeld_.load(std::memory_order_relaxed);
+    s.restBar = pracRest_.load(std::memory_order_relaxed);
+    return s;
+}
+
+juce::String RoboDrummerAudioProcessor::getPracticeStatusText() const {
+    const auto s = getPracticeStatus();
+    if (!s.enabled) return "Practice: off";
+    juce::StringArray parts;
+    if (s.phase == static_cast<int>(robodrummer::PracticePhase::Waiting)) parts.add("Count-in: waiting for the next bar");
+    else if (s.phase == static_cast<int>(robodrummer::PracticePhase::CountIn)) parts.add("Count-in " + juce::String(s.countInBeat) + "/" + juce::String(s.countInTotal));
+    if (s.loopActive) parts.add("Loop pass " + juce::String(s.loopPass + 1));
+    else if (s.loopArmed) parts.add("Loop armed (starts at the next bar)");
+    if (s.trainerOn) {
+        if (s.trainerFinished) parts.add("Trainer done at " + juce::String(juce::roundToInt(s.trainerBpm)) + " BPM");
+        else if (s.trainerDrives) parts.add("Trainer " + juce::String(juce::roundToInt(s.trainerBpm)) + " BPM");
+        else parts.add("Trainer: hint only, guitarist leads (aim for " + juce::String(juce::roundToInt(s.trainerBpm)) + " BPM)");
+        if (s.gateHeld) parts.add("waiting for steady timing");
+        if (s.restBar) parts.add("rest bar");
+    }
+    if (parts.isEmpty()) parts.add("Practice: running");
+    return parts.joinIntoString(" | ");
+}
+
+// Message thread: flips the practice parameters that MIDI commands asked for, so the host sees the change.
+void RoboDrummerAudioProcessor::drainParameterToggles() {
+    const auto bits = pendingParamToggles_.exchange(0, std::memory_order_acquire);
+    if (bits == 0) return;
+    for (std::size_t i = 0; i < kPracticeIds.size(); ++i) {
+        if ((bits & (1u << i)) == 0) continue;
+        auto* parameter = parameters_.getParameter(kPracticeIds[i]);
+        if (parameter == nullptr) continue;
+        float next = parameter->getValue() >= 0.5f ? 0.0f : 1.0f;
+        if (i == PracIdx::CountLen) {
+            const float current = parameter->convertFrom0to1(parameter->getValue());
+            if (current >= 0.5f) { practiceLastCountIn_ = current; next = 0.0f; }
+            else next = parameter->convertTo0to1(practiceLastCountIn_);
+            if (current < 0.5f && !(practiceLastCountIn_ >= 1.0f)) next = parameter->convertTo0to1(4.0f);
+        }
+        parameter->beginChangeGesture();
+        parameter->setValueNotifyingHost(next);
+        parameter->endChangeGesture();
+    }
+}
+
 void RoboDrummerAudioProcessor::handleCommand(robodrummer::MidiCommand command, bool arrangementEnabled) noexcept {
     using C = robodrummer::MidiCommand;
     switch (command) {
@@ -1646,6 +1957,11 @@ void RoboDrummerAudioProcessor::handleCommand(robodrummer::MidiCommand command, 
             if (!arrangementEnabled) break;
             if (arrangement_.previous()) enterArrangementSection(false);
             return;
+        case C::PracticeToggle: pendingParamToggles_.fetch_or(1u << PracIdx::Enabled, std::memory_order_release); return;
+        case C::LoopToggle: pendingParamToggles_.fetch_or(1u << PracIdx::LoopOn, std::memory_order_release); return;
+        case C::TrainerToggle: pendingParamToggles_.fetch_or(1u << PracIdx::TrainOn, std::memory_order_release); return;
+        case C::CountInToggle: pendingParamToggles_.fetch_or(1u << PracIdx::CountLen, std::memory_order_release); return;
+        case C::TrainerRestart: practice_.restartTrainer(); return;
         case C::Fill:
         case C::ImmediateFill: manualFillSinceMemoryBar_ = true; break;
         case C::IntensityUp:
@@ -1892,6 +2208,9 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
         return;
     }
     sanitiseParameters();
+    // A practice session is runtime state: it never resumes from a saved session (the settings do).
+    for (const char* id : { ids::practiceEnabled, ids::pracLoopOn })
+        if (auto* parameter = parameters_.getParameter(id)) parameter->setValueNotifyingHost(0.0f);
     syncAllParametersToAtomics();
     applyArrangementState(arrangementSource);
     requestKitReload();
