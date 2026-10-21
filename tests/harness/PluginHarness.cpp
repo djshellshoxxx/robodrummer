@@ -23,8 +23,25 @@
 
 static std::atomic<long long> gAllocations{0};
 static std::atomic<bool> gCounting{false};
-void* operator new(std::size_t n) { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); if (void* p = std::malloc(n)) return p; throw std::bad_alloc(); }
-void* operator new[](std::size_t n) { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); if (void* p = std::malloc(n)) return p; throw std::bad_alloc(); }
+static bool gAuditRun = false; // Rig::run counts allocations inside processBlock only
+// JUCE containers (HeapBlock, Array, MidiBuffer, AudioBuffer) allocate with malloc/realloc, not operator new, so on glibc
+// the C allocator is interposed as well; elsewhere only operator new is counted (documented limitation in docs/QA.md).
+#if defined(__GLIBC__)
+#define RD_ALLOC_HOOK_MALLOC 1
+extern "C" {
+void* __libc_malloc(std::size_t);
+void* __libc_calloc(std::size_t, std::size_t);
+void* __libc_realloc(void*, std::size_t);
+void* malloc(std::size_t n) { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); return __libc_malloc(n); }
+void* calloc(std::size_t a, std::size_t b) { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); return __libc_calloc(a, b); }
+void* realloc(void* p, std::size_t n) { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); return __libc_realloc(p, n); }
+}
+static inline void rdCountNew() {}
+#else
+static inline void rdCountNew() { if (gCounting.load(std::memory_order_relaxed)) gAllocations.fetch_add(1); }
+#endif
+void* operator new(std::size_t n) { rdCountNew(); if (void* p = std::malloc(n)) return p; throw std::bad_alloc(); }
+void* operator new[](std::size_t n) { rdCountNew(); if (void* p = std::malloc(n)) return p; throw std::bad_alloc(); }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
@@ -94,16 +111,23 @@ struct Rig {
     template <typename Guitar, typename MidiFn>
     Result run(int numBlocks, Guitar&& guitar, MidiFn&& midiFor, std::array<double, 10>* channelPeaks = nullptr) {
         Result result;
+        // Allocation audit: like a real host, reuse one MIDI buffer with spare capacity; only processBlock itself is counted.
+        juce::MidiBuffer hostMidi;
+        if (gAuditRun) hostMidi.ensureSize(16384);
         for (int b = 0; b < numBlocks; ++b, ++blockIndex) {
             buffer.clear();
             for (int i = 0; i < kBlock; ++i) {
                 const float s = guitar(blockIndex * kBlock + i);
                 for (int c = 0; c < juce::jmin(2, processor.getTotalNumInputChannels()); ++c) buffer.setSample(c, i, s);
             }
-            juce::MidiBuffer midi;
+            juce::MidiBuffer localMidi;
+            juce::MidiBuffer& midi = gAuditRun ? hostMidi : localMidi;
+            midi.clear();
             midiFor(blockIndex, midi);
             playHead.ppq += kBlock / kSampleRate * playHead.bpm / 60.0;
+            if (gAuditRun) gCounting = true;
             processor.processBlock(buffer, midi);
+            if (gAuditRun) gCounting = false;
             for (const auto m : midi) {
                 const auto msg = m.getMessage();
                 if (msg.isNoteOn() && msg.getChannel() == 10) { ++result.noteOns; ++result.notes[static_cast<std::size_t>(msg.getNoteNumber())]; }
@@ -650,9 +674,9 @@ void testRealtimeAllocations() {
     // Warm-up: grows any lazily-sized internal storage once.
     rig.run(600, [](long long s) { return pluck(s, 110.0); }, midiFn);
     gAllocations = 0;
-    gCounting = true;
+    gAuditRun = true;
     rig.run(1500, [](long long s) { return pluck(s, 110.0); }, midiFn);
-    gCounting = false;
+    gAuditRun = false;
     CHECK_MSG(gAllocations.load() == 0, "%lld allocations on the audio thread", gAllocations.load());
 }
 
@@ -1710,6 +1734,22 @@ void testEditorUi() {
         ids::pracLoopSecLast, ids::pracTrainOn, ids::pracTrainStart, ids::pracTrainTarget, ids::pracTrainStep, ids::pracTrainEvery, ids::pracTrainUnit, ids::pracTrainDir,
         ids::pracTrainGate, ids::pracTrainGateMin, ids::pracTrainRest, ids::pracTrainStopEnd };
     for (const auto* id : expected) CHECK_MSG(controls.count(id) == 1, "no control bound to %s", id);
+    {   // feature audit: EVERY host parameter (not only the 0.4.0 ones) has at least one bound UI control
+        std::map<juce::String, int> boundCount;
+        visitAll(ed, [&](juce::Component& c) {
+            if (!c.getProperties().contains("paramID")) return;
+            ++boundCount[c.getProperties()["paramID"].toString()];
+            CHECK_MSG(c.getTitle().isNotEmpty() && c.getDescription().isNotEmpty(), "control for %s lacks title/description (tooltip)", c.getProperties()["paramID"].toString().toRawUTF8());
+        });
+        int total = 0;
+        for (auto* p : rig.processor.getParameters().processor.getParameters()) {
+            if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(p)) {
+                ++total;
+                CHECK_MSG(boundCount[withId->paramID] >= 1, "parameter %s has %d bound controls (want >= 1; LIVE and detail tabs may both show one)", withId->paramID.toRawUTF8(), boundCount[withId->paramID]);
+            }
+        }
+        CHECK_MSG(total == 110, "parameter count %d (docs list 110)", total);
+    }
     for (const auto& entry : controls) {
         auto* parameter = rig.processor.getParameters().getParameter(entry.first);
         CHECK_MSG(parameter != nullptr, "control for unknown parameter %s", entry.first.toRawUTF8());

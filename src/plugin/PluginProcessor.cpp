@@ -1494,7 +1494,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         }
     }
     outputPeak_.store(outPeak, std::memory_order_relaxed);
-    midi.swapWith(midiOut_);
+    // Copy instead of swapWith: a swap hands our pre-sized buffer to the host and leaves us with whatever (possibly tiny)
+    // buffer the host owned, so the next block's addEvent could allocate on the audio thread.
+    midi.clear();
+    midi.addEvents(midiOut_, 0, std::max(1, numSamples), 0);
 }
 
 void RoboDrummerAudioProcessor::publishRiffSnapshot(const robodrummer::RiffSnapshot& snapshot) noexcept {
