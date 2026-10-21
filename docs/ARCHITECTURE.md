@@ -27,3 +27,19 @@ The future plugin audio callback may read immutable snapshots and push/read fixe
 7. Phrase-level jam coordination and Jam Memory.
 
 The fast synchronization layer and the slower musical-coordination layer must remain separate. Beat/phase corrections happen continuously; fills, section interpretation and intensity arcs operate over beats and bars.
+
+## Modules added in 0.3.0
+
+| Area | Files |
+|---|---|
+| Styles / grooves | `core/Style.h`, `core/StyleLibrary.h`, `core/GrooveGenerator.h` (7 groove families, humanization), `core/JamStyleProfile.h` |
+| Fills / drummer | `core/FillGenerator.h`, `core/DrummerPersonality.h`, `plugin/JamEngine.h` (beat-indexed fill planning) |
+| Arrangement | `core/SectionSequencer.h` (per-section feel, transition, personality, overrides) |
+| Input / analysis | `analysis/InputConditioner.h`, `analysis/CalibrationAnalyzer.h`, `analysis/OnsetDetector.h` (spectral flux), `analysis/PerformanceAnalyzer.h`, `analysis/RhythmAnalyzer.h` (phase-locked loop, tempo-change detection), `analysis/TempoMovement.h`, `analysis/TempoTracker.h` (rich hypotheses), `core/Lookahead.h` |
+| Timing | `analysis/TimingAuthorityController.h`, `analysis/PhaseFollower.h` (follow strength, inertia, correction speed, sensitivity), `core/TapTempo.h`, `core/MidiClockTracker.h` |
+| MIDI | `core/MidiLearn.h` (lock-free CC and note bindings) |
+| Sound | `audio/DrumSamplePlayer.h` (aux buses, send), `audio/KitBuilder.*` (built-in + user kits), `core/Mixer.h`, `core/KitFileName.h` |
+| Plug-in | `plugin/PluginProcessor.*`, `plugin/PresetManager.*`, `plugin/EditorPanels.h`, `plugin/EditorWidgets.h`, `plugin/PluginEditor.*` |
+| Tests | `tests/*.cpp` (JUCE-free), `tests/harness/PluginHarness.cpp` (headless plug-in) |
+
+Threading: the audio thread owns all analysis and generation state; the UI reads atomics and a lock-free onset FIFO; kits are built on a loader thread and handed over through an atomic pointer swap (old samplers are deleted on the message thread); MIDI Learn writes land in per-target atomics that the message-thread timer applies to host parameters.

@@ -15,6 +15,12 @@ enum class MidiCommand : std::uint8_t {
     Resume,
     ResetListening,
     SoloSupport,
-    EndJam
+    EndJam,
+    ImmediateFill,
+    PracticeToggle,
+    LoopToggle,
+    TrainerToggle,
+    TrainerRestart,
+    CountInToggle
 };
 }

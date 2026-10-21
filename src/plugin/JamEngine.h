@@ -4,23 +4,71 @@
 // SPDX-License-Identifier: LicenseRef-Proprietary
 
 #pragma once
+#include "analysis/RiffLock.h"
+#include "core/FillGenerator.h"
 #include "core/GrooveGenerator.h"
 #include "core/JamState.h"
+#include "core/LimbModel.h"
 #include "core/Style.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 namespace robodrummer {
 class JamEngine {
 public:
     void prepare(double sampleRate) noexcept { sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0; resetPhase(); }
-    void resetPhase() noexcept { sampleCursor_ = 0; fillTargetBar_ = -1; breakUntilBar_ = -1; }
+    void resetPhase() noexcept { sampleCursor_ = 0; clearBarTargets(); }
     void setTempo(double bpm) noexcept { bpm_ = std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0); }
     void setMeter(int n, int d) noexcept { numerator_ = std::clamp(n, 1, MeterProfile::MaxBeats); denominator_ = (d == 1 || d == 2 || d == 4 || d == 8 || d == 16) ? d : 4; }
-    void setIntensity(float value) noexcept { state_.intensity = std::clamp(value, 0.0f, 1.0f); }
+    void setIntensity(float value) noexcept { state_.intensity = std::clamp(finiteOr(value, 0.5f), 0.0f, 1.0f); }
     void setStyle(const Style& style) noexcept { style_ = style; }
+    void setFillSettings(FillSettings settings) noexcept {
+        settings.complexity = std::clamp(finiteOr(settings.complexity, 0.5f), 0.0f, 1.0f);
+        settings.surprise = std::clamp(finiteOr(settings.surprise, 0.0f), 0.0f, 1.0f);
+        fillSettings_ = settings;
+    }
+    void setHumanize(float amount) noexcept { humanize_ = std::clamp(finiteOr(amount, 0.0f), 0.0f, 1.0f); }
+    void setFeelMs(float ms) noexcept { feelMs_ = std::clamp(finiteOr(ms, 0.0f), -30.0f, 30.0f); }
+    void setComplexity(float value) noexcept { complexity_ = std::clamp(finiteOr(value, 0.5f), 0.0f, 1.0f); }
+    void setCrashScale(float value) noexcept { crashScale_ = std::clamp(finiteOr(value, 1.0f), 0.0f, 2.0f); }
+    // Sets the half/normal/double feel directly (used by programmed sections); MIDI commands toggle it instead.
+    void setTimeScale(double scale) noexcept {
+        const double clamped = scale < 0.75 ? 0.5 : (scale > 1.5 ? 2.0 : 1.0);
+        if (std::abs(clamped - state_.timeScale) > 1.0e-9) { state_.timeScale = clamped; clearBarTargets(); }
+    }
+    // Riff Lock: the snapshot is latched per bar (on the first block that touches the bar) so a bar that spans several
+    // audio blocks is generated identically in each of them. amount <= 0 leaves the generator path untouched.
+    void setRiffLock(const RiffSnapshot& snapshot, const RiffLockParams& params) noexcept {
+        pendingRiff_ = snapshot;
+        riffParams_ = params;
+        if (!(riffParams_.amount > 0.0f) || !std::isfinite(riffParams_.amount)) riffParams_.amount = 0.0f;
+    }
+    [[nodiscard]] const RiffLockResult& lastRiffResult() const noexcept { return lastRiffResult_; }
+
+    // Virtual limbs: 0 = off (the original emission path, bit-exact), 1 = fully realistic. With the model on, each bar's
+    // groove, riff-locked kicks and planned fill hits are merged into one bar before it is sliced into audio blocks.
+    void setLimbAmount(float amount) noexcept { limbAmount_ = std::isfinite(amount) ? std::clamp(amount, 0.0f, 1.0f) : 0.0f; }
+    [[nodiscard]] const LimbReport& limbReport() const noexcept { return limbReport_; }
+    // Increments every time the model processed a bar (lets the processor publish a fresh summary only when it changed).
+    [[nodiscard]] std::uint32_t limbRevision() const noexcept { return limbRevision_; }
+
+    // Bar index and phase (0..1) of the position `offset` samples after the current cursor, in the current feel.
+    void barPhaseAt(long long offset, long long& bar, double& phase) const noexcept {
+        const long long barSamples = currentBarSamples();
+        const long long position = std::max<long long>(0, sampleCursor_ + offset);
+        bar = position / barSamples;
+        phase = static_cast<double>(position - bar * barSamples) / static_cast<double>(barSamples);
+    }
+    [[nodiscard]] long long currentBarSamples() const noexcept {
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return 1;
+        const double spb = sampleRate_ * 60.0 / effectiveBpm * (4.0 / static_cast<double>(denominator_));
+        return std::max<long long>(1, static_cast<long long>(std::llround(spb * numerator_)));
+    }
+
     void syncToPpq(double ppqPosition) noexcept {
         if (!std::isfinite(ppqPosition)) return;
         if (!(bpm_ > 0.0) || !(sampleRate_ > 0.0)) return;
@@ -33,6 +81,36 @@ public:
             clearBarTargets();
         sampleCursor_ = target;
     }
+    // Practice mode: a tempo step keeps the musical position (beats since the start) instead of the sample position, so the
+    // groove stays on the grid when the trainer changes the tempo.
+    void setTempoPreservingPosition(double bpm) noexcept {
+        const double next = std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0);
+        if (next != bpm_ && bpm_ > 0.0) {
+            sampleCursor_ = static_cast<long long>(std::llround(static_cast<double>(sampleCursor_) * bpm_ / next));
+            clearBarTargets();
+        }
+        bpm_ = next;
+    }
+    // First beat (in the current feel) that starts at least `from` samples after the cursor and inside the next
+    // `numSamples` samples. `offset` is relative to the cursor; `beatIndex` is the cursor-domain beat number.
+    [[nodiscard]] bool nextBeat(int from, int numSamples, int& offset, long long& beatIndex) const noexcept {
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return false;
+        const double spb = sampleRate_ * 60.0 / effectiveBpm * (4.0 / static_cast<double>(denominator_));
+        if (!(spb > 1.0)) return false;
+        const long long earliest = sampleCursor_ + std::max(0, from);
+        long long beat = static_cast<long long>(std::ceil(static_cast<double>(earliest) / spb));
+        while (static_cast<long long>(std::llround(static_cast<double>(beat) * spb)) < earliest) ++beat;
+        while (beat > 0 && static_cast<long long>(std::llround(static_cast<double>(beat - 1) * spb)) >= earliest) --beat;
+        const long long sample = static_cast<long long>(std::llround(static_cast<double>(beat) * spb));
+        if (sample - sampleCursor_ >= numSamples) return false;
+        offset = static_cast<int>(sample - sampleCursor_);
+        beatIndex = beat;
+        return true;
+    }
+    [[nodiscard]] int meterNumerator() const noexcept { return numerator_; }
+    // A deliberate jump (practice loop): like nudgePhaseSamples, and pending fill/break targets are re-planned.
+    void jumpPhaseSamples(long long deltaSamples) noexcept { nudgePhaseSamples(deltaSamples); clearBarTargets(); }
     void nudgePhaseSamples(long long deltaSamples) noexcept {
         sampleCursor_ = std::max<long long>(0, sampleCursor_ + deltaSamples);
     }
@@ -43,6 +121,15 @@ public:
         const double spb = spq * (4.0 / static_cast<double>(denominator_));
         const long long barSamples = std::max<long long>(1, static_cast<long long>(std::llround(spb * numerator_)));
         return sampleCursor_ / barSamples;
+    }
+
+    // 1-based beat within the current bar, following the (possibly half/double-time) feel.
+    [[nodiscard]] int currentBeatInBar() const noexcept {
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        if (!(effectiveBpm > 0.0) || !(sampleRate_ > 0.0)) return 1;
+        const double spb = sampleRate_ * 60.0 / effectiveBpm * (4.0 / static_cast<double>(denominator_));
+        const long long beat = static_cast<long long>(static_cast<double>(sampleCursor_) / spb);
+        return static_cast<int>(beat % numerator_) + 1;
     }
 
     // Phase of the unscaled pulse, so half/double-time feels still line up with the guitarist's beat.
@@ -57,21 +144,43 @@ public:
     }
     void requestFill(float strength) noexcept {
         state_.fillRequested = true;
+        state_.fillImmediate = false;
         state_.fillStrength = std::clamp(strength, 0.0f, 1.0f);
-        fillTargetBar_ = -1;
+        fillStartBeat_ = -1;
     }
     void apply(MidiCommand command) noexcept {
         const double previousScale = state_.timeScale;
         applyMidiCommand(state_, command);
         // Bar indices change meaning when the feel changes; re-target any pending break/fill.
         if (std::abs(state_.timeScale - previousScale) > 1.0e-9) clearBarTargets();
-        if (command == MidiCommand::Fill) fillTargetBar_ = -1;
+        if (command == MidiCommand::Fill || command == MidiCommand::ImmediateFill) fillStartBeat_ = -1;
+        if (command == MidiCommand::EndJam) requestOutro();
         if (command == MidiCommand::ResetListening) {
             resetPhase();
             state_.resetListeningRequested = false;
         }
     }
     [[nodiscard]] const JamState& state() const noexcept { return state_; }
+    [[nodiscard]] bool outroPending() const noexcept { return outroFinalBeat_ >= 0; }
+
+    // Outro (SPEC 21): the groove continues for the rest of this bar and the next, a two-beat fill leads into the
+    // following downbeat, where the drummer lands a crash and kick together and then stops (Resume restarts).
+    void requestOutro() noexcept {
+        if (!(bpm_ > 0.0) || state_.stopped) return;
+        const double effectiveBpm = bpm_ * state_.timeScale;
+        const double spb = sampleRate_ * 60.0 / effectiveBpm * (4.0 / static_cast<double>(denominator_));
+        const long long currentBeat = static_cast<long long>(static_cast<double>(sampleCursor_) / spb);
+        const long long currentBar = currentBeat / numerator_;
+        outroFinalBeat_ = (currentBar + 2) * numerator_;
+        FillSettings outroFill = fillSettings_;
+        outroFill.length = FillLength::TwoBeats;
+        fillTotalBeats_ = std::min(2, numerator_);
+        fillStartBeat_ = outroFinalBeat_ - fillTotalBeats_;
+        state_.fillRequested = true;
+        state_.fillImmediate = false;
+        state_.fillStrength = 0.9f;
+        fillHitCount_ = FillGenerator::generate(outroFill, 0.9f, fillTotalBeats_, 0x0070u + static_cast<std::uint32_t>(outroFinalBeat_), fillHits_);
+    }
     [[nodiscard]] std::size_t processBlock(int numSamples, DrumEvent* out, std::size_t capacity) noexcept {
         if (numSamples <= 0 || out == nullptr || capacity == 0 || state_.stopped) { if (numSamples > 0) sampleCursor_ += numSamples; return 0; }
         const double effectiveBpm = bpm_ * state_.timeScale;
@@ -82,6 +191,7 @@ public:
         const long long blockEnd = blockStart + numSamples;
         const long long firstBar = blockStart / barSamples;
         const long long lastBar = (blockEnd - 1) / barSamples;
+        const auto beatSample = [spb](long long beat) { return static_cast<long long>(std::llround(static_cast<double>(beat) * spb)); };
 
         if (state_.breakRequested) {
             breakUntilBar_ = std::max(breakUntilBar_, firstBar + 1);
@@ -89,6 +199,28 @@ public:
         }
         if (breakUntilBar_ >= 0 && firstBar >= breakUntilBar_)
             breakUntilBar_ = -1;
+
+        // Plan a requested fill once; positions are stored as beat indices so tempo changes keep it aligned.
+        if (state_.fillRequested && fillStartBeat_ < 0 && outroFinalBeat_ < 0) {
+            fillTotalBeats_ = FillGenerator::lengthBeats(fillSettings_.length, numerator_);
+            const long long baseBar = breakUntilBar_ >= 0 ? std::max(firstBar, breakUntilBar_) : firstBar;
+            if (state_.fillImmediate && breakUntilBar_ < 0) {
+                fillStartBeat_ = (blockStart + static_cast<long long>(spb) - 1) / std::max<long long>(1, static_cast<long long>(spb));
+                if (beatSample(fillStartBeat_) < blockStart) ++fillStartBeat_;
+            } else {
+                const long long barStartBeat = baseBar * numerator_;
+                fillStartBeat_ = fillTotalBeats_ >= numerator_ ? barStartBeat : barStartBeat + (numerator_ - fillTotalBeats_);
+                if (beatSample(fillStartBeat_) < blockStart) fillStartBeat_ += numerator_;
+            }
+            fillHitCount_ = FillGenerator::generate(fillSettings_, state_.fillStrength, fillTotalBeats_,
+                                                    static_cast<std::uint32_t>(0xF111u + static_cast<std::uint32_t>(fillStartBeat_)), fillHits_);
+        }
+        const bool fillPlanned = state_.fillRequested && fillStartBeat_ >= 0;
+        const long long fillStartSample = fillPlanned ? beatSample(fillStartBeat_) : 0;
+        const long long fillEndSample = fillPlanned ? beatSample(fillStartBeat_ + fillTotalBeats_) : 0;
+
+        // Nothing but the outro's final hit may sound at or after the final downbeat.
+        const long long outroCutoff = outroFinalBeat_ >= 0 ? beatSample(outroFinalBeat_) : std::numeric_limits<long long>::max();
 
         std::size_t count = 0;
         for (long long bar = firstBar; bar <= lastBar && count < capacity; ++bar) {
@@ -103,11 +235,76 @@ public:
             ctx.intensity = state_.intensity;
             ctx.sectionStart = (bar == 0);
             ctx.seed = static_cast<std::uint32_t>(0x5244424Du + static_cast<std::uint32_t>(bar));
-            const auto eventCount = generator_.generateBar(style_, ctx, events);
+            ctx.humanize = humanize_;
+            ctx.feelMs = feelMs_;
+            ctx.complexity = complexity_;
+            ctx.crashScale = crashScale_;
             const long long barStart = bar * barSamples;
+            std::size_t eventCount;
+            if (riffParams_.amount > 0.0f) {
+                if (bar != riffLatchBar_) { riffSnapshot_ = pendingRiff_; riffLatchBar_ = bar; }
+                const bool fillBar = fillPlanned && barStart < fillEndSample && barStart + barSamples > fillStartSample;
+                if (riffSnapshot_.locked && !fillBar) {
+                    // Generate un-humanized, let the kick follow the riff, then humanize so added hits get the same feel.
+                    GrooveContext plain = ctx;
+                    plain.humanize = 0.0f;
+                    plain.feelMs = 0.0f;
+                    eventCount = generator_.generateBar(style_, plain, events);
+                    lastRiffResult_ = RiffLockTransform::apply(events, eventCount, ctx, style_, riffSnapshot_, riffParams_, ctx.seed);
+                    eventCount = lastRiffResult_.count;
+                    GrooveGenerator::humanizeBar(style_, ctx, static_cast<int>(barSamples), events, eventCount);
+                } else {
+                    eventCount = generator_.generateBar(style_, ctx, events);
+                }
+            } else {
+                eventCount = generator_.generateBar(style_, ctx, events);
+            }
+            if (limbAmount_ > 0.0f) {
+                std::array<DrumEvent, 192> bar{};
+                std::size_t n = 0;
+                for (std::size_t i = 0; i < eventCount && n < bar.size(); ++i) {
+                    const long long absolute = barStart + events[i].sampleOffset;
+                    if (absolute >= outroCutoff) continue;
+                    if (fillPlanned && absolute >= fillStartSample && absolute < fillEndSample && events[i].instrument != DrumInstrument::Crash) continue;
+                    bar[n] = events[i];
+                    bar[n].sequence = static_cast<std::uint32_t>(n);
+                    ++n;
+                }
+                if (fillPlanned) {
+                    const auto push = [&](DrumInstrument instrument, long long absolute, float velocity) {
+                        if (absolute >= barStart && absolute < barStart + barSamples && n < bar.size()) {
+                            bar[n] = { instrument, static_cast<int>(absolute - barStart), velocity, static_cast<std::uint32_t>(n) };
+                            ++n;
+                        }
+                    };
+                    for (std::size_t i = 0; i < fillHitCount_; ++i)
+                        push(fillHits_[i].instrument, fillStartSample + static_cast<long long>(std::llround(spb * fillHits_[i].beatOffset)), fillHits_[i].velocity);
+                    if (FillGenerator::endsWithCrash(fillTotalBeats_) && outroFinalBeat_ < 0) push(DrumInstrument::Crash, fillEndSample, 0.95f);
+                }
+                LimbContext limbContext;
+                limbContext.bpm = effectiveBpm;
+                limbContext.sampleRate = sampleRate_;
+                limbContext.numerator = numerator_;
+                limbContext.denominator = denominator_;
+                n = limbs_.process(bar.data(), n, limbContext, limbAmount_, &limbReport_);
+                ++limbRevision_;
+                for (std::size_t i = 0; i < n && count < capacity; ++i) {
+                    const long long absolute = barStart + bar[i].sampleOffset;
+                    if (absolute >= blockStart && absolute < blockEnd) {
+                        auto e = bar[i];
+                        e.sampleOffset = static_cast<int>(absolute - blockStart);
+                        out[count++] = e;
+                    }
+                }
+                continue;
+            }
             for (std::size_t i = 0; i < eventCount && count < capacity; ++i) {
                 const long long absolute = barStart + events[i].sampleOffset;
-                if (absolute >= blockStart && absolute < blockEnd) {
+                if (absolute >= blockStart && absolute < blockEnd && absolute < outroCutoff) {
+                    // The fill replaces the groove it covers (cymbal crashes aside).
+                    if (fillPlanned && absolute >= fillStartSample && absolute < fillEndSample &&
+                        events[i].instrument != DrumInstrument::Crash)
+                        continue;
                     auto e = events[i];
                     e.sampleOffset = static_cast<int>(absolute - blockStart);
                     out[count++] = e;
@@ -115,54 +312,73 @@ public:
             }
         }
 
-        if (state_.fillRequested) {
-            if (fillTargetBar_ < 0) {
-                fillTargetBar_ = breakUntilBar_ >= 0 ? std::max(firstBar, breakUntilBar_) : firstBar;
-                const long long fillStart = fillTargetBar_ * barSamples + static_cast<long long>(std::llround(spb * (numerator_ - 1)));
-                if (fillStart < blockStart) ++fillTargetBar_;
-            }
-            const long long targetStart = fillTargetBar_ * barSamples;
-            const long long fillStart = targetStart + static_cast<long long>(std::llround(spb * (numerator_ - 1)));
-            const std::array<DrumInstrument, 6> voices {
-                DrumInstrument::Snare,
-                DrumInstrument::HighTom,
-                DrumInstrument::MidTom,
-                DrumInstrument::FloorTom,
-                DrumInstrument::MidTom,
-                DrumInstrument::Snare
-            };
-            const int fillSteps = std::clamp(2 + static_cast<int>(std::lround(state_.fillStrength * 4.0f)), 2, 6);
-            const double stepBeats = 1.0 / static_cast<double>(fillSteps);
-            for (int step = 0; step < fillSteps && count < capacity; ++step) {
-                const long long absolute = fillStart + static_cast<long long>(std::llround(spb * stepBeats * step));
-                if (absolute >= blockStart && absolute < blockEnd) {
-                    const float velocity = std::clamp(0.58f + state_.fillStrength * 0.30f + 0.02f * step, 0.0f, 1.0f);
-                    out[count++] = { voices[static_cast<std::size_t>(step)], static_cast<int>(absolute - blockStart), velocity, static_cast<std::uint32_t>(count) };
+        if (fillPlanned) {
+            // With the limb model on, fill hits were already merged into (and filtered with) their bar above.
+            if (limbAmount_ <= 0.0f) {
+                for (std::size_t i = 0; i < fillHitCount_ && count < capacity; ++i) {
+                    const long long absolute = fillStartSample + static_cast<long long>(std::llround(spb * fillHits_[i].beatOffset));
+                    if (absolute >= blockStart && absolute < blockEnd)
+                        { const auto idx = count++; out[idx] = { fillHits_[i].instrument, static_cast<int>(absolute - blockStart), fillHits_[i].velocity, static_cast<std::uint32_t>(idx) }; }
                 }
+                if (FillGenerator::endsWithCrash(fillTotalBeats_) && outroFinalBeat_ < 0 && fillEndSample >= blockStart && fillEndSample < blockEnd && count < capacity)
+                    { const auto idx = count++; out[idx] = { DrumInstrument::Crash, static_cast<int>(fillEndSample - blockStart), 0.95f, static_cast<std::uint32_t>(idx) }; }
             }
-            if (blockEnd >= targetStart + barSamples) {
+            if (blockEnd >= fillEndSample) {
                 state_.fillRequested = false;
-                fillTargetBar_ = -1;
+                state_.fillImmediate = false;
+                fillStartBeat_ = -1;
             }
         }
 
+        if (outroFinalBeat_ >= 0) {
+            const long long finalSample = beatSample(outroFinalBeat_);
+            if (finalSample >= blockStart && finalSample < blockEnd && count + 1 < capacity) {
+                { const auto idx = count++; out[idx] = { DrumInstrument::Crash, static_cast<int>(finalSample - blockStart), 1.0f, static_cast<std::uint32_t>(idx) }; }
+                { const auto idx = count++; out[idx] = { DrumInstrument::Kick, static_cast<int>(finalSample - blockStart), 0.98f, static_cast<std::uint32_t>(idx) }; }
+            }
+            if (blockEnd > finalSample) { // the final hit has been played: stop; Resume starts the groove again
+                state_.stopped = true;
+                state_.fillRequested = false;
+                fillStartBeat_ = -1;
+                outroFinalBeat_ = -1;
+            }
+        }
         if (state_.crashRequested && count < capacity) { out[count++] = {DrumInstrument::Crash, 0, 1.0f, 0}; state_.crashRequested = false; }
         sampleCursor_ = blockEnd;
         std::sort(out, out + count, [](const DrumEvent& a, const DrumEvent& b){ return a.sampleOffset < b.sampleOffset; });
         return count;
     }
 private:
-    void clearBarTargets() noexcept { fillTargetBar_ = -1; breakUntilBar_ = -1; }
+    static float finiteOr(float value, float fallback) noexcept { return std::isfinite(value) ? value : fallback; }
+    void clearBarTargets() noexcept { if (outroFinalBeat_ < 0) fillStartBeat_ = -1; breakUntilBar_ = -1; }
 
     double sampleRate_{48000.0};
     double bpm_{120.0};
     int numerator_{4};
     int denominator_{4};
     long long sampleCursor_{0};
-    long long fillTargetBar_{-1};
+    long long fillStartBeat_{-1};
+    long long outroFinalBeat_{-1};
+    int fillTotalBeats_{1};
+    std::size_t fillHitCount_{0};
+    std::array<FillHit, FillGenerator::MaxHits> fillHits_{};
     long long breakUntilBar_{-1};
+    FillSettings fillSettings_{};
+    float humanize_{0.0f};
+    float feelMs_{0.0f};
+    float complexity_{0.5f};
+    float crashScale_{1.0f};
     Style style_{Style::basicRock()};
     GrooveGenerator generator_{};
     JamState state_{};
+    RiffSnapshot pendingRiff_{};
+    RiffSnapshot riffSnapshot_{};
+    RiffLockParams riffParams_{};
+    RiffLockResult lastRiffResult_{};
+    long long riffLatchBar_{-1};
+    float limbAmount_{0.0f};
+    LimbModel limbs_{};
+    LimbReport limbReport_{};
+    std::uint32_t limbRevision_{0};
 };
 }

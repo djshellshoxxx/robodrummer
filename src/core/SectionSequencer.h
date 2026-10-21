@@ -1,16 +1,29 @@
 #pragma once
+#include "core/DrummerPersonality.h"
 #include "core/JamStyleProfile.h"
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 
 namespace robodrummer {
 
+enum class SectionTimeFeel : std::uint8_t { Normal, HalfTime, DoubleTime };
+enum class SectionTransition : std::uint8_t { Crash, Fill, Break, None };
+
+// Programmed-song section (SPEC 25). The first four members predate the extended fields and keep their order
+// so existing aggregate initialisers remain valid.
 struct SectionDefinition {
     JamStyle style{JamStyle::Rock};
     int bars{4};
     float intensityTarget{0.5f};
     bool autoAdvance{true};
+    SectionTimeFeel timeFeel{SectionTimeFeel::Normal};
+    SectionTransition transition{SectionTransition::Crash};
+    DrummerPersonality personality{DrummerPersonality::Balanced};
+    float fillFrequency{-1.0f};  // < 0 = inherit the global Fill Frequency
+    float leadership{-1.0f};   // < 0 = inherit the global Leadership setting
+    float followStrength{-1.0f}; // < 0 = inherit the global Follow Range scale; otherwise 0-1 scales Follow Range
 };
 
 struct SectionAdvanceResult {

@@ -1,9 +1,8 @@
 # RoboDrummer Engineering Specification
 
-Version: 0.1 research baseline  
+Version: 0.3  
 Primary implementation target: C++ with JUCE  
-Initial plugin targets: VST3, CLAP  
-Later targets: AU, standalone application  
+Initial plugin targets: VST3, CLAP, AU (macOS), Standalone  
 Primary use case: one live guitarist jamming with an autonomous virtual drummer
 
 ## 1. Product definition
@@ -894,3 +893,49 @@ Initial literature review produced several requirements that are now part of the
 7. **Multiple hypotheses and explicit confidence are required.** A single fragile beat interpretation is not acceptable for live jamming.
 
 See the `research/` directory for sources and detailed notes.
+
+
+## 43. Implementation status (0.4.0)
+
+Implementation status against this specification, the defects found and the remaining backlog are recorded in [docs/feature-audit/FEATURE_AUDIT_0.4.0.md](docs/feature-audit/FEATURE_AUDIT_0.4.0.md) (traceability matrix for every spec file and section) and, for the 0.3.0 baseline, [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md). Compliance with the shared plug-in standard: [docs/COMPLIANCE.md](docs/COMPLIANCE.md). Validation: [docs/QA.md](docs/QA.md).
+
+## 41. v0.3 additions
+
+Features added after the 0.3.0 baseline. Each has a full specification (behavior, parameters, state, UI, threading, tests, acceptance criteria, integration hooks).
+
+| Feature | Summary | Spec |
+|---|---|---|
+| Drum bus | Bus compressor with soft knee, sidechain high-pass, parallel (New York) blend and gentle saturation on the internal drum mix; off by default | [01-drum-bus](docs/specs/01-drum-bus.md) |
+| Transient shaper | Level-independent attack and sustain control on the drum output; off by default, separate from the guitar analysis path (see ADR 16) | [02-transient-shaper](docs/specs/02-transient-shaper.md) |
+| Riff lock | Learns a repeating low-note/palm-muted riff and makes the kick (optionally a crash accent) mirror its rhythm; idle on noodling | [03-riff-lock](docs/specs/03-riff-lock.md) |
+| Practice mode | Count-in, bar loop (groove or programmed section range) and a tempo trainer that ramps BPM toward a target | [04-practice-mode](docs/specs/04-practice-mode.md) |
+| MIDI capture | Always-on recording of the generated drum MIDI; capture the last N bars and drag or save a Standard MIDI File with tempo and meter | [05-midi-capture](docs/specs/05-midi-capture.md) |
+| Auto setup | "Learn My Playing": about 10 seconds of playing yields proposed gain, gate, follow, timing mode, BPM, style and intensity with reasons; applied only on request and undoable | [06-auto-setup](docs/specs/06-auto-setup.md) |
+
+Automatic meter detection ([07-auto-meter](docs/specs/07-auto-meter.md), SPEC 16 "later") and the virtual-limb model ([08-virtual-limbs](docs/specs/08-virtual-limbs.md), SPEC 22 "future") have their own specifications and are listed in the index below.
+
+## 42. Spec index
+
+All feature specifications and decision records live in `docs/specs/`.
+
+| File | Topic | Type |
+|---|---|---|
+| [01-drum-bus](docs/specs/01-drum-bus.md) | Drum bus processing | Feature (v0.3) |
+| [02-transient-shaper](docs/specs/02-transient-shaper.md) | Drum transient shaper | Feature (v0.3) |
+| [03-riff-lock](docs/specs/03-riff-lock.md) | Riff lock | Feature (v0.3) |
+| [04-practice-mode](docs/specs/04-practice-mode.md) | Practice mode | Feature (v0.3) |
+| [05-midi-capture](docs/specs/05-midi-capture.md) | MIDI capture | Feature (v0.3) |
+| [06-auto-setup](docs/specs/06-auto-setup.md) | Auto setup | Feature (v0.3) |
+| [07-auto-meter](docs/specs/07-auto-meter.md) | Automatic meter detection (SPEC 16 "later") | Feature (v0.4, implemented) |
+| [08-virtual-limbs](docs/specs/08-virtual-limbs.md) | Virtual limb model (SPEC 22 "future") | Feature (v0.4, implemented) |
+| [10-analysis-worker-thread](docs/specs/10-analysis-worker-thread.md) | Analysis on audio thread vs worker (SPEC 33) | ADR, decided: keep on audio thread |
+| [11-real-guitar-fixtures](docs/specs/11-real-guitar-fixtures.md) | Licensed real-guitar fixture corpus (SPEC 36) | Protocol |
+| [12-host-matrix-qa](docs/specs/12-host-matrix-qa.md) | Per-host checklist, pluginval and auval | QA spec |
+| [13-code-signing-notarization](docs/specs/13-code-signing-notarization.md) | Windows signing, macOS notarization, CI secrets | Release spec |
+| [14-learned-models-phase5](docs/specs/14-learned-models-phase5.md) | Learned beat/downbeat models (SPEC 38 Phase 5) | Proposal, gated |
+| [15-combo-context-menu](docs/specs/15-combo-context-menu.md) | Right-click menu for combo boxes and toggles (CDL 2.3) | Feature |
+| [16-transient-enhancement-adr](docs/specs/16-transient-enhancement-adr.md) | Input transient enhancement (SPEC 5 "may") | ADR, decided: skip |
+| [17-accessibility-and-help](docs/specs/17-accessibility-and-help.md) | Keyboard focus, options, Help/About (CDL 2.4, 7) | Feature |
+| [18-release-process](docs/specs/18-release-process.md) | Versioning, beta to release criteria, packaging, unsigned installs | Process |
+
+Related documents: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/PARAMETERS.md](docs/PARAMETERS.md), [docs/COMPLIANCE.md](docs/COMPLIANCE.md), [docs/QA.md](docs/QA.md), [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md).
