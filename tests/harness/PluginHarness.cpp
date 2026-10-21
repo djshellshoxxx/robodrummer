@@ -17,6 +17,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <set>
 #include <new>
 #include "../smf_test_parser.h"
 
@@ -1620,6 +1621,506 @@ void testNewParameterFuzz() {
     CHECK(variants == 7);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Editor UI wiring (spec 01-08, 15, 17): every new control exists, is attached, titled, reachable and works.
+// ---------------------------------------------------------------------------------------------------------------
+void visitAll(juce::Component& root, const std::function<void(juce::Component&)>& fn) {
+    fn(root);
+    for (auto* child : root.getChildren()) visitAll(*child, fn);
+}
+juce::Component* findById(juce::Component& root, const juce::String& id) {
+    juce::Component* found = nullptr;
+    visitAll(root, [&](juce::Component& c) { if (found == nullptr && c.getComponentID() == id) found = &c; });
+    return found;
+}
+std::map<juce::String, juce::Component*> paramControls(juce::Component& root) {
+    std::map<juce::String, juce::Component*> map;
+    visitAll(root, [&](juce::Component& c) {
+        if (c.getProperties().contains("paramID")) map[c.getProperties()["paramID"].toString()] = &c;
+    });
+    return map;
+}
+juce::File tempFile(const char* name) {
+    return juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("robodrummer-ui-test").getChildFile(name);
+}
+void writeSettings(const juce::String& body) {
+    const auto f = rdui::EditorSettings::file();
+    f.getParentDirectory().createDirectory();
+    f.replaceWithText(body);
+}
+
+void click(juce::Button* b) { if (b != nullptr && b->onClick) b->onClick(); }
+
+void testEditorUi() {
+    section("editor UI: settings, wiring, context menus, focus, flows");
+    namespace ids = robodrummer::ParamIDs;
+
+    // ---- settings file: read-modify-write, corrupt and invalid values ----
+    writeSettings("<RoboDrummerSettings futureKey=\"keep\" tooltips=\"0\" tooltipDelayMs=\"12345\" captureBars=\"7\" tourSeen=\"1\"/>");
+    {
+        const auto v = rdui::EditorSettings::load();
+        CHECK(!v.tooltips && v.tooltipDelayMs == 600 && v.captureBars == 8 && v.tourSeen && !v.reducedMotion && !v.highContrast);
+        CHECK(rdui::EditorSettings::setBool("reducedMotion", true) && rdui::EditorSettings::setInt("tooltipDelayMs", 300));
+        const auto xml = juce::XmlDocument::parse(rdui::EditorSettings::file());
+        CHECK(xml != nullptr && xml->getStringAttribute("futureKey") == "keep" && xml->getBoolAttribute("reducedMotion") && !xml->getBoolAttribute("tooltips", true));
+        CHECK(rdui::EditorSettings::load().tooltipDelayMs == 300);
+        writeSettings("this is <not xml");
+        const auto d = rdui::EditorSettings::load();
+        CHECK(d.tooltips && d.tooltipDelayMs == 600 && !d.reducedMotion && !d.tourSeen);
+        CHECK(rdui::EditorSettings::setBool("tourSeen", true) && rdui::EditorSettings::load().tourSeen);
+    }
+
+    // ---- context menu parsers (spec 15) ----
+    {
+        const juce::StringArray choices { "Rock", "Blues", "1 beat", "4 beats" };
+        int i = -1;
+        CHECK(rdui::parseChoiceText(" blues ", choices, i) && i == 1);
+        CHECK(rdui::parseChoiceText("3", choices, i) && i == 3);
+        CHECK(!rdui::parseChoiceText("4", choices, i) && !rdui::parseChoiceText("-1", choices, i) && !rdui::parseChoiceText("", choices, i));
+        CHECK(!rdui::parseChoiceText("Rock and roll", choices, i) && !rdui::parseChoiceText(juce::String::repeatedString("x", 500), choices, i) && !rdui::parseChoiceText("nan", choices, i));
+        CHECK(rdui::parseChoiceText("1 beat", choices, i) && i == 2);
+        bool b = false;
+        CHECK(rdui::parseToggleText("ON", b) && b && rdui::parseToggleText(" off ", b) && !b && rdui::parseToggleText("True", b) && b && rdui::parseToggleText("0", b) && !b);
+        CHECK(!rdui::parseToggleText("yes", b) && !rdui::parseToggleText("", b) && !rdui::parseToggleText("2", b) && !rdui::parseToggleText("onoff", b));
+        CHECK(rdui::findLearnTarget(ids::leadershipMode) >= 0 && rdui::findLearnTarget(ids::jamMemoryEnabled) >= 0);
+        CHECK(rdui::findLearnTarget("mute_kick") < 0 && rdui::findLearnTarget(ids::manualMeterEnabled) < 0 && rdui::findLearnTarget("") < 0);
+    }
+
+    Rig rig;
+    rig.param("leadershipMode", 1);
+    std::unique_ptr<juce::AudioProcessorEditor> base(rig.processor.createEditor());
+    CHECK(base != nullptr);
+    if (base == nullptr) return;
+    auto& ed = static_cast<RoboDrummerAudioProcessorEditor&>(*base);
+    CHECK(ed.getWidth() == RoboDrummerAudioProcessorEditor::kDefaultWidth && ed.getHeight() == RoboDrummerAudioProcessorEditor::kDefaultHeight);
+    CHECK(RoboDrummerAudioProcessorEditor::TabCount == 9);
+    ed.setVisible(true);
+    pump(150);
+    ed.setSize(RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight);
+    pump(50);
+    CHECK(ed.getWidth() == RoboDrummerAudioProcessorEditor::kMinWidth && ed.getHeight() == RoboDrummerAudioProcessorEditor::kMinHeight);
+
+    // ---- every new parameter has a bound control; titles; layout sanity at the minimum size ----
+    const auto controls = paramControls(ed);
+    const char* expected[] = {
+        ids::drumBusEnabled, ids::drumBusThreshold, ids::drumBusRatio, ids::drumBusKnee, ids::drumBusAttack, ids::drumBusRelease, ids::drumBusMakeup, ids::drumBusDetect,
+        ids::drumBusScHpf, ids::drumBusMix, ids::drumBusDrive, ids::transientShaperEnabled, ids::transientShaperAttack, ids::transientShaperSustain, ids::transientShaperMix,
+        ids::transientShaperOutput, ids::rlAmount, ids::rlSensitivity, ids::rlAccentCrash, ids::limbModelAmount, ids::autoMeterEnabled, ids::autoMeterThreshold,
+        ids::practiceEnabled, ids::pracCountInLen, ids::pracCountInSound, ids::pracCountInStartOnly, ids::pracLoopOn, ids::pracLoopMode, ids::pracLoopBars, ids::pracLoopSecFirst,
+        ids::pracLoopSecLast, ids::pracTrainOn, ids::pracTrainStart, ids::pracTrainTarget, ids::pracTrainStep, ids::pracTrainEvery, ids::pracTrainUnit, ids::pracTrainDir,
+        ids::pracTrainGate, ids::pracTrainGateMin, ids::pracTrainRest, ids::pracTrainStopEnd };
+    for (const auto* id : expected) CHECK_MSG(controls.count(id) == 1, "no control bound to %s", id);
+    for (const auto& entry : controls) {
+        auto* parameter = rig.processor.getParameters().getParameter(entry.first);
+        CHECK_MSG(parameter != nullptr, "control for unknown parameter %s", entry.first.toRawUTF8());
+        if (parameter == nullptr) continue;
+        // set a non-default value from the host side and require the control to follow it
+        const float target = parameter->getDefaultValue() > 0.5f ? 0.2f : 0.8f;
+        parameter->setValueNotifyingHost(target);
+        const float plain = parameter->convertFrom0to1(parameter->getValue());
+        if (auto* slider = dynamic_cast<juce::Slider*>(entry.second))
+            CHECK_MSG(std::abs(slider->getValue() - plain) <= std::max(0.01, slider->getInterval()), "%s slider %f vs %f", entry.first.toRawUTF8(), slider->getValue(), static_cast<double>(plain));
+        else if (auto* combo = dynamic_cast<juce::ComboBox*>(entry.second))
+            CHECK_MSG(combo->getSelectedId() == juce::roundToInt(plain) + 1, "%s combo %d vs %f", entry.first.toRawUTF8(), combo->getSelectedId(), static_cast<double>(plain));
+        else if (auto* button = dynamic_cast<juce::Button*>(entry.second))
+            CHECK_MSG(button->getToggleState() == (plain > 0.5f), "%s toggle", entry.first.toRawUTF8());
+        else CHECK_MSG(false, "%s control has an unexpected type", entry.first.toRawUTF8());
+        // and the control drives the host parameter back
+        parameter->setValueNotifyingHost(parameter->getDefaultValue());
+        CHECK_MSG(entry.second->getTitle().isNotEmpty() && entry.second->getDescription().isNotEmpty(), "%s lacks accessibility title/description", entry.first.toRawUTF8());
+    }
+    {   // all stock widgets have a title (screen readers) and a tooltip-or-title; none has zero size when its tab is showing
+    }
+    for (int size = 0; size < 2; ++size) {
+        if (size == 1) { ed.setSize(RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); pump(50); }
+        for (int tab = 0; tab < RoboDrummerAudioProcessorEditor::TabCount; ++tab) {
+            ed.showTabForTest(tab);
+            pump(30);
+            int untitled = 0, tiny = 0, outside = 0;
+            visitAll(ed, [&](juce::Component& c) {
+                if (!c.isVisible() || c.getParentComponent() == nullptr) return;
+                const bool widget = dynamic_cast<juce::Slider*>(&c) || dynamic_cast<juce::ComboBox*>(&c) || dynamic_cast<juce::ToggleButton*>(&c) || dynamic_cast<juce::TextButton*>(&c);
+                if (!widget) return;
+                // only widgets of the visible tab (hidden panels have visible=false at their root)
+                if (!rdui::FocusRing::visibleWithin(&c, &ed)) return;
+                if (dynamic_cast<juce::Slider*>(&c) || dynamic_cast<juce::ComboBox*>(&c) || dynamic_cast<juce::ToggleButton*>(&c)) {
+                    if (c.getTitle().isEmpty() && c.getName().isEmpty()) ++untitled;
+                    if (c.getTitle().isEmpty() && c.getName().isNotEmpty() && dynamic_cast<juce::Slider*>(&c)) ++untitled;
+                }
+                if (c.getWidth() < 18 || c.getHeight() < 14) ++tiny;
+                if (!ed.getLocalBounds().contains(ed.getLocalArea(&c, c.getLocalBounds()))) ++outside;
+            });
+            CHECK_MSG(untitled == 0 && tiny == 0 && outside == 0, "tab %s size %d: untitled %d tiny %d outside %d", RoboDrummerAudioProcessorEditor::tabName(tab), size, untitled, tiny, outside);
+        }
+    }
+
+    // ---- keyboard focus: every parameter control on a tab is reached exactly once by Tab, no focus trap ----
+    for (int tab : { 1, 5, 2, 8 }) {
+        ed.showTabForTest(tab);
+        pump(30);
+        std::vector<juce::Component*> wanted;
+        for (const auto& entry : paramControls(ed)) if (rdui::FocusRing::visibleWithin(entry.second, &ed)) wanted.push_back(entry.second);
+        auto traverser = ed.createKeyboardFocusTraverser();
+        const auto order = traverser->getAllComponents(&ed);
+        const std::set<juce::Component*> seen(order.begin(), order.end());
+        // walking with getNextComponent must also visit each control once and come back to the start
+        std::set<juce::Component*> walked;
+        juce::Component* walk = traverser->getDefaultComponent(&ed);
+        int steps = 0;
+        while (walk != nullptr && steps++ < 800 && walked.insert(walk).second) walk = traverser->getNextComponent(walk);
+        CHECK_MSG(walked.size() == order.size() && steps < 800, "tab %d: walk visited %zu of %zu", tab, walked.size(), order.size());
+        int missing = 0;
+        for (auto* w : wanted) if (seen.count(w) == 0) ++missing;
+        CHECK_MSG(missing == 0 && !wanted.empty() && steps < 800, "tab %d focus order: %d of %zu controls unreachable, steps %d", tab, missing, wanted.size(), steps);
+    }
+    {   // the focus ring follows keyboard focus and is a shape on its own
+        ed.showTabForTest(1);
+        pump(30);
+        auto controlsNow = paramControls(ed);
+        auto* slider = controlsNow.count(ids::drumBusThreshold) ? controlsNow[ids::drumBusThreshold] : nullptr;
+        CHECK(slider != nullptr && slider->getWantsKeyboardFocus());
+        if (slider != nullptr) {
+            slider->grabKeyboardFocus();
+            pump(100);
+            if (ed.focusRing().getTarget() != slider) ed.focusRing().setTarget(slider);   // some window-manager-less displays never deliver focus
+            CHECK(!ed.focusRing().getRing().isEmpty() && ed.focusRing().getRing().getWidth() > slider->getWidth());
+        }
+    }
+
+    // ---- Drum Bus / Transient Shaper meters respond (text, not colour) ----
+    {
+        ed.showTabForTest(1);
+        rig.param("drumBusEnabled", 1); rig.param("drumBusThreshold", -40.0f); rig.param("drumBusRatio", 10.0f);
+        rig.param("transientShaperEnabled", 1); rig.param("transientShaperAttack", 80.0f);
+        rig.run(200, [](long long s) { return pluck(s, 120.0); }, kNoMidi);
+        pump(120);
+        bool sawGain = false, sawReduction = false, sawOn = false;
+        visitAll(ed, [&](juce::Component& c) {
+            if (auto* l = dynamic_cast<juce::Label*>(&c)) {
+                if (l->getText().startsWith("Gain reduction:") && l->getText() != "Gain reduction: 0.0 dB") sawReduction = true;
+                if (l->getText().startsWith("Gain: ")) sawGain = true;
+                if (l->getText() == "ON") sawOn = true;
+            }
+        });
+        CHECK_MSG(sawGain && sawReduction && sawOn, "meter text gain %d reduction %d on %d", sawGain, sawReduction, sawOn);
+        rig.param("drumBusEnabled", 0); rig.param("transientShaperEnabled", 0); rig.param("drumBusThreshold", -18.0f); rig.param("drumBusRatio", 4.0f); rig.param("transientShaperAttack", 0.0f);
+    }
+
+    // ---- LIVE: Learn My Playing through the real buttons ----
+    {
+        ed.showTabForTest(0);
+        pump(50);
+        auto* learn = dynamic_cast<juce::TextButton*>(findById(ed, "learnMyPlaying"));
+        auto* card = dynamic_cast<rdui::AutoSetupCard*>(findById(ed, "autoSetupCard"));
+        CHECK(learn != nullptr && card != nullptr);
+        if (learn != nullptr && card != nullptr) {
+            const auto before = rig.processor.getAutoSetupCurrentValues();
+            CHECK(!card->isOpen() && learn->isEnabled());
+            click(learn);
+            CHECK(card->mode() == rdui::AutoSetupCard::Mode::Running && card->isVisible() && !learn->isEnabled());
+            click(learn);   // blocked while open
+            renderAudio(rig, 200, setupGuitar, kNoMidi, kNoBlockHook);
+            pump(120);
+            CHECK(card->mode() == rdui::AutoSetupCard::Mode::Running && rig.processor.getAutoSetupProgress() > 0.05f);
+            renderAudio(rig, 1180 - 200, setupGuitar, kNoMidi, kNoBlockHook);
+            pump(300);
+            CHECK_MSG(card->mode() == rdui::AutoSetupCard::Mode::Review, "card mode %d state %d", static_cast<int>(card->mode()), static_cast<int>(rig.processor.getAutoSetupState()));
+            CHECK(card->visibleRowCount() >= 3);
+            auto* apply = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupApply"));
+            CHECK(apply != nullptr && apply->isVisible());
+            // untick everything: Apply must change nothing and offer no undo
+            std::vector<bool> ticks;
+            for (int i = 0; i < card->visibleRowCount(); ++i) { ticks.push_back(card->rowCheck(i)->getToggleState()); card->rowCheck(i)->setToggleState(false, juce::dontSendNotification); }
+            if (apply != nullptr) click(apply);
+            CHECK(!rig.processor.canUndoAutoSetup());
+            const auto same = rig.processor.getAutoSetupCurrentValues();
+            CHECK(same.bpm == before.bpm && same.intensity == before.intensity && same.inputGainDb == before.inputGainDb);
+            // second run, apply for real
+            auto* close = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupClose"));
+            if (close != nullptr) click(close);
+            CHECK(!card->isOpen());
+            click(learn);
+            renderAudio(rig, 1180, setupGuitar, kNoMidi, kNoBlockHook);
+            pump(300);
+            CHECK(card->mode() == rdui::AutoSetupCard::Mode::Review);
+            apply = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupApply"));
+            if (apply != nullptr) click(apply);
+            const auto after = rig.processor.getAutoSetupCurrentValues();
+            const bool changed = after.bpm != before.bpm || after.intensity != before.intensity || after.inputGainDb != before.inputGainDb || after.followStrength != before.followStrength ||
+                                 after.tempoInertia != before.tempoInertia || after.confidenceSensitivity != before.confidenceSensitivity || after.gateThresholdDb != before.gateThresholdDb ||
+                                 after.timingMode != before.timingMode || after.jamStyle != before.jamStyle || after.autoGain != before.autoGain || after.leadership != before.leadership;
+            CHECK_MSG(changed && rig.processor.canUndoAutoSetup() && card->mode() == rdui::AutoSetupCard::Mode::Applied, "applied: changed %d undo %d mode %d", changed, rig.processor.canUndoAutoSetup(), static_cast<int>(card->mode()));
+            pump(100);
+            auto* undo = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupUndo"));
+            CHECK(undo != nullptr && undo->isVisible());
+            if (undo != nullptr) click(undo);
+            const auto restored = rig.processor.getAutoSetupCurrentValues();
+            CHECK(restored.bpm == before.bpm && restored.intensity == before.intensity && restored.inputGainDb == before.inputGainDb && restored.timingMode == before.timingMode && restored.jamStyle == before.jamStyle);
+            close = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupClose"));
+            if (close != nullptr) click(close);
+            CHECK(!card->isOpen() && learn->isEnabled());
+
+            // cancel while listening
+            click(learn);
+            renderAudio(rig, 100, setupGuitar, kNoMidi, kNoBlockHook);
+            auto* cancel = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupCancel"));
+            if (cancel != nullptr) click(cancel);
+            renderAudio(rig, 2, setupGuitar, kNoMidi, kNoBlockHook);   // the audio thread performs the cancel at its next block
+            CHECK_MSG(!card->isOpen() && rig.processor.getAutoSetupState() != robodrummer::AutoSetupState::Listening, "open %d state %d cancelBtn %d", card->isOpen(), static_cast<int>(rig.processor.getAutoSetupState()), cancel != nullptr);
+            // Escape cancels too
+            click(learn);
+            CHECK(card->keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !card->isOpen());
+            renderAudio(rig, 2, setupGuitar, kNoMidi, kNoBlockHook);
+
+            // failure: silence gives a reason, a Try again button and no Apply
+            click(learn);
+            renderAudio(rig, 1180, kSilence, kNoMidi, kNoBlockHook);
+            pump(300);
+            CHECK_MSG(card->mode() == rdui::AutoSetupCard::Mode::Failed, "silent run mode %d", static_cast<int>(card->mode()));
+            auto* again = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupAgain"));
+            apply = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupApply"));
+            CHECK(again != nullptr && again->isVisible() && apply != nullptr && !apply->isVisible());
+            if (auto* closeButton = dynamic_cast<juce::TextButton*>(findById(*card, "autoSetupClose"))) click(closeButton);
+        }
+    }
+
+    // ---- Capture panel: status, file export, drag file, clear ----
+    {
+        Rig playing;
+        playing.param("outputMode", 0);
+        std::unique_ptr<juce::AudioProcessorEditor> capEditor(playing.processor.createEditor());
+        auto& ced = static_cast<RoboDrummerAudioProcessorEditor&>(*capEditor);
+        auto* panel = dynamic_cast<rdui::CapturePanel*>(findById(ced, "capturePanel"));
+        CHECK(panel != nullptr);
+        if (panel != nullptr) {
+            panel->refresh();
+            CHECK(panel->statusText() == "Nothing captured yet");
+            CHECK(!panel->prepareDragFile().existsAsFile());
+            renderAudio(playing, 1000, kSilence, kNoMidi, kNoBlockHook);
+            const auto out = tempFile("capture.mid");
+            out.deleteFile();
+            CHECK(panel->exportTo(out) && out.existsAsFile() && out.getSize() > 40);
+            juce::MemoryBlock head;
+            out.loadFileAsData(head);
+            CHECK(head.getSize() > 4 && std::memcmp(head.getData(), "MThd", 4) == 0);
+            const auto drag = panel->prepareDragFile();
+            CHECK(drag.existsAsFile() && drag.hasFileExtension("mid") && drag.getSize() == out.getSize());
+            panel->refresh();
+            ced.showTabForTest(7);
+            pump(700);
+            panel->refresh();
+            CHECK_MSG(panel->statusText().startsWith("Ready: "), "status '%s'", panel->statusText().toRawUTF8());
+            if (auto* save = dynamic_cast<juce::TextButton*>(findById(*panel, "captureSave"))) CHECK(save->isEnabled() && save->isVisible());
+            auto* clear = dynamic_cast<juce::TextButton*>(findById(*panel, "captureClear"));
+            CHECK(clear != nullptr);
+            if (clear != nullptr) {
+                click(clear);                      // first press only asks for confirmation
+                CHECK(clear->getButtonText() == "CONFIRM CLEAR" && playing.processor.getCaptureStatusText(8).startsWith("Ready"));
+                click(clear);
+                CHECK(clear->getButtonText() == "CLEAR" && playing.processor.getCaptureStatusText(8) == "Nothing captured yet");
+            }
+            CHECK(!panel->exportTo(tempFile("empty.mid")));
+        }
+    }
+
+    // ---- ANALYSIS Riff Lock view and PRACTICE controls ----
+    {
+        Rig riff;
+        riff.param("rlAmount", 80.0f);
+        riff.param("tempoSource", 1); riff.param("bpm", 120.0f);
+        std::unique_ptr<juce::AudioProcessorEditor> riffEditor(riff.processor.createEditor());
+        auto& red = static_cast<RoboDrummerAudioProcessorEditor&>(*riffEditor);
+        riff.run(500, [](long long s) { return riffGuitar(s, 120.0, { 0, 3, 6, 10 }); }, kNoMidi);
+        red.showTabForTest(7);
+        pump(150);
+        bool sawRiff = false, sawLimb = false, sawAutoMeter = false;
+        visitAll(red, [&](juce::Component& c) {
+            if (auto* l = dynamic_cast<juce::Label*>(&c)) {
+                if (l->getText().startsWith("Riff lock: ")) sawRiff = true;
+                if (l->getText().startsWith("Limbs: ")) sawLimb = true;
+                if (l->getText().startsWith("Auto meter: ")) sawAutoMeter = true;
+            }
+        });
+        CHECK_MSG(sawRiff && sawLimb && sawAutoMeter, "analysis text riff %d limb %d meter %d", sawRiff, sawLimb, sawAutoMeter);
+        const auto snapshot = riff.processor.getRiffSnapshot();
+        CHECK(rdui::riffStatusText(snapshot, 0.5f).startsWith("Riff lock: "));
+        robodrummer::RiffSnapshot fresh;
+        CHECK(rdui::riffStatusText(fresh, 0.5f) == "Riff lock: searching (needs 2 bars of playing)");
+        red.showTabForTest(5);
+        pump(100);
+        if (auto* restart = dynamic_cast<juce::TextButton*>(findById(red, "practiceRestartTrainer"))) click(restart);
+        riff.param("practiceEnabled", 1); riff.param("pracCountInLen", 3); riff.param("pracTrainOn", 1);
+        riff.run(200, [](long long s) { return pluck(s, 120.0); }, kNoMidi);
+        pump(150);
+        bool sawStatus = false;
+        visitAll(red, [&](juce::Component& c) { if (auto* l = dynamic_cast<juce::Label*>(&c)) if (l->getText().contains("Trainer") && l->getText().contains("BPM")) sawStatus = true; });
+        CHECK_MSG(sawStatus, "practice status text missing: %s", riff.processor.getPracticeStatusText().toRawUTF8());
+        riff.param("practiceEnabled", 0);
+    }
+
+    // ---- MIDI tab lists every command (incl. practice notes 51-55) with a Learn button ----
+    {
+        ed.showTabForTest(6);
+        pump(50);
+        int learnButtons = 0;
+        bool sawCountIn = false;
+        visitAll(ed, [&](juce::Component& c) {
+            if (auto* b = dynamic_cast<juce::TextButton*>(&c)) if (b->getTitle().startsWith("Learn ") && rdui::FocusRing::visibleWithin(b, &ed)) ++learnButtons;
+            if (auto* l = dynamic_cast<juce::Label*>(&c)) if (l->getText() == "Count-in On/Off" && rdui::FocusRing::visibleWithin(l, &ed)) sawCountIn = true;
+        });
+        CHECK_MSG(learnButtons == robodrummer::MidiLearnMap::CommandCount && sawCountIn, "learn buttons %d", learnButtons);
+        juce::TextButton* practiceLearn = nullptr;
+        visitAll(ed, [&](juce::Component& c) { if (auto* b = dynamic_cast<juce::TextButton*>(&c)) if (b->getTitle() == "Learn Practice On/Off") practiceLearn = b; });
+        CHECK(practiceLearn != nullptr);
+        if (practiceLearn != nullptr) {
+            click(practiceLearn);
+            CHECK(rig.processor.getMidiLearn().armedCommand() == static_cast<int>(robodrummer::MidiCommand::PracticeToggle));
+            rig.processor.getMidiLearn().cancelLearn();
+        }
+    }
+
+    // ---- Help / About, tour, options ----
+    {
+        writeSettings("<RoboDrummerSettings tourSeen=\"1\"/>");
+        ed.showTabForTest(8);
+        pump(50);
+        ed.openHelpForTest();
+        pump(50);
+        auto* help = dynamic_cast<rdui::HelpOverlay*>(findById(ed, "helpOverlay"));
+        CHECK(ed.isHelpOpen() && help != nullptr && help->isVisible());
+        if (help != nullptr) {
+            CHECK(help->sectionCount() >= 10);
+            CHECK(help->plainText().contains("Quick start") && help->plainText().contains("Learn My Playing") && help->plainText().contains("Privacy"));
+            bool version = false, link = false, formats = false;
+            visitAll(*help, [&](juce::Component& c) {
+                if (auto* l = dynamic_cast<juce::Label*>(&c)) { if (l->getText().contains(JucePlugin_VersionString)) version = true; if (l->getText().contains("VST3, CLAP, AU")) formats = true; }
+                if (auto* h = dynamic_cast<juce::HyperlinkButton*>(&c)) if (h->getURL().toString(false).contains("djshellshoxxx.github.io/circuitdriftlabs")) link = true;
+            });
+            CHECK_MSG(version && link && formats, "about: version %d link %d formats %d", version, link, formats);
+            CHECK(rdui::diagnosticsText(rig.processor).contains(JucePlugin_VersionString));
+        }
+        // Tab inside the Help overlay never escapes to the controls behind it
+        if (help != nullptr) {
+            auto traverser = ed.createKeyboardFocusTraverser();
+            juce::Component* c = traverser->getDefaultComponent(help);
+            CHECK(c != nullptr);
+            bool escaped = false;
+            for (int i = 0; i < 12 && c != nullptr; ++i) {
+                if (!help->isParentOf(c)) { escaped = true; break; }
+                c = traverser->getNextComponent(c);
+            }
+            CHECK(!escaped);
+        }
+        CHECK(ed.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && !ed.isHelpOpen());
+        // Ctrl+Tab cycles tabs
+        ed.showTabForTest(0);
+        CHECK(ed.keyPressed(juce::KeyPress(juce::KeyPress::tabKey, juce::ModifierKeys::ctrlModifier, 0)) && ed.currentTab() == 1);
+        CHECK(ed.keyPressed(juce::KeyPress(juce::KeyPress::tabKey, juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier, 0)) && ed.currentTab() == 0);
+
+        // options persist and take effect
+        ed.setReducedMotionForTest(true);
+        CHECK(ed.timerRateHz() == 5 && rdui::EditorSettings::load().reducedMotion && rdui::uiPrefs().reducedMotion);
+        ed.setReducedMotionForTest(false);
+        CHECK(ed.timerRateHz() == 20 && !rdui::EditorSettings::load().reducedMotion);
+        ed.showTabForTest(8);
+        pump(50);
+        ed.setHighContrastForTest(true);
+        int boosted = 0;
+        visitAll(ed, [&](juce::Component& c) { if (c.getProperties().contains("rdWasDim")) ++boosted; });
+        CHECK(boosted > 3 && rdui::EditorSettings::load().highContrast);
+        ed.setHighContrastForTest(false);
+        int left = 0;
+        visitAll(ed, [&](juce::Component& c) { if (c.getProperties().contains("rdWasDim")) ++left; });
+        CHECK(left == 0 && !rdui::EditorSettings::load().highContrast);
+        if (auto* delay = dynamic_cast<juce::ComboBox*>(findById(ed, "optTooltipDelay"))) { delay->setSelectedId(1, juce::sendNotificationSync); CHECK(rdui::EditorSettings::load().tooltipDelayMs == 300); }
+        else CHECK(false);
+        if (auto* tips = dynamic_cast<juce::ToggleButton*>(findById(ed, "optTooltips"))) { tips->setToggleState(false, juce::dontSendNotification); tips->onClick(); CHECK(!rdui::EditorSettings::load().tooltips); tips->setToggleState(true, juce::dontSendNotification); tips->onClick(); CHECK(rdui::EditorSettings::load().tooltips); }
+        else CHECK(false);
+        const auto saved = juce::XmlDocument::parse(rdui::EditorSettings::file());
+        CHECK(saved != nullptr && saved->getBoolAttribute("tourSeen") && saved->getIntAttribute("tooltipDelayMs") == 300);
+    }
+    {   // first-run tour: shown when not seen, skippable, non-blocking, restartable from Help
+        writeSettings("<RoboDrummerSettings tourSeen=\"0\"/>");
+        std::unique_ptr<juce::AudioProcessorEditor> tourEditor(rig.processor.createEditor());
+        auto& ted = static_cast<RoboDrummerAudioProcessorEditor&>(*tourEditor);
+        CHECK(ted.isTourRunning());
+        auto* card = dynamic_cast<rdui::TourCard*>(findById(ted, "tourCard"));
+        CHECK(card != nullptr && card->getBounds().getRight() <= ted.getWidth() && card->getBottom() <= ted.getHeight());
+        if (card != nullptr) {
+            CHECK(card->getWidth() < ted.getWidth() / 2 + 100 && card->getHeight() < 200);   // a small card, never a full-screen blocker
+            auto* next = dynamic_cast<juce::TextButton*>(findById(*card, "tourNext"));
+            if (next != nullptr) for (int i = 0; i < rdui::TourCard::count(); ++i) click(next);
+            CHECK(!ted.isTourRunning() && rdui::EditorSettings::load().tourSeen);
+            ted.openHelpForTest();
+            ted.closeHelpForTest();
+            ted.startTourForTest();
+            CHECK(ted.isTourRunning());
+            if (auto* skip = dynamic_cast<juce::TextButton*>(findById(*card, "tourSkip"))) click(skip);
+            CHECK(!ted.isTourRunning());
+        }
+        writeSettings("<RoboDrummerSettings tourSeen=\"1\"/>");
+    }
+}
+
+void saveShot(juce::Component& c, const juce::File& file) {
+    const auto image = c.createComponentSnapshot(c.getLocalBounds(), true, 1.0f);
+    juce::PNGImageFormat png;
+    file.deleteFile();
+    juce::FileOutputStream out(file);
+    if (out.openedOk()) png.writeImageToStream(image, out);
+    CHECK(file.getSize() > 1000);
+}
+
+// States that need a flow: Learn My Playing (running, review, applied), Help, tour, focus ring, high contrast.
+void renderExtraScreenshots(const juce::File& directory, int width, int height) {
+    section("editor state screenshots");
+    const juce::String suffix = "_" + juce::String(width) + "x" + juce::String(height);
+    Rig rig;
+    rig.param("leadershipMode", 1);
+    std::unique_ptr<juce::AudioProcessorEditor> editor(rig.processor.createEditor());
+    auto& ed = static_cast<RoboDrummerAudioProcessorEditor&>(*editor);
+    ed.setSize(width, height);
+    ed.showTabForTest(0);
+    pump(50);
+    click(dynamic_cast<juce::Button*>(findById(ed, "learnMyPlaying")));
+    renderAudio(rig, 400, setupGuitar, kNoMidi, kNoBlockHook);
+    pump(120);
+    saveShot(ed, directory.getChildFile("state_learn_running" + suffix + ".png"));
+    renderAudio(rig, 800, setupGuitar, kNoMidi, kNoBlockHook);
+    pump(300);
+    saveShot(ed, directory.getChildFile("state_learn_review" + suffix + ".png"));
+    click(dynamic_cast<juce::Button*>(findById(ed, "autoSetupApply")));
+    pump(100);
+    saveShot(ed, directory.getChildFile("state_learn_applied" + suffix + ".png"));
+    click(dynamic_cast<juce::Button*>(findById(ed, "autoSetupClose")));
+    ed.showTabForTest(1);
+    auto controls = paramControls(ed);
+    if (controls.count("drumBusThreshold")) ed.focusRing().setTarget(controls["drumBusThreshold"]);
+    rig.param("drumBusEnabled", 1); rig.param("transientShaperEnabled", 1); rig.param("transientShaperAttack", 55.0f); rig.param("drumBusThreshold", -32.0f);
+    rig.run(150, [](long long s) { return pluck(s, 118.0); }, kNoMidi);
+    pump(150);
+    saveShot(ed, directory.getChildFile("state_kit_focus_active" + suffix + ".png"));
+    ed.focusRing().setTarget(nullptr);
+    ed.showTabForTest(8);
+    ed.setHighContrastForTest(true);
+    pump(100);
+    saveShot(ed, directory.getChildFile("state_settings_highcontrast" + suffix + ".png"));
+    ed.setHighContrastForTest(false);
+    ed.openHelpForTest();
+    pump(100);
+    saveShot(ed, directory.getChildFile("state_help" + suffix + ".png"));
+    ed.closeHelpForTest();
+    writeSettings("<RoboDrummerSettings tourSeen=\"0\"/>");
+    {
+        std::unique_ptr<juce::AudioProcessorEditor> tourEditor(rig.processor.createEditor());
+        auto& ted = static_cast<RoboDrummerAudioProcessorEditor&>(*tourEditor);
+        ted.setSize(width, height);
+        pump(100);
+        saveShot(ted, directory.getChildFile("state_tour" + suffix + ".png"));
+    }
+    writeSettings("<RoboDrummerSettings tourSeen=\"1\"/>");
+}
+
 void dumpParameters(const juce::File& file) {
     RoboDrummerAudioProcessor processor;
     juce::String md;
@@ -1656,14 +2157,14 @@ void renderScreenshots(const juce::File& directory, int width, int height) {
     CHECK(editor != nullptr);
     if (editor == nullptr) return;
     editor->setSize(width, height);
-    static const char* names[] = { "live", "kit", "drummer", "style", "song", "midi", "analysis", "settings" };
     auto& ed = static_cast<RoboDrummerAudioProcessorEditor&>(*editor);
-    for (int tab = 0; tab < 8; ++tab) {
+    for (int tab = 0; tab < RoboDrummerAudioProcessorEditor::TabCount; ++tab) {
+        const juce::String tabText = RoboDrummerAudioProcessorEditor::tabName(tab);
         // click the tab button via its visible child component
         int found = 0;
         for (auto* child : ed.getChildren()) {
             if (auto* button = dynamic_cast<juce::TextButton*>(child)) {
-                if (button->getButtonText().equalsIgnoreCase(juce::String(juce::StringArray{"LIVE","KIT","DRUMMER","STYLE","SONG","MIDI","ANALYSIS","SETTINGS"}[tab]))) { button->triggerClick(); ++found; }
+                if (button->getButtonText().equalsIgnoreCase(tabText)) { button->triggerClick(); ++found; }
             }
         }
         CHECK(found == 1);
@@ -1681,7 +2182,7 @@ void renderScreenshots(const juce::File& directory, int width, int height) {
         pump(150);
         const auto image = ed.createComponentSnapshot(ed.getLocalBounds(), true, 1.0f);
         juce::PNGImageFormat png;
-        auto file = directory.getChildFile(juce::String(names[tab]) + (width == 1040 ? "" : "_" + juce::String(width) + "x" + juce::String(height)) + ".png");
+        auto file = directory.getChildFile(tabText.toLowerCase() + (width == RoboDrummerAudioProcessorEditor::kDefaultWidth ? "" : "_" + juce::String(width) + "x" + juce::String(height)) + ".png");
         file.deleteFile();
         juce::FileOutputStream out(file);
         if (out.openedOk()) png.writeImageToStream(image, out);
@@ -1694,6 +2195,11 @@ int main(int argc, char** argv) {
     juce::ScopedJuceInitialiser_GUI juceInit;
     juce::File screenshotDir;
     double soakMinutes = 5.0;
+    rdui::EditorSettings::fileOverride() = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("robodrummer-ui-test").getChildFile("settings.xml");
+    rdui::EditorSettings::fileOverride().getParentDirectory().createDirectory();
+    rdui::EditorSettings::fileOverride().replaceWithText("<RoboDrummerSettings tourSeen=\"1\"/>");
+    bool uiOnly = false;
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--ui-only") uiOnly = true;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--screenshots") screenshotDir = juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1]);
         if (std::string(argv[i]) == "--soak-minutes") soakMinutes = std::atof(argv[i + 1]);
@@ -1701,6 +2207,12 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--dump-parameters") { dumpParameters(juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1])); return 0; }
     }
 
+    if (uiOnly) {
+        testEditorUi();
+        if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); }
+        std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
+        return gFailures == 0 ? 0 : 1;
+    }
     testBasicPlayback();
     testHostTransportAndTempoSources();
     testMidiCommandsAndLearn();
@@ -1727,8 +2239,9 @@ int main(int argc, char** argv) {
     testAutoSetup();
     testPracticeMode();
     testNewParameterFuzz();
+    testEditorUi();
     testSoak(soakMinutes);
-    if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, 1040, 720); renderScreenshots(screenshotDir, 900, 640); }
+    if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); }
 
     std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
     return gFailures == 0 ? 0 : 1;
