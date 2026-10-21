@@ -25,7 +25,8 @@ public:
             if (count >= Capacity) return;
             const int offset = static_cast<int>(std::llround(beatPos * samplesPerBeat));
             if (offset < 0 || offset >= barSamples) return;
-            out[count++] = {instrument, offset, std::clamp(velocity, 0.0f, 1.0f), static_cast<std::uint32_t>(count - 1)};
+            const std::size_t index = count++;
+            out[index] = {instrument, offset, std::clamp(velocity, 0.0f, 1.0f), static_cast<std::uint32_t>(index)};
         };
 
         auto chance = [&](float probability) {

@@ -318,10 +318,10 @@ public:
                 for (std::size_t i = 0; i < fillHitCount_ && count < capacity; ++i) {
                     const long long absolute = fillStartSample + static_cast<long long>(std::llround(spb * fillHits_[i].beatOffset));
                     if (absolute >= blockStart && absolute < blockEnd)
-                        out[count++] = { fillHits_[i].instrument, static_cast<int>(absolute - blockStart), fillHits_[i].velocity, static_cast<std::uint32_t>(count) };
+                        { const auto idx = count++; out[idx] = { fillHits_[i].instrument, static_cast<int>(absolute - blockStart), fillHits_[i].velocity, static_cast<std::uint32_t>(idx) }; }
                 }
                 if (FillGenerator::endsWithCrash(fillTotalBeats_) && outroFinalBeat_ < 0 && fillEndSample >= blockStart && fillEndSample < blockEnd && count < capacity)
-                    out[count++] = { DrumInstrument::Crash, static_cast<int>(fillEndSample - blockStart), 0.95f, static_cast<std::uint32_t>(count) };
+                    { const auto idx = count++; out[idx] = { DrumInstrument::Crash, static_cast<int>(fillEndSample - blockStart), 0.95f, static_cast<std::uint32_t>(idx) }; }
             }
             if (blockEnd >= fillEndSample) {
                 state_.fillRequested = false;
@@ -333,8 +333,8 @@ public:
         if (outroFinalBeat_ >= 0) {
             const long long finalSample = beatSample(outroFinalBeat_);
             if (finalSample >= blockStart && finalSample < blockEnd && count + 1 < capacity) {
-                out[count++] = { DrumInstrument::Crash, static_cast<int>(finalSample - blockStart), 1.0f, static_cast<std::uint32_t>(count) };
-                out[count++] = { DrumInstrument::Kick, static_cast<int>(finalSample - blockStart), 0.98f, static_cast<std::uint32_t>(count) };
+                { const auto idx = count++; out[idx] = { DrumInstrument::Crash, static_cast<int>(finalSample - blockStart), 1.0f, static_cast<std::uint32_t>(idx) }; }
+                { const auto idx = count++; out[idx] = { DrumInstrument::Kick, static_cast<int>(finalSample - blockStart), 0.98f, static_cast<std::uint32_t>(idx) }; }
             }
             if (blockEnd > finalSample) { // the final hit has been played: stop; Resume starts the groove again
                 state_.stopped = true;
