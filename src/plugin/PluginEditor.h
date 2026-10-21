@@ -17,15 +17,38 @@ public:
     ~RoboDrummerAudioProcessorEditor() override;
     void paint(juce::Graphics&) override;
     void resized() override;
+    bool keyPressed(const juce::KeyPress&) override;
+
+    static constexpr int kMinWidth = 960, kMinHeight = 680, kDefaultWidth = 1100, kDefaultHeight = 740;
+    static constexpr int TabCount = 9;
+    static const char* tabName(int index);
+
+    // Test and tooling hooks.
+    void showTabForTest(int index) { selectTab(index); }
+    int currentTab() const noexcept { return currentTab_; }
+    bool isHelpOpen() const noexcept { return helpOverlay_ != nullptr && helpOverlay_->isVisible(); }
+    void openHelpForTest() { showHelp(); }
+    void closeHelpForTest() { hideHelp(); }
+    bool isTourRunning() const noexcept { return tour_ != nullptr && tour_->isRunning(); }
+    void startTourForTest() { startTour(); }
+    rdui::FocusRing& focusRing() noexcept { return focusRing_; }
+    void setReducedMotionForTest(bool on) { applyReducedMotion(on); }
+    void setHighContrastForTest(bool on) { applyHighContrast(on); }
+    int timerRateHz() const noexcept { return timerHz_; }
 
 private:
     void timerCallback() override;
     void selectTab(int index);
     void showHelp();
+    void hideHelp();
+    void startTour();
     void applyTooltipSetting(bool enabled);
+    void applyTooltipDelay(int ms);
+    void applyReducedMotion(bool on);
+    void applyHighContrast(bool on);
+    void setTimerRate(int hz);
     void rebuildPresetList();
     void promptSavePreset();
-    static juce::File settingsFile();
 
     RoboDrummerAudioProcessor& processor_;
     rdui::RoboLookAndFeel lookAndFeel_;
@@ -36,15 +59,17 @@ private:
     juce::TextButton presetSave_{"SAVE"}, presetDelete_{"DELETE"};
     std::vector<robodrummer::PresetEntry> presetEntries_;
 
-    static constexpr int TabCount = 8;
     std::array<juce::TextButton, TabCount> tabButtons_;
     std::array<std::unique_ptr<rdui::PanelBase>, TabCount> panels_;
     int currentTab_{0};
 
-    juce::TextEditor helpText_;
-    juce::TextButton closeHelpButton_{"CLOSE HELP"};
+    std::unique_ptr<rdui::HelpOverlay> helpOverlay_;
+    std::unique_ptr<rdui::TourCard> tour_;
     std::unique_ptr<juce::TooltipWindow> tooltipWindow_;
+    int tooltipDelayMs_{600};
+    int timerHz_{20};
     juce::Label footer_;
+    rdui::FocusRing focusRing_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(RoboDrummerAudioProcessorEditor)
 };

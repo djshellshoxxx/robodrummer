@@ -1,0 +1,807 @@
+// RoboDrummer™
+// Copyright © 2026 Sheldon Davidson. All rights reserved.
+// Proprietary source code. See LICENSE and COPYRIGHT-TRADEMARK.md.
+// SPDX-License-Identifier: LicenseRef-Proprietary
+
+// 0.4.0 editor additions: shared layout helpers, settings file, Learn My Playing card, Practice tab, Capture panel,
+// Riff Lock view, Help/About overlay and the optional first-run tour.
+#pragma once
+#include "EditorWidgets.h"
+#include "PluginProcessor.h"
+#include "RoboDrummerHelpData.h"
+
+namespace rdui {
+
+class PanelBase : public juce::Component {
+public:
+    virtual void refresh() {}
+};
+
+// Stacks components top to bottom inside an area.
+inline void stack(juce::Rectangle<int>& area, int rowHeight, int gap, std::initializer_list<juce::Component*> items) {
+    for (auto* item : items) {
+        item->setBounds(area.removeFromTop(rowHeight));
+        area.removeFromTop(gap);
+    }
+}
+
+// whole(float) prints full precision rather than rounding, so whole numbers go through here.
+inline juce::String whole(double value) { return juce::String(juce::roundToInt(value)); }
+
+inline void rowOfButtons(juce::Rectangle<int> area, int gap, std::initializer_list<juce::Component*> items) {
+    const int count = static_cast<int>(items.size());
+    if (count == 0) return;
+    const int width = (area.getWidth() - gap * (count - 1)) / count;
+    for (auto* item : items) {
+        item->setBounds(area.removeFromLeft(width));
+        area.removeFromLeft(gap);
+    }
+}
+
+inline void styleBody(juce::Label& label, float size = 13.0f, juce::Colour colour = kDim) {
+    label.setFont(juce::FontOptions(size));
+    label.setColour(juce::Label::textColourId, colour);
+    label.setMinimumHorizontalScale(0.7f);
+}
+
+// ====================================================================================================================
+// Per-user settings (settings.xml). Always read-modify-write so attributes written by other versions survive.
+// ====================================================================================================================
+class EditorSettings {
+public:
+    struct Values {
+        bool tooltips{true};
+        int tooltipDelayMs{600};
+        bool reducedMotion{false};
+        bool highContrast{false};
+        bool tourSeen{false};
+        int captureBars{8};
+    };
+
+    static juce::File& fileOverride() { static juce::File f; return f; }   // tests point this at a temp file
+    static juce::File file() {
+        if (fileOverride() != juce::File()) return fileOverride();
+        return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
+            .getChildFile("Circuit Drift Labs").getChildFile("RoboDrummer").getChildFile("settings.xml");
+    }
+    static Values load() {
+        Values v;
+        const auto xml = juce::XmlDocument::parse(file());
+        if (xml == nullptr || xml->getTagName() != "RoboDrummerSettings") return v;
+        v.tooltips = xml->getBoolAttribute("tooltips", true);
+        const int delay = xml->getIntAttribute("tooltipDelayMs", 600);
+        v.tooltipDelayMs = (delay == 300 || delay == 600 || delay == 1000) ? delay : 600;
+        v.reducedMotion = xml->getBoolAttribute("reducedMotion", false);
+        v.highContrast = xml->getBoolAttribute("highContrast", false);
+        v.tourSeen = xml->getBoolAttribute("tourSeen", false);
+        const int bars = xml->getIntAttribute("captureBars", 8);
+        v.captureBars = (bars == 0 || bars == 4 || bars == 8 || bars == 16 || bars == 32) ? bars : 8;
+        return v;
+    }
+    static bool setBool(const char* key, bool value) { return store([&](juce::XmlElement& x) { x.setAttribute(key, value); }); }
+    static bool setInt(const char* key, int value) { return store([&](juce::XmlElement& x) { x.setAttribute(key, value); }); }
+
+private:
+    template <class Fn>
+    static bool store(Fn&& mutate) {
+        const auto target = file();
+        std::unique_ptr<juce::XmlElement> xml = juce::XmlDocument::parse(target);
+        if (xml == nullptr || xml->getTagName() != "RoboDrummerSettings") xml = std::make_unique<juce::XmlElement>("RoboDrummerSettings");
+        mutate(*xml);
+        if (!target.getParentDirectory().createDirectory().wasOk()) return false;
+        return xml->writeTo(target);
+    }
+};
+
+// ====================================================================================================================
+// Riff Lock helpers and view
+// ====================================================================================================================
+inline juce::String riffStatusText(const robodrummer::RiffSnapshot& s, float sensitivity01) {
+    const float gate = 0.75f - 0.40f * juce::jlimit(0.0f, 1.0f, sensitivity01);
+    if (s.barsSeen < 2) return "Riff lock: searching (needs 2 bars of playing)";
+    if (s.locked && s.confidence >= gate) return "Riff lock: " + whole(s.confidence * 100.0f) + "% (locked)";
+    return "Riff lock: " + whole(s.confidence * 100.0f) + "% (searching)";
+}
+
+class RiffView final : public juce::Component {
+public:
+    RiffView() { setInterceptsMouseClicks(false, false); setTitle("Riff grid"); }
+    void setSnapshot(const robodrummer::RiffSnapshot& s) { snapshot_ = s; repaint(); }
+    void paint(juce::Graphics& g) override {
+        auto r = getLocalBounds().toFloat();
+        g.setColour(kBackground);
+        g.fillRoundedRectangle(r, 4.0f);
+        const int slots = juce::jlimit(1, robodrummer::RiffGrid::MaxSlots, snapshot_.grid.slots);
+        const int perBeat = juce::jmax(1, snapshot_.grid.slotsPerBeat);
+        auto plot = r.reduced(4.0f, 3.0f);
+        auto labels = plot.removeFromBottom(12.0f);
+        const float w = plot.getWidth() / static_cast<float>(slots);
+        g.setFont(juce::FontOptions(10.0f));
+        for (int i = 0; i < slots; ++i) {
+            const float x = plot.getX() + w * static_cast<float>(i);
+            const float v = juce::jlimit(0.0f, 1.0f, snapshot_.consistency[static_cast<std::size_t>(i)]);
+            const bool onBeat = i % perBeat == 0;
+            if (onBeat) {
+                g.setColour(kBorder);
+                g.drawLine(x, plot.getY(), x, plot.getBottom(), 1.0f);
+                g.setColour(kDim);
+                g.drawText(juce::String(i / perBeat + 1), juce::Rectangle<float>(x, labels.getY(), w * perBeat, labels.getHeight()), juce::Justification::centredLeft);
+            }
+            const float h = v * plot.getHeight();
+            auto bar = juce::Rectangle<float>(x + 1.0f, plot.getBottom() - h, juce::jmax(1.0f, w - 2.0f), h);
+            g.setColour(v >= 0.5f ? kAccent : kAccentAlt.withAlpha(0.7f));
+            g.fillRect(bar);
+            if (v >= 0.5f) { g.setColour(kText); g.drawRect(bar, 1.0f); } // locked slots get an outline too, not only a colour
+        }
+    }
+private:
+    robodrummer::RiffSnapshot snapshot_;
+};
+
+// ====================================================================================================================
+// Learn My Playing (spec 06): running card -> review card -> applied/undo, or a failure with Try again.
+// ====================================================================================================================
+class AutoSetupCard final : public juce::Component {
+public:
+    enum class Mode { Hidden, Running, Review, Failed, Applied };
+
+    explicit AutoSetupCard(RoboDrummerAudioProcessor& p) : processor_(p) {
+        setWantsKeyboardFocus(true);
+        setComponentID("autoSetupCard");
+        setTitle("Learn My Playing");
+        for (auto* l : { &prompt_, &progressText_, &peakText_, &message_ }) { styleBody(*l, 14.0f, kText); l->setJustificationType(juce::Justification::topLeft); addChildComponent(*l); }
+        styleBody(heading_, 13.0f, kDim);
+        heading_.setJustificationType(juce::Justification::topLeft);
+        addChildComponent(heading_);
+        progress_.setColour(kAccent);
+        peak_.setColour(kGood);
+        addChildComponent(progress_); addChildComponent(peak_);
+        for (auto* b : { &cancel_, &apply_, &undo_, &close_, &again_ }) addChildComponent(*b);
+        cancel_.setTooltip("Stop listening and keep every setting as it is (Escape).");
+        apply_.setTooltip("Apply the ticked suggestions. You can undo this afterwards.");
+        undo_.setTooltip("Put the settings that Auto Setup changed back to what they were.");
+        close_.setTooltip("Close this card.");
+        again_.setTooltip("Run Learn My Playing again.");
+        cancel_.setComponentID("autoSetupCancel"); apply_.setComponentID("autoSetupApply"); undo_.setComponentID("autoSetupUndo");
+        close_.setComponentID("autoSetupClose"); again_.setComponentID("autoSetupAgain");
+        cancel_.onClick = [this] { dismiss(); };
+        close_.onClick = [this] { dismiss(); };
+        again_.onClick = [this] { mode_ = Mode::Hidden; processor_.clearAutoSetupUndo(); begin(); };
+        apply_.onClick = [this] { applySelected(); };
+        undo_.onClick = [this] {
+            if (processor_.undoAutoSetup()) showMessage(Mode::Applied, "Restored the settings Auto Setup changed.");
+            else showMessage(Mode::Applied, "Nothing to undo.");
+            layoutForMode();
+        };
+        lines_.setMultiLine(true); lines_.setReadOnly(true); lines_.setScrollbarsShown(true);
+        lines_.setFont(juce::FontOptions(13.0f));
+        lines_.setTitle("Why these settings");
+        addChildComponent(lines_);
+        for (auto& row : rows_) { row.check.setWantsKeyboardFocus(true); addChildComponent(row.check); }
+        setVisible(false);
+    }
+
+    Mode mode() const noexcept { return mode_; }
+    bool isOpen() const noexcept { return mode_ != Mode::Hidden; }
+
+    void begin() {
+        if (isOpen()) return;                       // the card blocks a second run while it is open
+        processor_.startAutoSetup(10.0f);
+        mode_ = Mode::Running;
+        layoutForMode();
+        grabKeyboardFocus();
+    }
+    void dismiss() {
+        if (mode_ == Mode::Running) processor_.cancelAutoSetup();
+        mode_ = Mode::Hidden;
+        setVisible(false);
+        if (onClosed) onClosed();
+    }
+
+    void refresh() {
+        if (mode_ == Mode::Hidden) return;
+        processor_.finalizeAutoSetupIfReady();
+        if (mode_ == Mode::Running) {
+            const auto state = processor_.getAutoSetupState();
+            const float progress = processor_.getAutoSetupProgress();
+            progress_.setValue(progress);
+            progressText_.setText(state == robodrummer::AutoSetupState::Analyzing ? juce::String("Working out your settings...")
+                                  : whole(progress * 10.0f) + " s of 10 s", juce::dontSendNotification);
+            prompt_.setText(state == robodrummer::AutoSetupState::Listening ? processor_.getAutoSetupPromptText() : juce::String(), juce::dontSendNotification);
+            const float db = processor_.getAutoSetupInputPeakDb();
+            peak_.setValue(juce::jlimit(0.0f, 1.0f, (db + 80.0f) / 80.0f));
+            peakText_.setText("Input peak: " + (db > -99.0f ? juce::String(db, 1) + " dB" : juce::String("silent")), juce::dontSendNotification);
+            if (state == robodrummer::AutoSetupState::Done) enterResult();
+            else if (state == robodrummer::AutoSetupState::Cancelled || state == robodrummer::AutoSetupState::Idle) dismiss();
+        }
+        undo_.setVisible(mode_ == Mode::Applied && processor_.canUndoAutoSetup());
+    }
+
+    bool keyPressed(const juce::KeyPress& k) override {
+        if (k == juce::KeyPress::escapeKey && isOpen()) { dismiss(); return true; }
+        return false;
+    }
+    void paint(juce::Graphics& g) override {
+        drawPanel(g, getLocalBounds(), "Learn my playing");
+        g.setColour(kAccentAlt);
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 8.0f, 2.0f);
+    }
+    void resized() override { layoutForMode(); }
+
+    std::function<void()> onClosed;
+
+    // Review rows, exposed for the harness.
+    int visibleRowCount() const { int n = 0; for (auto& r : rows_) if (r.check.isVisible()) ++n; return n; }
+    juce::ToggleButton* rowCheck(int visibleIndex) {
+        for (auto& r : rows_) if (r.check.isVisible() && visibleIndex-- == 0) return &r.check;
+        return nullptr;
+    }
+
+private:
+    using Proposal = robodrummer::AutoSetupProposal;
+    using Snapshot = robodrummer::AutoSetupSnapshot;
+    struct FieldDef {
+        const char* label;
+        bool* (*flag)(Proposal&);
+        juce::String (*current)(const Snapshot&);
+        juce::String (*proposed)(const Proposal&);
+    };
+    static const FieldDef* fields() {
+        static const FieldDef defs[kFieldCount] = {
+            { "Input gain (dB)", [](Proposal& p) { return &p.inputGainDb.apply; }, [](const Snapshot& s) { return juce::String(s.inputGainDb, 1); }, [](const Proposal& p) { return juce::String(p.inputGainDb.value, 1); } },
+            { "Automatic gain", [](Proposal& p) { return &p.autoGain.apply; }, [](const Snapshot& s) { return juce::String(s.autoGain ? "On" : "Off"); }, [](const Proposal& p) { return juce::String(p.autoGain.value ? "On" : "Off"); } },
+            { "Noise gate (dB)", [](Proposal& p) { return &p.gateThresholdDb.apply; }, [](const Snapshot& s) { return s.gateThresholdDb <= -89.9f ? juce::String("Off") : juce::String(s.gateThresholdDb, 1); }, [](const Proposal& p) { return p.gateThresholdDb.value <= -89.9f ? juce::String("Off") : juce::String(p.gateThresholdDb.value, 1); } },
+            { "Follow strength (%)", [](Proposal& p) { return &p.followStrength.apply; }, [](const Snapshot& s) { return whole(s.followStrength * 100.0f); }, [](const Proposal& p) { return whole(p.followStrength.value * 100.0f); } },
+            { "Tempo inertia (%)", [](Proposal& p) { return &p.tempoInertia.apply; }, [](const Snapshot& s) { return whole(s.tempoInertia * 100.0f); }, [](const Proposal& p) { return whole(p.tempoInertia.value * 100.0f); } },
+            { "Confidence sensitivity (%)", [](Proposal& p) { return &p.confidenceSensitivity.apply; }, [](const Snapshot& s) { return whole(s.confidenceSensitivity * 100.0f); }, [](const Proposal& p) { return whole(p.confidenceSensitivity.value * 100.0f); } },
+            { "Timing mode", [](Proposal& p) { return &p.timingMode.apply; }, [](const Snapshot& s) { return modeName(s.timingMode); }, [](const Proposal& p) { return modeName(p.timingMode.value); } },
+            { "Leadership (%)", [](Proposal& p) { return &p.leadership.apply; }, [](const Snapshot& s) { return whole(s.leadership * 100.0f); }, [](const Proposal& p) { return whole(p.leadership.value * 100.0f); } },
+            { "Internal BPM", [](Proposal& p) { return &p.bpm.apply; }, [](const Snapshot& s) { return juce::String(s.bpm, 1); }, [](const Proposal& p) { return juce::String(p.bpm.value, 1); } },
+            { "Style", [](Proposal& p) { return &p.jamStyle.apply; }, [](const Snapshot& s) { return styleName(s.jamStyle); }, [](const Proposal& p) { return styleName(p.jamStyle.value); } },
+            { "Intensity (%)", [](Proposal& p) { return &p.intensity.apply; }, [](const Snapshot& s) { return whole(s.intensity * 100.0f); }, [](const Proposal& p) { return whole(p.intensity.value * 100.0f); } },
+        };
+        return defs;
+    }
+    static constexpr int kFieldCount = 11;
+    static juce::String modeName(robodrummer::LeadershipMode m) {
+        static const char* names[] = { "Drummer Leads", "Hybrid", "Guitarist Leads" };
+        return names[juce::jlimit(0, 2, static_cast<int>(m))];
+    }
+    static juce::String styleName(robodrummer::JamStyle s) {
+        return robodrummer::kJamStyleNames[static_cast<std::size_t>(juce::jlimit(0, robodrummer::kJamStyleCount - 1, static_cast<int>(s)))];
+    }
+
+    void showMessage(Mode mode, const juce::String& text) { mode_ = mode; message_.setText(text, juce::dontSendNotification); }
+
+    void enterResult() {
+        const auto result = processor_.getAutoSetupResult();
+        proposal_ = result.proposal;
+        if (result.status != robodrummer::AutoSetupStatus::Ok) {
+            showMessage(Mode::Failed, result.status == robodrummer::AutoSetupStatus::TimedOut
+                ? "I could not settle on a steady groove in time. Play steadily for the full ten seconds and try again."
+                : "I could not hear enough playing. Check your input and try again.");
+        } else if (!proposal_.any()) {
+            showMessage(Mode::Failed, "I heard you, but nothing needs changing: your current settings already fit.");
+        } else {
+            mode_ = Mode::Review;
+            const auto current = processor_.getAutoSetupCurrentValues();
+            const auto* defs = fields();
+            for (int i = 0; i < kFieldCount; ++i) {
+                auto& row = rows_[static_cast<std::size_t>(i)];
+                const bool has = *defs[i].flag(proposal_);
+                row.check.setButtonText(juce::String(defs[i].label) + ":  " + defs[i].current(current) + "  ->  " + defs[i].proposed(proposal_));
+                row.check.setToggleState(has, juce::dontSendNotification);
+                row.has = has;
+                row.check.setTitle(defs[i].label);
+                row.check.setTooltip("Tick to include this change when you press Apply.");
+            }
+            juce::String text;
+            for (int i = 0; i < result.lineCount; ++i) text << juce::String::fromUTF8(result.line(i)) << "\n";
+            lines_.setText(text, false);
+        }
+        layoutForMode();
+        if (mode_ == Mode::Review) apply_.grabKeyboardFocus(); else again_.grabKeyboardFocus();
+    }
+
+    void applySelected() {
+        auto selected = proposal_;
+        const auto* defs = fields();
+        for (int i = 0; i < kFieldCount; ++i)
+            if (!rows_[static_cast<std::size_t>(i)].check.getToggleState()) *defs[i].flag(selected) = false;
+        if (!selected.any()) { message_.setText("Nothing is ticked, so nothing was changed.", juce::dontSendNotification); mode_ = Mode::Applied; layoutForMode(); return; }
+        if (processor_.applyAutoSetup(selected)) showMessage(Mode::Applied, "Applied. Use Undo Auto Setup to put the previous values back.");
+        else showMessage(Mode::Applied, "Could not apply the suggestions.");
+        layoutForMode();
+        close_.grabKeyboardFocus();
+    }
+
+    void layoutForMode() {
+        const bool show = mode_ != Mode::Hidden;
+        setVisible(show);
+        if (show) toFront(false);
+        const bool running = mode_ == Mode::Running, review = mode_ == Mode::Review, failed = mode_ == Mode::Failed, applied = mode_ == Mode::Applied;
+        for (auto* c : std::initializer_list<juce::Component*>{ &prompt_, &progressText_, &peakText_, &progress_, &peak_, &cancel_ }) c->setVisible(running);
+        heading_.setVisible(running || review);
+        heading_.setText(running ? "Play naturally for about ten seconds. Nothing changes until you press Apply." : "Suggested setup: tick the changes you want.", juce::dontSendNotification);
+        lines_.setVisible(review);
+        apply_.setVisible(review);
+        for (auto& r : rows_) r.check.setVisible(review && r.has);
+        message_.setVisible(failed || applied);
+        again_.setVisible(failed);
+        close_.setVisible(failed || applied);
+        undo_.setVisible(applied && processor_.canUndoAutoSetup());
+        if (review) cancel_.setVisible(true);
+
+        auto area = getLocalBounds().reduced(14, 8);
+        area.removeFromTop(22);
+        heading_.setBounds(area.removeFromTop(20)); area.removeFromTop(6);
+        if (running) {
+            prompt_.setBounds(area.removeFromTop(44)); area.removeFromTop(4);
+            progress_.setBounds(area.removeFromTop(14)); area.removeFromTop(2);
+            progressText_.setBounds(area.removeFromTop(22)); area.removeFromTop(8);
+            peak_.setBounds(area.removeFromTop(12)); area.removeFromTop(2);
+            peakText_.setBounds(area.removeFromTop(22)); area.removeFromTop(10);
+            cancel_.setBounds(area.removeFromTop(32).removeFromLeft(140));
+        } else if (review) {
+            auto buttons = area.removeFromBottom(34);
+            area.removeFromBottom(6);
+            apply_.setBounds(buttons.removeFromRight(120)); buttons.removeFromRight(8);
+            cancel_.setBounds(buttons.removeFromRight(110));
+            const int rowH = 24;
+            for (auto& r : rows_) if (r.has) r.check.setBounds(area.removeFromTop(rowH));
+            area.removeFromTop(6);
+            lines_.setBounds(area);
+        } else if (failed || applied) {
+            message_.setBounds(area.removeFromTop(60)); area.removeFromTop(8);
+            auto buttons = area.removeFromTop(34);
+            if (failed) { again_.setBounds(buttons.removeFromLeft(120)); buttons.removeFromLeft(8); }
+            if (applied) { undo_.setBounds(buttons.removeFromLeft(170)); buttons.removeFromLeft(8); }
+            close_.setBounds(buttons.removeFromLeft(100));
+        }
+    }
+
+    struct Row { juce::ToggleButton check; bool has{false}; };
+    RoboDrummerAudioProcessor& processor_;
+    Mode mode_{Mode::Hidden};
+    Proposal proposal_{};
+    juce::Label heading_, prompt_, progressText_, peakText_, message_;
+    BarMeter progress_, peak_;
+    juce::TextButton cancel_{"CANCEL"}, apply_{"APPLY"}, undo_{"UNDO AUTO SETUP"}, close_{"CLOSE"}, again_{"TRY AGAIN"};
+    juce::TextEditor lines_;
+    std::array<Row, kFieldCount> rows_;
+};
+
+// ====================================================================================================================
+// PRACTICE (spec 04)
+// ====================================================================================================================
+class PracticePanel final : public PanelBase {
+public:
+    explicit PracticePanel(RoboDrummerAudioProcessor& p)
+        : processor_(p), apvts_(p.getParameters()),
+          enabled_(apvts_, robodrummer::ParamIDs::practiceEnabled, "Practice session", "Start or stop a practice session. Count-in, loop and tempo trainer only act while a session runs."),
+          countIn_(apvts_, robodrummer::ParamIDs::pracCountInLen, "Count-in", "Clicks before the drums start, ending exactly on a bar line. Off, 1 beat, 2 beats, 4 beats or 1 bar."),
+          sound_(apvts_, robodrummer::ParamIDs::pracCountInSound, "Count-in sound", "Click (cowbell) or Sticks (side stick) for the count-in."),
+          startOnly_(apvts_, robodrummer::ParamIDs::pracCountInStartOnly, "Only on start/resume", "On: count in only when the session or transport starts. Off: also after every loop restart."),
+          loopOn_(apvts_, robodrummer::ParamIDs::pracLoopOn, "Loop", "Repeat the chosen bars until you switch this off. Arms at the next bar line."),
+          loopMode_(apvts_, robodrummer::ParamIDs::pracLoopMode, "Loop source", "Bars: repeat the last N bars of the groove. Section range: repeat a span of programmed song sections (SONG tab)."),
+          loopBars_(apvts_, robodrummer::ParamIDs::pracLoopBars, "Loop length (bars)", "How many bars the loop repeats: 1, 2, 4 or 8."),
+          secFirst_(apvts_, robodrummer::ParamIDs::pracLoopSecFirst, "First section", "First song section of the loop when the source is Section range (1 to 16).", juce::Slider::LinearHorizontal, 50),
+          secLast_(apvts_, robodrummer::ParamIDs::pracLoopSecLast, "Last section", "Last song section of the loop when the source is Section range (1 to 16).", juce::Slider::LinearHorizontal, 50),
+          trainOn_(apvts_, robodrummer::ParamIDs::pracTrainOn, "Tempo trainer", "Step the tempo toward a target. It drives the base tempo only when the drummer leads; with a guitar-led or host tempo it shows a hint."),
+          trainStart_(apvts_, robodrummer::ParamIDs::pracTrainStart, "Start BPM", "Tempo the trainer starts at (20 to 400 BPM)."),
+          trainTarget_(apvts_, robodrummer::ParamIDs::pracTrainTarget, "Target BPM", "Tempo the trainer works toward (20 to 400 BPM)."),
+          trainStep_(apvts_, robodrummer::ParamIDs::pracTrainStep, "Step (BPM)", "How many BPM each step changes the tempo (1 to 40)."),
+          trainEvery_(apvts_, robodrummer::ParamIDs::pracTrainEvery, "Every", "Number of bars or loop passes between steps (1 to 64), see 'Counted in'.", juce::Slider::LinearHorizontal, 50),
+          trainUnit_(apvts_, robodrummer::ParamIDs::pracTrainUnit, "Counted in", "Whether 'Every' counts bars or completed loop passes."),
+          trainDir_(apvts_, robodrummer::ParamIDs::pracTrainDir, "Direction", "Up, Down or Ping-pong between start and target."),
+          gate_(apvts_, robodrummer::ParamIDs::pracTrainGate, "Only speed up when I'm in time", "Hold the next step until the tracker is confident that you are playing in time."),
+          gateMin_(apvts_, robodrummer::ParamIDs::pracTrainGateMin, "Confidence needed", "How confident the tempo tracker must be before a step is allowed (20 to 95 %)."),
+          rest_(apvts_, robodrummer::ParamIDs::pracTrainRest, "Rest bar after each step", "Mute one bar after every step so you can reset your hands (speed drill)."),
+          stopEnd_(apvts_, robodrummer::ParamIDs::pracTrainStopEnd, "Stop at target", "Stop the drummer when the target tempo is reached.") {
+        for (auto* c : std::initializer_list<juce::Component*>{ &enabled_, &countIn_, &sound_, &startOnly_, &loopOn_, &loopMode_, &loopBars_, &secFirst_, &secLast_,
+                                                               &trainOn_, &trainStart_, &trainTarget_, &trainStep_, &trainEvery_, &trainUnit_, &trainDir_, &gate_, &gateMin_, &rest_, &stopEnd_ })
+            addAndMakeVisible(*c);
+        trainStart_.setUnit("BPM", 0); trainTarget_.setUnit("BPM", 0); trainStep_.setUnit("BPM", 0);
+        for (auto* l : { &status_, &trainerLine_, &hint_ }) { styleBody(*l, 14.0f, kText); l->setJustificationType(juce::Justification::topLeft); l->setMinimumHorizontalScale(1.0f); addAndMakeVisible(*l); }
+        styleBody(hint_, 13.0f, kDim);
+        hint_.setMinimumHorizontalScale(1.0f);
+        status_.setFont(juce::FontOptions(17.0f, juce::Font::bold));
+        status_.setTitle("Practice status");
+        hint_.setText("Count-in, loop and tempo trainer act while a practice session is running (MIDI notes 51 to 55 toggle them from a pedal). "
+                      "With a guitar-led timing mode or a host tempo the trainer only shows the tempo to aim for.", juce::dontSendNotification);
+        restart_.setTooltip("Go back to the first rung of the tempo trainer (MIDI note 54).");
+        restart_.setComponentID("practiceRestartTrainer");
+        restart_.onClick = [this] { processor_.restartPracticeTrainer(); };
+        addAndMakeVisible(restart_);
+        refresh();
+    }
+    void paint(juce::Graphics& g) override {
+        drawPanel(g, sessionArea_, "Session");
+        drawPanel(g, countArea_, "Count-in");
+        drawPanel(g, loopArea_, "Loop");
+        drawPanel(g, trainArea_, "Tempo trainer");
+    }
+    void resized() override {
+        auto area = getLocalBounds().reduced(8);
+        auto left = area.removeFromLeft(area.getWidth() * 45 / 100);
+        area.removeFromLeft(8);
+        trainArea_ = area;
+        sessionArea_ = left.removeFromTop(juce::jmax(176, left.getHeight() * 32 / 100));
+        left.removeFromTop(8);
+        countArea_ = left.removeFromTop(juce::jmax(112, left.getHeight() * 33 / 100));
+        left.removeFromTop(8);
+        loopArea_ = left;
+        auto s = sessionArea_.reduced(12, 6); s.removeFromTop(22);
+        enabled_.setBounds(s.removeFromTop(28)); s.removeFromTop(4);
+        restart_.setBounds(s.removeFromBottom(30).removeFromLeft(170)); s.removeFromBottom(4);
+        hint_.setBounds(s.removeFromBottom(juce::jmin(60, s.getHeight() / 2 + 8)));
+        status_.setBounds(s);
+        auto c = countArea_.reduced(12, 6); c.removeFromTop(22);
+        stack(c, 28, 3, { &countIn_, &sound_, &startOnly_ });
+        auto l = loopArea_.reduced(12, 6); l.removeFromTop(22);
+        stack(l, 28, 3, { &loopOn_, &loopMode_, &loopBars_, &secFirst_, &secLast_ });
+        auto t = trainArea_.reduced(12, 6); t.removeFromTop(22);
+        stack(t, 27, 3, { &trainOn_, &trainStart_, &trainTarget_, &trainStep_, &trainEvery_, &trainUnit_, &trainDir_, &gate_, &gateMin_, &rest_, &stopEnd_ });
+        trainerLine_.setBounds(t.removeFromTop(40));
+    }
+    void refresh() override {
+        status_.setText(processor_.getPracticeStatusText(), juce::dontSendNotification);
+        const auto s = processor_.getPracticeStatus();
+        juce::String line = "Trainer: off";
+        if (s.trainerOn) line = (s.trainerFinished ? "Trainer finished at " : (s.trainerDrives ? "Trainer now at " : "Aim for ")) + whole(s.trainerBpm) + " BPM (step " + juce::String(s.trainerStep + 1) + ")";
+        trainerLine_.setText(line, juce::dontSendNotification);
+    }
+private:
+    RoboDrummerAudioProcessor& processor_;
+    APVTS& apvts_;
+    ParamToggle enabled_;
+    ParamCombo countIn_, sound_;
+    ParamToggle startOnly_, loopOn_;
+    ParamCombo loopMode_, loopBars_;
+    ParamSlider secFirst_, secLast_;
+    ParamToggle trainOn_;
+    ParamSlider trainStart_, trainTarget_, trainStep_, trainEvery_;
+    ParamCombo trainUnit_, trainDir_;
+    ParamToggle gate_;
+    ParamSlider gateMin_;
+    ParamToggle rest_, stopEnd_;
+    juce::Label status_, trainerLine_, hint_;
+    juce::TextButton restart_{"RESTART TRAINER"};
+    juce::Rectangle<int> sessionArea_, countArea_, loopArea_, trainArea_;
+};
+
+// ====================================================================================================================
+// Capture / export (spec 05)
+// ====================================================================================================================
+class DragHandle final : public juce::Component, public juce::SettableTooltipClient {
+public:
+    DragHandle() { setWantsKeyboardFocus(true); setMouseCursor(juce::MouseCursor::DraggingHandCursor); }
+    std::function<juce::File()> provideFile;     // writes the temp .mid and returns it (empty when there is nothing to drag)
+    std::function<void()> onKeyboardActivate;    // keyboard alternative: the Save dialog
+    std::function<void(const juce::String&)> onMessage;
+    void paint(juce::Graphics& g) override {
+        auto r = getLocalBounds().toFloat().reduced(1.0f);
+        g.setColour(kPanelRaised);
+        g.fillRoundedRectangle(r, 5.0f);
+        g.setColour(kAccentAlt);
+        g.drawRoundedRectangle(r, 5.0f, 1.5f);
+        g.setColour(kDim);
+        for (int i = 0; i < 3; ++i) g.fillEllipse(r.getX() + 10.0f + static_cast<float>(i) * 6.0f, r.getCentreY() - 2.0f, 4.0f, 4.0f);
+        g.setColour(kText);
+        g.setFont(juce::FontOptions(13.0f, juce::Font::bold));
+        g.drawText("DRAG MIDI", r.withTrimmedLeft(34.0f), juce::Justification::centredLeft);
+    }
+    void mouseDown(const juce::MouseEvent&) override { dragging_ = false; }
+    void mouseDrag(const juce::MouseEvent& e) override {
+        if (dragging_ || e.getDistanceFromDragStart() < 6) return;
+        dragging_ = true;
+        const auto file = provideFile ? provideFile() : juce::File();
+        if (file.existsAsFile()) juce::DragAndDropContainer::performExternalDragDropOfFiles({ file.getFullPathName() }, false, this);
+        else if (onMessage) onMessage("Nothing to drag yet: play a few bars first.");
+    }
+    bool keyPressed(const juce::KeyPress& k) override {
+        if ((k == juce::KeyPress::returnKey || k == juce::KeyPress::spaceKey) && onKeyboardActivate) { onKeyboardActivate(); return true; }
+        return false;
+    }
+private:
+    bool dragging_{false};
+};
+
+class CapturePanel final : public juce::Component {
+public:
+    explicit CapturePanel(RoboDrummerAudioProcessor& p, int initialBars) : processor_(p) {
+        setComponentID("capturePanel");
+        setTitle("Capture");
+        bars_.addItem("4 bars", 1); bars_.addItem("8 bars", 2); bars_.addItem("16 bars", 3); bars_.addItem("32 bars", 4); bars_.addItem("All (max 10 min)", 5);
+        bars_.setSelectedId(idForBars(initialBars), juce::dontSendNotification);
+        bars_.setTooltip("How much of the recent performance to export.");
+        bars_.setTitle("Capture length"); bars_.setDescription("How much of the recent performance to export.");
+        bars_.setComponentID("captureBars");
+        bars_.onChange = [this] { EditorSettings::setInt("captureBars", barsValue()); updateStatus(true); };
+        styleCaption(lengthLabel_, "Length");
+        save_.setTooltip("Save the last N bars as a .mid file (keyboard alternative to dragging).");
+        save_.setComponentID("captureSave");
+        save_.onClick = [this] { chooseFile(); };
+        clear_.setTooltip("Forget everything captured so far. Press twice to confirm.");
+        clear_.setComponentID("captureClear");
+        clear_.onClick = [this] {
+            if (!confirmClear_) { confirmClear_ = true; clear_.setButtonText("CONFIRM CLEAR"); startTimer(); return; }
+            confirmClear_ = false; clear_.setButtonText("CLEAR"); processor_.requestCaptureClear(); updateStatus(true);
+        };
+        drag_.setTooltip("Press and drag onto a DAW track to drop the last N bars as a MIDI file. Use Save MIDI if your host does not accept drops.");
+        drag_.setTitle("Drag MIDI"); drag_.setDescription("Drag the last N bars out as a MIDI file. Press Enter to open the Save dialog instead.");
+        drag_.setComponentID("captureDrag");
+        drag_.provideFile = [this] { return prepareDragFile(); };
+        drag_.onKeyboardActivate = [this] { chooseFile(); };
+        drag_.onMessage = [this](const juce::String& m) { status_.setText(m, juce::dontSendNotification); };
+        styleBody(status_, 13.0f, kText);
+        status_.setJustificationType(juce::Justification::topLeft);
+        status_.setMinimumHorizontalScale(1.0f);
+        status_.setTitle("Capture status");
+        for (auto* c : std::initializer_list<juce::Component*>{ &lengthLabel_, &bars_, &save_, &clear_, &drag_, &status_ }) addAndMakeVisible(*c);
+        updateStatus(true);
+    }
+    ~CapturePanel() override { stopTimer(); }
+
+    int barsValue() const {
+        static const int values[] = { 4, 8, 16, 32, 0 };
+        return values[juce::jlimit(0, 4, bars_.getSelectedId() - 1)];
+    }
+    // Writes the capture to a user-chosen file. Returns false when nothing was captured or the write failed.
+    bool exportTo(const juce::File& file) {
+        juce::MemoryBlock block;
+        const auto result = processor_.buildCaptureFile(barsValue(), block);
+        if (result.status != robodrummer::CaptureStatus::Ok || block.getSize() == 0) return false;
+        return file.replaceWithData(block.getData(), block.getSize());
+    }
+    juce::File prepareDragFile() { return processor_.writeCaptureTempFile(barsValue()); }
+    void refresh() { updateStatus(false); }
+    juce::String statusText() const { return status_.getText(); }
+
+    void paint(juce::Graphics& g) override { drawPanel(g, getLocalBounds(), "Capture / export"); }
+    void resized() override {
+        auto a = getLocalBounds().reduced(12, 6);
+        a.removeFromTop(22);
+        auto row = a.removeFromTop(28);
+        lengthLabel_.setBounds(row.removeFromLeft(54));
+        bars_.setBounds(row.reduced(0, 1));
+        a.removeFromTop(4);
+        status_.setBounds(a.removeFromTop(juce::jmin(36, a.getHeight() / 3)));
+        drag_.setBounds(a.removeFromTop(32)); a.removeFromTop(4);
+        rowOfButtons(a.removeFromTop(30), 6, { &save_, &clear_ });
+    }
+private:
+    struct Tick final : juce::Timer { std::function<void()> fn; void timerCallback() override { fn(); } };
+    void startTimer() { tick_.fn = [this] { confirmClear_ = false; clear_.setButtonText("CLEAR"); tick_.stopTimer(); }; tick_.startTimer(3000); }
+    void stopTimer() { tick_.stopTimer(); }
+    static int idForBars(int bars) { return bars == 4 ? 1 : bars == 16 ? 3 : bars == 32 ? 4 : bars == 0 ? 5 : 2; }
+    void updateStatus(bool force) {
+        const auto now = juce::Time::getMillisecondCounter();
+        if (!force && now - lastUpdate_ < 500) return;   // building the export is not free: twice a second is plenty
+        lastUpdate_ = now;
+        processor_.drainCapture();
+        const auto text = processor_.getCaptureStatusText(barsValue());
+        if (text != status_.getText()) status_.setText(text, juce::dontSendNotification);
+    }
+    void chooseFile() {
+        chooser_ = std::make_unique<juce::FileChooser>("Save captured drums as MIDI", juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("RoboDrummer.mid"), "*.mid");
+        juce::Component::SafePointer<CapturePanel> safe(this);
+        chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting,
+                              [safe](const juce::FileChooser& fc) {
+            if (safe == nullptr) return;
+            auto file = fc.getResult();
+            if (file == juce::File()) return;
+            if (!file.hasFileExtension("mid")) file = file.withFileExtension("mid");
+            safe->status_.setText(safe->exportTo(file) ? "Saved " + file.getFileName() : juce::String("Nothing to save yet: play a few bars first."), juce::dontSendNotification);
+        });
+    }
+    RoboDrummerAudioProcessor& processor_;
+    juce::Label lengthLabel_, status_;
+    juce::ComboBox bars_;
+    juce::TextButton save_{"SAVE .MID..."}, clear_{"CLEAR"};
+    DragHandle drag_;
+    std::unique_ptr<juce::FileChooser> chooser_;
+    Tick tick_;
+    bool confirmClear_{false};
+    juce::uint32 lastUpdate_{0};
+};
+
+// ====================================================================================================================
+// Help / About overlay (spec 17): sectioned guide generated from docs/HELP.md plus version, formats, privacy and links.
+// ====================================================================================================================
+inline juce::String versionLine() {
+    juce::String v = juce::String("RoboDrummer ") + JucePlugin_VersionString;
+#ifdef ROBODRUMMER_PRERELEASE_TAG
+    v << "-" << ROBODRUMMER_PRERELEASE_TAG;
+#endif
+    return v;
+}
+
+inline juce::String buildLine() {
+    juce::String s = juce::String("Built ") + __DATE__;
+#ifdef ROBODRUMMER_GIT_HASH
+    s << " (" << ROBODRUMMER_GIT_HASH << ")";
+#endif
+    return s;
+}
+
+inline juce::String diagnosticsText(RoboDrummerAudioProcessor& p) {
+    juce::String t;
+    t << versionLine() << "\n" << buildLine() << "\n";
+    t << "Format: " << juce::AudioProcessor::getWrapperTypeDescription(p.wrapperType) << "\n";
+    t << "Host: " << juce::PluginHostType().getHostDescription() << "\n";
+    t << "Sample rate: " << juce::String(p.getSampleRateForDisplay(), 0) << " Hz, block size " << p.getBlockSize() << "\n";
+    t << "OS: " << juce::SystemStats::getOperatingSystemName() << "\n";
+    t << "Tracker: " << (p.isGuitarTrackerLocked() ? "locked" : "acquiring") << ", guitar " << juce::String(p.getDetectedGuitarBpm(), 1) << " BPM, drummer "
+      << juce::String(p.getEffectiveDrummerBpm(), 1) << " BPM\n";
+    return t;
+}
+
+class HelpOverlay final : public juce::Component {
+public:
+    HelpOverlay(RoboDrummerAudioProcessor& p, std::function<void()> onClose, std::function<void()> onTour)
+        : processor_(p), onClose_(std::move(onClose)), onTour_(std::move(onTour)) {
+        setComponentID("helpOverlay");
+        setTitle("Help and About");
+        setFocusContainerType(FocusContainerType::keyboardFocusContainer);
+        setWantsKeyboardFocus(false);
+        for (auto* l : { &about1_, &about2_, &about3_ }) { styleBody(*l, 13.0f, kText); l->setMinimumHorizontalScale(0.6f); addAndMakeVisible(*l); }
+        about1_.setFont(juce::FontOptions(18.0f, juce::Font::bold));
+        about1_.setText(versionLine() + "   |   Circuit Drift Labs", juce::dontSendNotification);
+        about2_.setText(buildLine() + "   |   Formats: VST3, CLAP, AU (macOS), Standalone   |   Windows, macOS, Linux", juce::dontSendNotification);
+        about3_.setText("Privacy: RoboDrummer makes no network connections and sends no telemetry, analytics, licence or update checks. Builds may be unsigned during the beta.", juce::dontSendNotification);
+        about3_.setMinimumHorizontalScale(0.6f);
+        for (auto* l : { &link1_, &link2_ }) { l->setColour(juce::HyperlinkButton::textColourId, kAccentAlt); addAndMakeVisible(*l); }
+        link1_.setButtonText("Circuit Drift Labs website"); link1_.setURL(juce::URL("https://djshellshoxxx.github.io/circuitdriftlabs/"));
+        link2_.setButtonText("Report a problem (GitHub issues)"); link2_.setURL(juce::URL("https://github.com/djshellshoxxx/robodrummer/issues"));
+        link1_.setTooltip("Opens the Circuit Drift Labs website in your browser."); link2_.setTooltip("Opens the issue tracker in your browser.");
+        link1_.setTitle("Circuit Drift Labs website"); link2_.setTitle("Report a problem");
+        copy_.setTooltip("Copy version, host, sample rate and tracker state to the clipboard for a bug report. Nothing is sent anywhere.");
+        copy_.onClick = [this] { juce::SystemClipboard::copyTextToClipboard(diagnosticsText(processor_)); copy_.setButtonText("COPIED"); };
+        tour_.setTooltip("Show the short first-run tour again.");
+        tour_.onClick = [this] { if (onTour_) onTour_(); };
+        close_.setTooltip("Close Help (Escape).");
+        close_.setComponentID("helpClose");
+        close_.onClick = [this] { if (onClose_) onClose_(); };
+        sections_.setTooltip("Jump to a section of the guide.");
+        sections_.setTextWhenNothingSelected("Jump to section...");
+        sections_.setTitle("Help sections");
+        sections_.onChange = [this] {
+            const int index = sections_.getSelectedId() - 1;
+            if (index >= 0 && index < static_cast<int>(offsets_.size())) { text_.setCaretPosition(offsets_[static_cast<std::size_t>(index)]); text_.scrollEditorToPositionCaret(0, 0); }
+        };
+        for (auto* c : std::initializer_list<juce::Component*>{ &copy_, &tour_, &close_, &sections_ }) addAndMakeVisible(*c);
+        text_.setMultiLine(true); text_.setReadOnly(true); text_.setScrollbarsShown(true); text_.setCaretVisible(false);
+        text_.setWantsKeyboardFocus(true);
+        text_.setTitle("Help text");
+        addAndMakeVisible(text_);
+        renderMarkdown(juce::String::fromUTF8(rdhelp::HELP_md, rdhelp::HELP_mdSize));
+    }
+    bool keyPressed(const juce::KeyPress& k) override {
+        if (k == juce::KeyPress::escapeKey) { if (onClose_) onClose_(); return true; }
+        return false;
+    }
+    void focusClose() { close_.grabKeyboardFocus(); }
+    int sectionCount() const { return static_cast<int>(offsets_.size()); }
+    juce::String plainText() const { return text_.getText(); }
+    void paint(juce::Graphics& g) override {
+        g.fillAll(kBackground.withAlpha(0.96f));
+        drawPanel(g, getLocalBounds().reduced(24, 20), "");
+    }
+    void resized() override {
+        auto a = getLocalBounds().reduced(36, 30);
+        about1_.setBounds(a.removeFromTop(26));
+        about2_.setBounds(a.removeFromTop(20));
+        about3_.setBounds(a.removeFromTop(20)); a.removeFromTop(4);
+        auto row = a.removeFromTop(30);
+        link1_.setBounds(row.removeFromLeft(250)); link2_.setBounds(row.removeFromLeft(310)); a.removeFromTop(4);
+        auto buttons = a.removeFromBottom(34);
+        a.removeFromBottom(6);
+        close_.setBounds(buttons.removeFromRight(110)); buttons.removeFromRight(8);
+        tour_.setBounds(buttons.removeFromRight(130)); buttons.removeFromRight(8);
+        copy_.setBounds(buttons.removeFromRight(170));
+        sections_.setBounds(a.removeFromTop(28)); a.removeFromTop(6);
+        text_.setBounds(a);
+    }
+private:
+    static juce::String clean(juce::String s) { return s.replace("**", "").replace("`", ""); }
+    void renderMarkdown(const juce::String& md) {
+        text_.clear();
+        offsets_.clear();
+        auto add = [this](const juce::String& line, float size, bool bold, juce::Colour colour) {
+            text_.setFont(juce::FontOptions(size, bold ? juce::Font::bold : juce::Font::plain));
+            text_.setColour(juce::TextEditor::textColourId, colour);
+            text_.insertTextAtCaret(line + "\n");
+        };
+        for (const auto& raw : juce::StringArray::fromLines(md)) {
+            if (raw.startsWith("### ")) add(clean(raw.substring(4)), 15.0f, true, kText);
+            else if (raw.startsWith("## ")) {
+                offsets_.push_back(text_.getCaretPosition());
+                sections_.addItem(clean(raw.substring(3)), static_cast<int>(offsets_.size()));
+                add(clean(raw.substring(3)), 18.0f, true, kAccentAlt);
+            } else if (raw.startsWith("# ")) add(clean(raw.substring(2)), 22.0f, true, kAccent);
+            else if (raw.trim().isEmpty()) add("", 8.0f, false, kText);
+            else if (raw.trimStart().startsWith("- ")) add(juce::String::fromUTF8("  \xE2\x80\xA2 ") + clean(raw.trimStart().substring(2)), 14.0f, false, kText);
+            else add(clean(raw), 14.0f, false, kText);
+        }
+        text_.setCaretPosition(0);
+    }
+    RoboDrummerAudioProcessor& processor_;
+    std::function<void()> onClose_, onTour_;
+    juce::Label about1_, about2_, about3_;
+    juce::HyperlinkButton link1_, link2_;
+    juce::TextButton copy_{"COPY DIAGNOSTICS"}, tour_{"SHOW TOUR"}, close_{"CLOSE HELP"};
+    juce::ComboBox sections_;
+    juce::TextEditor text_;
+    std::vector<int> offsets_;
+};
+
+// ====================================================================================================================
+// First-run tour: small, skippable, non-blocking card that sits above the footer; restartable from Help.
+// ====================================================================================================================
+class TourCard final : public juce::Component {
+public:
+    struct Step { const char* tab; int tabIndex; const char* text; };
+    TourCard(std::function<void(int)> selectTab, std::function<void()> finished) : selectTab_(std::move(selectTab)), finished_(std::move(finished)) {
+        setComponentID("tourCard");
+        setTitle("Quick tour");
+        styleBody(text_, 14.0f, kText);
+        text_.setJustificationType(juce::Justification::topLeft);
+        text_.setMinimumHorizontalScale(1.0f);
+        styleBody(counter_, 13.0f, kDim);
+        next_.setTooltip("Go to the next tip.");
+        skip_.setTooltip("Close the tour. You can start it again from HELP.");
+        next_.setComponentID("tourNext"); skip_.setComponentID("tourSkip");
+        next_.onClick = [this] { if (step_ + 1 >= count()) finish(); else show(step_ + 1); };
+        skip_.onClick = [this] { finish(); };
+        for (auto* c : std::initializer_list<juce::Component*>{ &text_, &counter_, &next_, &skip_ }) addAndMakeVisible(*c);
+        setVisible(false);
+    }
+    static const Step* steps() {
+        static const Step s[] = {
+            { "LIVE", 0, "Start here. Pick a Style, Kit and Drummer, press LISTEN and play a few bars. The drummer joins when the beat is reliable." },
+            { "LIVE", 0, "LEARN MY PLAYING listens for about ten seconds and suggests input, timing and tempo settings. Nothing changes until you press Apply, and you can undo." },
+            { "KIT", 1, "Shape the sound here. The Transient Shaper and Drum Bus sit next to the mixer and stay off until you switch them on." },
+            { "PRACTICE", 5, "Rehearse with a count-in, a bar loop or a tempo trainer that nudges the tempo up toward a target." },
+            { "SETTINGS", 8, "Tooltips, reduced motion and high contrast are under Interface. HELP in the header opens the full guide and restarts this tour." },
+        };
+        return s;
+    }
+    static int count() { return 5; }
+    void start() { show(0); }
+    bool isRunning() const noexcept { return isVisible(); }
+    int step() const noexcept { return step_; }
+    void paint(juce::Graphics& g) override {
+        drawPanel(g, getLocalBounds(), "Quick tour");
+        g.setColour(kAccentAlt);
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(1.0f), 8.0f, 2.0f);
+    }
+    void resized() override {
+        auto a = getLocalBounds().reduced(12, 6);
+        a.removeFromTop(22);
+        auto buttons = a.removeFromBottom(30);
+        skip_.setBounds(buttons.removeFromRight(110)); buttons.removeFromRight(8);
+        next_.setBounds(buttons.removeFromRight(110));
+        counter_.setBounds(buttons);
+        text_.setBounds(a);
+    }
+private:
+    void show(int step) {
+        step_ = juce::jlimit(0, count() - 1, step);
+        const auto& s = steps()[step_];
+        text_.setText(s.text, juce::dontSendNotification);
+        counter_.setText("Tip " + juce::String(step_ + 1) + " of " + juce::String(count()) + "  (" + s.tab + " tab)", juce::dontSendNotification);
+        next_.setButtonText(step_ + 1 >= count() ? "DONE" : "NEXT");
+        if (selectTab_) selectTab_(s.tabIndex);
+        setVisible(true);
+        toFront(false);
+    }
+    void finish() { setVisible(false); if (finished_) finished_(); }
+    std::function<void(int)> selectTab_;
+    std::function<void()> finished_;
+    juce::Label text_, counter_;
+    juce::TextButton next_{"NEXT"}, skip_{"SKIP TOUR"};
+    int step_{0};
+};
+
+} // namespace rdui

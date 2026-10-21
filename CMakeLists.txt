@@ -62,12 +62,17 @@ if(ROBODRUMMER_BUILD_JUCE)
   )
   juce_generate_juce_header(RoboDrummer)
 
+  # docs/HELP.md is the single source of the in-plug-in Help text (spec 17), so the repository document and the UI cannot drift.
+  juce_add_binary_data(RoboDrummerHelpData SOURCES docs/HELP.md NAMESPACE rdhelp HEADER_NAME RoboDrummerHelpData.h)
+  set_target_properties(RoboDrummerHelpData PROPERTIES POSITION_INDEPENDENT_CODE TRUE)
+
   target_sources(RoboDrummer PRIVATE
     src/plugin/PluginProcessor.cpp
     src/plugin/PluginProcessor.h
     src/plugin/PluginEditor.cpp
     src/plugin/PluginEditor.h
     src/plugin/EditorPanels.h
+    src/plugin/EditorPanelsExtra.h
     src/plugin/EditorWidgets.h
     src/plugin/PresetManager.cpp
     src/plugin/PresetManager.h
@@ -75,6 +80,7 @@ if(ROBODRUMMER_BUILD_JUCE)
     src/audio/KitBuilder.h
   )
   target_include_directories(RoboDrummer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  target_link_libraries(RoboDrummer PUBLIC RoboDrummerHelpData)
   target_link_libraries(RoboDrummer PRIVATE
     robodrummer_core
     juce::juce_audio_utils

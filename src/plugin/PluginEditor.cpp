@@ -7,46 +7,9 @@
 #include "PluginEditor.h"
 #include <cmath>
 
-namespace {
-constexpr std::array<const char*, 8> kTabNames { "LIVE", "KIT", "DRUMMER", "STYLE", "SONG", "MIDI", "ANALYSIS", "SETTINGS" };
-
-const char* kHelpText =
-    "ROBODRUMMER HELP\n\n"
-    "QUICK START\n"
-    "1. Pick a Style, Kit and Drummer on the LIVE tab. 2. Choose a Timing mode: Drummer Leads (the host / internal BPM / MIDI clock is the boss), "
-    "Hybrid (shared) or Guitarist Leads (the guitar sets the tempo). 3. Press LISTEN and play a few bars. RoboDrummer acquires tempo and beat, "
-    "waits for a reliable beat, then joins on a beat boundary. 4. Keep playing - fills, dynamics and re-entry after silences are automatic.\n\n"
-    "TABS\n"
-    "LIVE: the main controls, tempo/beat/section read-outs, tracker confidence and the performance buttons.\n"
-    "KIT: choose a built-in kit or your own WAV/AIFF folder (kick.wav, snare_v1..v3.wav for velocity layers, snare_v2_rr2.wav for round robin, "
-    "closedhat, openhat, ride, crash, tom1, tom2, floortom). The mixer has Kick, Snare, Toms, Hi-Hat, Ride, Cymbals, Room and Master with gain, pan, "
-    "mute and solo. Enable the extra output buses in your DAW for separate Kick / Snare / Toms / Hats + Cymbals outputs.\n"
-    "DRUMMER: personality, humanize, feel (push / lay back), complexity, crash tendency, and the fill controls (frequency, length 1 beat to 2 bars, "
-    "complexity, surprise).\n"
-    "STYLE: 22 styles from Rock to Jazz / Swing, manual meter (3/4, 6/8, 5/4, 7/8...), Jam memory and the guitar-silence behaviour.\n"
-    "SONG: a six-section programmed arrangement with per-section style, length, intensity, half/double time, transition (crash / fill / break / none), "
-    "drummer personality, fill frequency, leadership and follow strength.\n"
-    "MIDI: tempo source (host, internal, MIDI clock), note commands with MIDI Learn, controller mapping with MIDI Learn (expression pedal defaults: "
-    "CC11 = Intensity, CC12 = Leadership).\n"
-    "ANALYSIS: onsets, predicted beat grid, tempo hypotheses, phase error, confidence history, input level / gate and state transitions.\n"
-    "SETTINGS: guitar input selection, gain, noise gate and guitar monitor level, optional calibration, follow behaviour (strength, inertia, correction speed, confidence sensitivity), MIDI drum map, tooltips.\n\n"
-    "PRESETS\n"
-    "The header bar loads and saves Jam, Drummer, Style, Kit, Song and Analysis presets. Each type only stores its own slice, so a Kit preset never "
-    "changes the groove. Factory Jam presets are also available as host programs.\n\n"
-    "DEFAULT MIDI COMMANDS (channel 16 note-ons; consumed, not forwarded)\n"
-    "36 Fill (queued) | 37 Next section | 38 Previous section | 39 Crash | 40 Intensity up | 41 Intensity down | 42 Half-time | 43 Double-time | "
-    "44 Break | 45 Stop | 46 Resume | 47 Reset listening | 48 Solo support | 49 End jam | 50 Immediate fill.\n"
-    "Generated drum MIDI is sent on channel 10 using the General MIDI drum map. Other MIDI passes through unchanged.\n\n"
-    "HOST AUTOMATION\n"
-    "Every main control is an automatable host parameter. Intensity and Style also follow MIDI intensity commands and programmed sections, and the host is informed.\n\n"
-    "TROUBLESHOOTING\n"
-    "If tracking is unstable, check the ANALYSIS tab for a clean input level, use the noise gate or run calibration, and wait for the confidence bars "
-    "to rise before expecting tight synchronisation. If the host provides no tempo, RoboDrummer uses Internal BPM.\n";
-}
-
-juce::File RoboDrummerAudioProcessorEditor::settingsFile() {
-    return juce::File::getSpecialLocation(juce::File::userApplicationDataDirectory)
-        .getChildFile("Circuit Drift Labs").getChildFile("RoboDrummer").getChildFile("settings.xml");
+const char* RoboDrummerAudioProcessorEditor::tabName(int index) {
+    static constexpr std::array<const char*, TabCount> names { "LIVE", "KIT", "DRUMMER", "STYLE", "SONG", "PRACTICE", "MIDI", "ANALYSIS", "SETTINGS" };
+    return names[static_cast<std::size_t>(juce::jlimit(0, TabCount - 1, index))];
 }
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
@@ -60,32 +23,46 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     rdui::styleCaption(subtitle_, "adaptive jam partner", 13.0f);
     addAndMakeVisible(subtitle_);
 
-    bool tooltipsOn = true;
-    if (auto xml = juce::XmlDocument::parse(settingsFile()))
-        tooltipsOn = xml->getBoolAttribute("tooltips", true);
+    const auto settings = rdui::EditorSettings::load();
+    rdui::uiPrefs().reducedMotion = settings.reducedMotion;
+    rdui::uiPrefs().highContrast = settings.highContrast;
+    tooltipDelayMs_ = settings.tooltipDelayMs;
+    setTitle("RoboDrummer editor");
 
     for (int i = 0; i < TabCount; ++i) {
         auto& button = tabButtons_[static_cast<std::size_t>(i)];
-        button.setButtonText(kTabNames[static_cast<std::size_t>(i)]);
+        button.setButtonText(tabName(i));
+        button.setTitle(juce::String(tabName(i)) + " tab");
+        button.setTooltip(juce::String("Show the ") + tabName(i) + " tab.");
         button.setClickingTogglesState(true);
         button.setRadioGroupId(9001);
         button.onClick = [this, i] { selectTab(i); };
         addAndMakeVisible(button);
     }
+    rdui::SettingsPanel::Callbacks callbacks;
+    callbacks.tooltips = [this](bool on) { applyTooltipSetting(on); };
+    callbacks.tooltipDelay = [this](int ms) { applyTooltipDelay(ms); };
+    callbacks.reducedMotion = [this](bool on) { applyReducedMotion(on); };
+    callbacks.highContrast = [this](bool on) { applyHighContrast(on); };
+    callbacks.showHelp = [this] { showHelp(); };
+    callbacks.showTour = [this] { startTour(); };
     panels_[0] = std::make_unique<rdui::LivePanel>(processor_);
     panels_[1] = std::make_unique<rdui::KitPanel>(processor_);
     panels_[2] = std::make_unique<rdui::DrummerPanel>(processor_);
     panels_[3] = std::make_unique<rdui::StylePanel>(processor_);
     panels_[4] = std::make_unique<rdui::SongPanel>(processor_);
-    panels_[5] = std::make_unique<rdui::MidiPanel>(processor_);
-    panels_[6] = std::make_unique<rdui::AnalysisPanel>(processor_);
-    panels_[7] = std::make_unique<rdui::SettingsPanel>(processor_, [this](bool on) { applyTooltipSetting(on); }, tooltipsOn, [this] { showHelp(); });
+    panels_[5] = std::make_unique<rdui::PracticePanel>(processor_);
+    panels_[6] = std::make_unique<rdui::MidiPanel>(processor_);
+    panels_[7] = std::make_unique<rdui::AnalysisPanel>(processor_);
+    panels_[8] = std::make_unique<rdui::SettingsPanel>(processor_, callbacks, settings);
+    for (int i = 0; i < TabCount; ++i) panels_[static_cast<std::size_t>(i)]->setTitle(juce::String(tabName(i)) + " tab");
     for (auto& panel : panels_) addChildComponent(*panel);
 
     for (int t = 0; t < robodrummer::kPresetTypeCount; ++t)
         presetType_.addItem(robodrummer::PresetManager::typeName(static_cast<robodrummer::PresetType>(t)), t + 1);
     presetType_.setSelectedId(1, juce::dontSendNotification);
     presetType_.setTooltip("Preset type. Each type only stores its own slice of the settings.");
+    presetType_.setTitle("Preset type"); presetList_.setTitle("Preset"); presetSave_.setTitle("Save preset"); presetDelete_.setTitle("Delete preset"); helpButton_.setTitle("Help and About");
     presetType_.onChange = [this] { rebuildPresetList(); };
     presetList_.setTooltip("Choose a preset to load it (factory presets first, then your own).");
     presetList_.setTextWhenNothingSelected("Load preset...");
@@ -104,32 +81,30 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
             rebuildPresetList();
         }
     };
-    helpButton_.setTooltip("Open the full RoboDrummer help section.");
+    helpButton_.setTooltip("Open the RoboDrummer help guide, About information and the quick tour.");
     helpButton_.onClick = [this] { showHelp(); };
     for (auto* c : std::initializer_list<juce::Component*>{ &presetType_, &presetList_, &presetSave_, &presetDelete_, &helpButton_ }) addAndMakeVisible(*c);
     rebuildPresetList();
 
-    helpText_.setMultiLine(true);
-    helpText_.setReadOnly(true);
-    helpText_.setScrollbarsShown(true);
-    helpText_.setCaretVisible(false);
-    helpText_.setFont(juce::FontOptions(14.0f));
-    helpText_.setText(kHelpText);
-    addChildComponent(helpText_);
-    closeHelpButton_.setTooltip("Close the RoboDrummer help section.");
-    closeHelpButton_.onClick = [this] { helpText_.setVisible(false); closeHelpButton_.setVisible(false); };
-    addChildComponent(closeHelpButton_);
+    helpOverlay_ = std::make_unique<rdui::HelpOverlay>(processor_, [this] { hideHelp(); }, [this] { hideHelp(); startTour(); });
+    addChildComponent(*helpOverlay_);
+    tour_ = std::make_unique<rdui::TourCard>([this](int tab) { selectTab(tab); }, [this] { rdui::EditorSettings::setBool("tourSeen", true); });
+    addChildComponent(*tour_);
 
     rdui::styleCaption(footer_, "Adaptive tempo, phase and dynamics are confidence-gated; the drummer joins on a reliable beat boundary.", 12.0f);
     addAndMakeVisible(footer_);
 
-    applyTooltipSetting(tooltipsOn);
+    addAndMakeVisible(focusRing_);
+    setWantsKeyboardFocus(true);
+    if (settings.tooltips) tooltipWindow_ = std::make_unique<juce::TooltipWindow>(this, tooltipDelayMs_);
+    if (settings.highContrast) rdui::applyHighContrast(*this, true);
     selectTab(0);
     // Sized last: every child must exist before the first resized() call.
     setResizable(true, true);
-    setResizeLimits(900, 640, 1600, 1100);
-    setSize(1040, 720);
-    startTimerHz(20);
+    setResizeLimits(kMinWidth, kMinHeight, 1700, 1200);
+    setSize(kDefaultWidth, kDefaultHeight);
+    setTimerRate(settings.reducedMotion ? 5 : 20);
+    if (!settings.tourSeen) startTour();
 }
 
 RoboDrummerAudioProcessorEditor::~RoboDrummerAudioProcessorEditor() {
@@ -137,26 +112,65 @@ RoboDrummerAudioProcessorEditor::~RoboDrummerAudioProcessorEditor() {
     setLookAndFeel(nullptr);
 }
 
+void RoboDrummerAudioProcessorEditor::setTimerRate(int hz) {
+    timerHz_ = hz;
+    startTimerHz(hz);
+}
+
 void RoboDrummerAudioProcessorEditor::applyTooltipSetting(bool enabled) {
     if (enabled) {
-        if (tooltipWindow_ == nullptr) tooltipWindow_ = std::make_unique<juce::TooltipWindow>(this, 600);
+        if (tooltipWindow_ == nullptr) tooltipWindow_ = std::make_unique<juce::TooltipWindow>(this, tooltipDelayMs_);
     } else {
         tooltipWindow_.reset();
     }
-    auto file = settingsFile();
-    if (file.getParentDirectory().createDirectory().wasOk()) {
-        juce::XmlElement xml("RoboDrummerSettings");
-        xml.setAttribute("tooltips", enabled);
-        xml.writeTo(file);
-    }
+    rdui::EditorSettings::setBool("tooltips", enabled);
+}
+
+void RoboDrummerAudioProcessorEditor::applyTooltipDelay(int ms) {
+    tooltipDelayMs_ = ms;
+    if (tooltipWindow_ != nullptr) tooltipWindow_ = std::make_unique<juce::TooltipWindow>(this, tooltipDelayMs_);
+    rdui::EditorSettings::setInt("tooltipDelayMs", ms);
+}
+
+void RoboDrummerAudioProcessorEditor::applyReducedMotion(bool on) {
+    rdui::uiPrefs().reducedMotion = on;
+    setTimerRate(on ? 5 : 20);
+    rdui::EditorSettings::setBool("reducedMotion", on);
+}
+
+void RoboDrummerAudioProcessorEditor::applyHighContrast(bool on) {
+    rdui::uiPrefs().highContrast = on;
+    rdui::applyHighContrast(*this, on);
+    rdui::EditorSettings::setBool("highContrast", on);
+    repaint();
 }
 
 void RoboDrummerAudioProcessorEditor::showHelp() {
-    helpText_.setVisible(true);
-    closeHelpButton_.setVisible(true);
+    helpOverlay_->setBounds(getLocalBounds());
+    helpOverlay_->setVisible(true);
+    helpOverlay_->toFront(true);
+    focusRing_.toFront(false);
+    helpOverlay_->focusClose();
+}
+
+void RoboDrummerAudioProcessorEditor::hideHelp() {
+    helpOverlay_->setVisible(false);
+    grabKeyboardFocus();
+}
+
+void RoboDrummerAudioProcessorEditor::startTour() {
     resized();
-    helpText_.toFront(false);
-    closeHelpButton_.toFront(false);
+    tour_->start();
+    tour_->toFront(false);
+    focusRing_.toFront(false);
+}
+
+bool RoboDrummerAudioProcessorEditor::keyPressed(const juce::KeyPress& key) {
+    if (key == juce::KeyPress::escapeKey && isHelpOpen()) { hideHelp(); return true; }
+    const bool forward = key == juce::KeyPress(juce::KeyPress::tabKey, juce::ModifierKeys::ctrlModifier, 0);
+    const bool backward = key == juce::KeyPress(juce::KeyPress::tabKey, juce::ModifierKeys::ctrlModifier | juce::ModifierKeys::shiftModifier, 0);
+    if ((forward || backward) && !isHelpOpen()) { selectTab((currentTab_ + (forward ? 1 : TabCount - 1)) % TabCount); return true; }
+    return false;
 }
 
 void RoboDrummerAudioProcessorEditor::selectTab(int index) {
@@ -165,6 +179,8 @@ void RoboDrummerAudioProcessorEditor::selectTab(int index) {
     panels_[static_cast<std::size_t>(currentTab_)]->refresh();
     for (int i = 0; i < TabCount; ++i)
         tabButtons_[static_cast<std::size_t>(i)].setToggleState(i == currentTab_, juce::dontSendNotification);
+    if (rdui::uiPrefs().highContrast) rdui::applyHighContrast(*panels_[static_cast<std::size_t>(currentTab_)], true);
+    focusRing_.refresh();
 }
 
 void RoboDrummerAudioProcessorEditor::rebuildPresetList() {
@@ -221,16 +237,15 @@ void RoboDrummerAudioProcessorEditor::resized() {
     for (auto& panel : panels_)
         if (panel != nullptr) panel->setBounds(area);
 
-    if (helpText_.isVisible()) {
-        auto helpArea = getLocalBounds().reduced(48, 44);
-        auto closeRow = helpArea.removeFromBottom(40);
-        closeHelpButton_.setBounds(closeRow.withSizeKeepingCentre(130, 30));
-        helpText_.setBounds(helpArea);
-        helpText_.toFront(false);
-        closeHelpButton_.toFront(false);
+    helpOverlay_->setBounds(getLocalBounds());
+    focusRing_.setBounds(getLocalBounds());
+    if (tour_ != nullptr) {
+        const int w = juce::jmin(460, getWidth() - 24), h = 138;
+        tour_->setBounds(getWidth() - w - 14, getHeight() - h - 30, w, h);
     }
 }
 
 void RoboDrummerAudioProcessorEditor::timerCallback() {
     panels_[static_cast<std::size_t>(currentTab_)]->refresh();
+    focusRing_.refresh();
 }
