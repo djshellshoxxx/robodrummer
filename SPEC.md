@@ -895,9 +895,9 @@ Initial literature review produced several requirements that are now part of the
 See the `research/` directory for sources and detailed notes.
 
 
-## 43. Implementation status (0.3.0)
+## 43. Implementation status (0.4.0)
 
-Implementation status against this specification, the defects found and the remaining backlog are recorded in [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md). Compliance with the shared plug-in standard: [docs/COMPLIANCE.md](docs/COMPLIANCE.md). Validation: [docs/QA.md](docs/QA.md).
+Implementation status against this specification, the defects found and the remaining backlog are recorded in [docs/feature-audit/FEATURE_AUDIT_0.4.0.md](docs/feature-audit/FEATURE_AUDIT_0.4.0.md) (traceability matrix for every spec file and section) and, for the 0.3.0 baseline, [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md). Compliance with the shared plug-in standard: [docs/COMPLIANCE.md](docs/COMPLIANCE.md). Validation: [docs/QA.md](docs/QA.md).
 
 ## 41. v0.3 additions
 
@@ -926,8 +926,8 @@ All feature specifications and decision records live in `docs/specs/`.
 | [04-practice-mode](docs/specs/04-practice-mode.md) | Practice mode | Feature (v0.3) |
 | [05-midi-capture](docs/specs/05-midi-capture.md) | MIDI capture | Feature (v0.3) |
 | [06-auto-setup](docs/specs/06-auto-setup.md) | Auto setup | Feature (v0.3) |
-| [07-auto-meter](docs/specs/07-auto-meter.md) | Automatic meter detection (SPEC 16 "later") | Feature (planned) |
-| [08-virtual-limbs](docs/specs/08-virtual-limbs.md) | Virtual limb model (SPEC 22 "future") | Feature (planned) |
+| [07-auto-meter](docs/specs/07-auto-meter.md) | Automatic meter detection (SPEC 16 "later") | Feature (v0.4, implemented) |
+| [08-virtual-limbs](docs/specs/08-virtual-limbs.md) | Virtual limb model (SPEC 22 "future") | Feature (v0.4, implemented) |
 | [10-analysis-worker-thread](docs/specs/10-analysis-worker-thread.md) | Analysis on audio thread vs worker (SPEC 33) | ADR, decided: keep on audio thread |
 | [11-real-guitar-fixtures](docs/specs/11-real-guitar-fixtures.md) | Licensed real-guitar fixture corpus (SPEC 36) | Protocol |
 | [12-host-matrix-qa](docs/specs/12-host-matrix-qa.md) | Per-host checklist, pluginval and auval | QA spec |

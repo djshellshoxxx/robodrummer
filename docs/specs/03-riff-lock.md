@@ -63,4 +63,4 @@ Labels with units, tooltips explain product effect, state shown as text, no tool
 4. After `GrooveGenerator::generateBar` (and fills/phrase modifiers), BEFORE the humanizer and scheduler push: `RiffLockTransform::apply(events, count, ctx, style, riffLock.snapshot(), params, barSeed)`; use returned `count`. Skip on fill bars.
 5. UI timer: copy `snapshot()` for ANALYSIS tab.
 
-6. Build: add `riff_lock` to the explicit test-name list in `CMakeLists.txt` (tests are NOT auto-globbed in this repo); the test is verified standalone (g++ -std=c++20 -UNDEBUG, also under ASan/UBSan).
+6. Build: `tests/test_riff_lock.cpp` is picked up automatically (every `tests/test_*.cpp` is globbed by `CMakeLists.txt`); the test is verified standalone (g++ -std=c++20 -UNDEBUG, also under ASan/UBSan).

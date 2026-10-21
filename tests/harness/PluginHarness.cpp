@@ -1682,6 +1682,17 @@ void testPresetFuzz() {
     const auto original = juce::XmlDocument::parse(file);
     CHECK(original != nullptr);
     if (original == nullptr) return;
+    {   // A Jam preset carries every parameter except the two that would start a practice session on load.
+        std::set<juce::String> inFile;
+        for (auto* node : original->getChildWithTagNameIterator("Param")) inFile.insert(node->getStringAttribute("id"));
+        int missing = 0;
+        for (auto* parameter : rig.processor.getParameters().processor.getParameters())
+            if (auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter)) {
+                const bool excluded = withId->paramID == "practiceEnabled" || withId->paramID == "pracLoopOn";
+                if (!excluded && inFile.count(withId->paramID) == 0) { ++missing; std::printf("   Jam preset omits %s\n", withId->paramID.toRawUTF8()); }
+            }
+        CHECK_MSG(missing == 0 && inFile.size() == 108, "Jam preset has %zu parameters, %d missing", inFile.size(), missing);
+    }
     const char* bad[] = { "nan", "-nan", "inf", "-inf", "1e99", "-1e99", "-1", "7", "garbage", "" };
     for (const char* value : bad) {
         auto copy = std::make_unique<juce::XmlElement>(*original);

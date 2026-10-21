@@ -69,6 +69,8 @@ Example for a single platform retry: `gh workflow run release-build.yml -f versi
 
 Pushing a tag like `v0.4.0` also runs the workflow for all platforms; versions containing a `-` are marked pre-release.
 
+The part of the version after the first `-` (for example `beta.1`) is passed to CMake as `-DROBODRUMMER_PRERELEASE_TAG=beta.1` and shown in Help/About next to the version; locally it is empty unless you set it. The short git hash is detected at configure time.
+
 Release notes come from `docs/RELEASE_NOTES_<base version>.md` (for `0.4.0-beta.1` that is `docs/RELEASE_NOTES_0.4.0.md`) when it exists, otherwise a generated template. Any platform whose job failed is listed as missing in the notes, and the other platforms are still published.
 
 Assets per release: `RoboDrummer-<version>-windows-x64.zip`, `RoboDrummer-<version>-windows-x64-setup.exe`, `RoboDrummer-<version>-mac-arm64.zip`, `RoboDrummer-<version>-mac-x64.zip`, `RoboDrummer-<version>-linux-x64.tar.gz`, a `.sha256` for each, and `SHA256SUMS.txt`.
