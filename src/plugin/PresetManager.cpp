@@ -179,6 +179,7 @@ std::vector<PresetEntry> PresetManager::list(PresetType type) {
 }
 
 bool PresetManager::load(RoboDrummerAudioProcessor& processor, PresetType type, const PresetEntry& entry) {
+    processor.clearAutoSetupUndo(); // a stale Auto Setup undo must not overwrite what the preset sets
     if (entry.factory) {
         for (const auto& preset : factoryPresets()) {
             if (preset.type != type || entry.name != preset.name) continue;

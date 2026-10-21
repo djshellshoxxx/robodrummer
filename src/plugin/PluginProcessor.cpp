@@ -449,6 +449,7 @@ void RoboDrummerAudioProcessor::timerCallback() {
 
     drainMidiLearnToParameters();
     drainParameterToggles();
+    finalizeAutoSetupIfReady();
     capture_.drain();
 
     // Kit selection and loading happen here (message thread) and on the loader thread, never on the audio thread.
@@ -617,6 +618,7 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     drumBus_.prepare(sampleRate_, samplesPerBlock);
     setLatencySamples(shaper_.latencySamples() + drumBus_.latencySamples());
     resetAutoMeter();
+    autoSetup_.prepare(sampleRate_);
     practice_.reset();
     practiceSessionWanted_ = false;
     resetPracticeRuntime();
@@ -765,8 +767,19 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         const float* right = getTotalNumInputChannels() > 1 ? buffer.getReadPointer(1) : nullptr;
         float peak = 0.0f, rmsAccumulator = 0.0f;
         int chunks = 0;
+        const bool autoSetupListening = autoSetup_.state() == robodrummer::AutoSetupState::Listening;
+        const int inputModeIndex = choiceIndex(rawInputMode_, 3);
         for (int position = 0; position < numSamples; position += AnalysisChunk) {
             const int n = std::min(AnalysisChunk, numSamples - position);
+            if (autoSetupListening) {
+                // Auto Setup measures the RAW guitar (before gain, gate and conditioning) so proposed gain is absolute.
+                for (int i = 0; i < n; ++i) {
+                    const float l = left[position + i];
+                    const float r = right != nullptr ? right[position + i] : l;
+                    autoSetupScratch_[static_cast<std::size_t>(i)] = inputModeIndex == 1 ? l : (inputModeIndex == 2 ? r : 0.5f * (l + r));
+                }
+                autoSetup_.process(autoSetupScratch_.data(), n);
+            }
             conditioner_.process(left + position, right != nullptr ? right + position : nullptr, analysisScratch_.data(), n);
             rhythmAnalyzer_.processBlock(analysisScratch_.data(), n);
             const float lowRatio = lowBand_.processBlock(analysisScratch_.data(), n);
@@ -1703,6 +1716,81 @@ void RoboDrummerAudioProcessor::feedRiffLock(int numSamples, bool trackerLocked)
     jam_.setRiffLock(snapshot, params);
 }
 
+// ---- Auto Setup ------------------------------------------------------------------------------------------------------
+void RoboDrummerAudioProcessor::startAutoSetup(float seconds) {
+    if (autoSetup_.state() == robodrummer::AutoSetupState::Listening) return;
+    autoSetupUndo_.clear();
+    autoSetup_.start(seconds);
+}
+
+void RoboDrummerAudioProcessor::cancelAutoSetup() { autoSetup_.cancel(); }
+
+void RoboDrummerAudioProcessor::finalizeAutoSetupIfReady() {
+    if (autoSetup_.state() == robodrummer::AutoSetupState::Analyzing) autoSetup_.finalize();
+}
+
+robodrummer::AutoSetupSnapshot RoboDrummerAudioProcessor::getAutoSetupCurrentValues() const {
+    namespace ids = robodrummer::ParamIDs;
+    robodrummer::AutoSetupSnapshot s;
+    s.inputGainDb = rawValue(ids::inputGain, s.inputGainDb);
+    s.autoGain = rawValue(ids::autoGain, 0.0f) >= 0.5f;
+    s.gateThresholdDb = rawValue(ids::gateThreshold, s.gateThresholdDb);
+    s.followStrength = rawValue(ids::followStrength, s.followStrength);
+    s.tempoInertia = rawValue(ids::tempoInertia, s.tempoInertia);
+    s.confidenceSensitivity = rawValue(ids::confidenceSensitivity, s.confidenceSensitivity);
+    s.timingMode = static_cast<robodrummer::LeadershipMode>(juce::jlimit(0, 2, juce::roundToInt(rawValue(ids::leadershipMode, 0.0f))));
+    s.leadership = rawValue(ids::leadership, s.leadership);
+    s.bpm = rawValue(ids::bpm, s.bpm);
+    s.jamStyle = static_cast<robodrummer::JamStyle>(juce::jlimit(0, robodrummer::kJamStyleCount - 1, juce::roundToInt(rawValue(ids::jamStyle, 0.0f))));
+    s.intensity = rawValue(ids::intensity, s.intensity);
+    return s;
+}
+
+// Writes the masked fields through the host-notifying API, one change gesture per parameter (message thread).
+void RoboDrummerAudioProcessor::writeAutoSetupSnapshot(const robodrummer::AutoSetupSnapshot& v, std::uint32_t mask) {
+    namespace ids = robodrummer::ParamIDs;
+    const auto write = [this](const char* id, float plain) {
+        if (auto* parameter = parameters_.getParameter(id)) {
+            parameter->beginChangeGesture();
+            parameter->setValueNotifyingHost(parameter->convertTo0to1(plain));
+            parameter->endChangeGesture();
+        }
+    };
+    if (mask & robodrummer::kAsInputGain) write(ids::inputGain, v.inputGainDb);
+    if (mask & robodrummer::kAsAutoGain) write(ids::autoGain, v.autoGain ? 1.0f : 0.0f);
+    if (mask & robodrummer::kAsGate) write(ids::gateThreshold, v.gateThresholdDb);
+    if (mask & robodrummer::kAsFollowStrength) write(ids::followStrength, v.followStrength);
+    if (mask & robodrummer::kAsInertia) write(ids::tempoInertia, v.tempoInertia);
+    if (mask & robodrummer::kAsConfidence) write(ids::confidenceSensitivity, v.confidenceSensitivity);
+    if (mask & robodrummer::kAsTimingMode) write(ids::leadershipMode, static_cast<float>(static_cast<int>(v.timingMode)));
+    if (mask & robodrummer::kAsLeadership) write(ids::leadership, v.leadership);
+    if (mask & robodrummer::kAsBpm) write(ids::bpm, v.bpm);
+    if (mask & robodrummer::kAsStyle) write(ids::jamStyle, static_cast<float>(static_cast<int>(v.jamStyle)));
+    if (mask & robodrummer::kAsIntensity) write(ids::intensity, v.intensity);
+}
+
+bool RoboDrummerAudioProcessor::applyAutoSetup() {
+    if (autoSetup_.state() != robodrummer::AutoSetupState::Done || autoSetup_.result().status != robodrummer::AutoSetupStatus::Ok) return false;
+    return applyAutoSetup(autoSetup_.result().proposal);
+}
+
+bool RoboDrummerAudioProcessor::applyAutoSetup(const robodrummer::AutoSetupProposal& selected) {
+    const auto mask = robodrummer::appliedMask(selected);
+    if (mask == 0) return false;
+    const auto current = getAutoSetupCurrentValues();
+    autoSetupUndo_.capture(current, selected);
+    writeAutoSetupSnapshot(robodrummer::applyProposal(selected, current), mask);
+    return true;
+}
+
+bool RoboDrummerAudioProcessor::undoAutoSetup() {
+    if (!autoSetupUndo_.available()) return false;
+    const auto mask = autoSetupUndo_.mask();
+    const auto restored = autoSetupUndo_.restore(getAutoSetupCurrentValues());
+    writeAutoSetupSnapshot(restored, mask);
+    return true;
+}
+
 // ---- practice mode ---------------------------------------------------------------------------------------------------
 float RoboDrummerAudioProcessor::pracValue(std::size_t index, float fallback) const noexcept {
     const auto* raw = index < rawPrac_.size() ? rawPrac_[index] : nullptr;
@@ -2208,6 +2296,7 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
         return;
     }
     sanitiseParameters();
+    autoSetupUndo_.clear(); // an Auto Setup undo never survives a state restore
     // A practice session is runtime state: it never resumes from a saved session (the settings do).
     for (const char* id : { ids::practiceEnabled, ids::pracLoopOn })
         if (auto* parameter = parameters_.getParameter(id)) parameter->setValueNotifyingHost(0.0f);

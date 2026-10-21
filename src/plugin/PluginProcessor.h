@@ -6,6 +6,7 @@
 
 #pragma once
 #include <JuceHeader.h>
+#include "analysis/AutoSetup.h"
 #include "analysis/CalibrationAnalyzer.h"
 #include "analysis/InputConditioner.h"
 #include "analysis/JamBrain.h"
@@ -376,6 +377,25 @@ public:
     // Removes stale drag files (older than 24 h) left by earlier sessions; also runs once at start-up.
     static void sweepStaleCaptureFiles();
 
+    // ---- Auto Setup / "Learn My Playing" (message thread unless noted) ----
+    // start -> poll state/progress/prompt on the UI timer -> when Done read getAutoSetupResult() -> applyAutoSetup() -> undoAutoSetup().
+    // The processor's own 30 Hz timer finalizes the analysis (state Analyzing -> Done); nothing here touches the audio thread except atomics.
+    void startAutoSetup(float seconds = 10.0f);           // ignored while a run is listening; also discards the previous undo
+    void cancelAutoSetup();
+    robodrummer::AutoSetupState getAutoSetupState() const noexcept { return autoSetup_.state(); }
+    float getAutoSetupProgress() const noexcept { return autoSetup_.progress(); }
+    robodrummer::AutoSetupPrompt getAutoSetupPrompt() const noexcept { return autoSetup_.prompt(); }
+    juce::String getAutoSetupPromptText() const { return robodrummer::autoSetupPromptText(autoSetup_.prompt()); }
+    float getAutoSetupInputPeakDb() const noexcept { return autoSetup_.inputPeakDb(); }
+    robodrummer::AutoSetupResult getAutoSetupResult() const { return autoSetup_.result(); } // copy; valid once state is Done
+    robodrummer::AutoSetupSnapshot getAutoSetupCurrentValues() const;                       // the 11 parameters Auto Setup can change
+    bool applyAutoSetup();                                                                  // applies the stored proposal (needs state Done and status Ok)
+    bool applyAutoSetup(const robodrummer::AutoSetupProposal& selected);                    // review card: only fields with apply == true
+    bool undoAutoSetup();
+    bool canUndoAutoSetup() const noexcept { return autoSetupUndo_.available(); }
+    void clearAutoSetupUndo() noexcept { autoSetupUndo_.clear(); }                          // preset load / state restore call this
+    void finalizeAutoSetupIfReady();                                                        // idempotent; the timer calls it
+
     // ---- Practice mode (count-in, bar loop, tempo trainer) ----
     robodrummer::PracticeStatus getPracticeStatus() const noexcept;
     // "Count-in 3/4", "Loop pass 3", "Trainer 95 BPM", "Trainer: hint only, guitarist leads", or "Practice: off".
@@ -550,6 +570,10 @@ private:
     // Practice mode (audio thread unless noted).
     static constexpr std::size_t kPracParamCount = 20;
     std::array<std::atomic<float>*, kPracParamCount> rawPrac_{};
+    robodrummer::AutoSetup autoSetup_;
+    std::array<float, AnalysisChunk> autoSetupScratch_{};
+    robodrummer::AutoSetupUndo autoSetupUndo_;
+    void writeAutoSetupSnapshot(const robodrummer::AutoSetupSnapshot& values, std::uint32_t mask);
     robodrummer::PracticeMode practice_;
     bool practiceSessionWanted_{false};   // the practiceEnabled parameter as last seen
     bool practiceSuspendedByTransport_{false};

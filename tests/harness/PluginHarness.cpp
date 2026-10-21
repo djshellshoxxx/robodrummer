@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <map>
 #include <new>
@@ -1122,6 +1123,111 @@ void testAutoMeter() {
     }
 }
 
+// Steady eighth notes at 100 BPM over a faint noise floor.
+float setupGuitar(long long s) {
+    static std::uint32_t seed = 12345u;
+    seed = seed * 1664525u + 1013904223u;
+    const float noise = (static_cast<float>(seed >> 9) / 4194304.0f - 1.0f) * 3.0e-4f;
+    const double period = kSampleRate * 60.0 / 200.0;
+    const double d = std::fmod(static_cast<double>(s), period);
+    const double amp = (static_cast<long long>(static_cast<double>(s) / period) % 2 == 0) ? 0.45 : 0.3;
+    return static_cast<float>(amp * std::exp(-d / 9000.0) * std::sin(6.2831853 * 196.0 * d / kSampleRate)) + noise; // a sustained note per eighth
+}
+
+void testAutoSetup() {
+    section("auto setup: listen, propose, apply, undo");
+    using robodrummer::AutoSetupState;
+    const int tenSecondsPlus = 1180; // 12.6 s of audio
+    {
+        Rig rig;
+        CHECK(rig.processor.getAutoSetupState() == AutoSetupState::Idle && !rig.processor.canUndoAutoSetup());
+        CHECK(!rig.processor.applyAutoSetup() && !rig.processor.undoAutoSetup());
+        const auto before = rig.processor.getAutoSetupCurrentValues();
+        rig.processor.startAutoSetup();
+        CHECK(rig.processor.getAutoSetupState() == AutoSetupState::Listening);
+        renderAudio(rig, 200, setupGuitar, kNoMidi, kNoBlockHook);
+        const float early = rig.processor.getAutoSetupProgress();
+        CHECK_MSG(early > 0.05f && early < 0.6f, "progress %f after 2 s", static_cast<double>(early));
+        CHECK(rig.processor.getAutoSetupPromptText().isNotEmpty());
+        const Audio a = renderAudio(rig, tenSecondsPlus - 200, setupGuitar, kNoMidi, kNoBlockHook);
+        CHECK(finiteAudio(a));
+        CHECK_MSG(rig.processor.getAutoSetupState() == AutoSetupState::Analyzing || rig.processor.getAutoSetupState() == AutoSetupState::Done, "state %d", static_cast<int>(rig.processor.getAutoSetupState()));
+        pump(200); // the processor timer finalizes on the message thread
+        CHECK(rig.processor.getAutoSetupState() == AutoSetupState::Done && rig.processor.getAutoSetupProgress() >= 0.999f);
+        const auto result = rig.processor.getAutoSetupResult();
+        CHECK_MSG(result.status == robodrummer::AutoSetupStatus::Ok && result.levelsValid, "status %d levels %d", static_cast<int>(result.status), result.levelsValid ? 1 : 0);
+        CHECK_MSG(result.rhythmValid && result.proposal.bpm.apply && std::abs(result.proposal.bpm.value - 100.0f) < 6.0f, "bpm %f valid %d", static_cast<double>(result.proposal.bpm.value), result.rhythmValid ? 1 : 0);
+        CHECK(result.lineCount > 0 && std::strlen(result.line(0)) > 10);
+        // Nothing changed before Apply.
+        const auto untouched = rig.processor.getAutoSetupCurrentValues();
+        CHECK(untouched.inputGainDb == before.inputGainDb && untouched.bpm == before.bpm && untouched.jamStyle == before.jamStyle);
+
+        // Apply only gain and gate (review card with the other checkboxes cleared).
+        auto selected = result.proposal;
+        selected.followStrength.apply = selected.tempoInertia.apply = selected.confidenceSensitivity.apply = false;
+        selected.timingMode.apply = selected.leadership.apply = selected.bpm.apply = selected.jamStyle.apply = selected.intensity.apply = false;
+        selected.autoGain.apply = false;
+        CHECK(selected.inputGainDb.apply && selected.gateThresholdDb.apply);
+        CHECK(rig.processor.applyAutoSetup(selected) && rig.processor.canUndoAutoSetup());
+        CHECK_MSG(std::abs(rig.value("inputGain") - selected.inputGainDb.value) < 0.2f, "gain %f vs %f", static_cast<double>(rig.value("inputGain")), static_cast<double>(selected.inputGainDb.value));
+        CHECK(std::abs(rig.value("gateThreshold") - selected.gateThresholdDb.value) < 0.6f);
+        CHECK(std::abs(rig.value("bpm") - before.bpm) < 0.2f); // unselected fields untouched
+        rig.param("intensity", 0.9f);                           // a later manual edit of another parameter survives Undo
+        CHECK(rig.processor.undoAutoSetup() && !rig.processor.canUndoAutoSetup());
+        CHECK(std::abs(rig.value("inputGain") - before.inputGainDb) < 0.2f && std::abs(rig.value("gateThreshold") - before.gateThresholdDb) < 0.6f);
+        CHECK(std::abs(rig.value("intensity") - 0.9f) < 0.02f);
+
+        // The whole proposal, then a state restore drops the undo.
+        CHECK(rig.processor.applyAutoSetup() && rig.processor.canUndoAutoSetup());
+        CHECK(std::abs(rig.value("bpm") - result.proposal.bpm.value) < 0.5f);
+        juce::MemoryBlock blob; rig.processor.getStateInformation(blob);
+        rig.processor.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        CHECK(!rig.processor.canUndoAutoSetup());
+        // ... and so does a preset load, and a new run.
+        CHECK(rig.processor.applyAutoSetup(result.proposal) && rig.processor.canUndoAutoSetup());
+        rig.processor.setCurrentProgram(1);
+        CHECK(!rig.processor.canUndoAutoSetup());
+        CHECK(rig.processor.applyAutoSetup(result.proposal));
+        rig.processor.startAutoSetup();
+        CHECK(!rig.processor.canUndoAutoSetup());
+        rig.processor.cancelAutoSetup();
+        renderAudio(rig, 5, setupGuitar, kNoMidi, kNoBlockHook);
+        CHECK(rig.processor.getAutoSetupState() == AutoSetupState::Cancelled);
+    }
+    {   // Silence is reported, never proposed.
+        Rig rig;
+        rig.processor.startAutoSetup();
+        renderAudio(rig, 800, kSilence, kNoMidi, kNoBlockHook); // 8.5 s
+        pump(200);
+        const auto result = rig.processor.getAutoSetupResult();
+        CHECK_MSG(rig.processor.getAutoSetupState() == AutoSetupState::Done && result.status == robodrummer::AutoSetupStatus::NotEnoughSignal, "silence: state %d status %d", static_cast<int>(rig.processor.getAutoSetupState()), static_cast<int>(result.status));
+        CHECK(!result.proposal.any() && !rig.processor.applyAutoSetup() && !rig.processor.canUndoAutoSetup());
+    }
+    {   // The measurement is taken from the raw guitar: the input-gain parameter must not change what it hears.
+        float peak[2] = { 0.0f, 0.0f };
+        for (int i = 0; i < 2; ++i) {
+            Rig rig;
+            rig.param("inputGain", i == 0 ? 0.0f : 18.0f);
+            rig.processor.startAutoSetup();
+            renderAudio(rig, tenSecondsPlus, setupGuitar, kNoMidi, kNoBlockHook);
+            pump(200);
+            peak[i] = rig.processor.getAutoSetupResult().measured.peakDb;
+        }
+        CHECK_MSG(peak[0] > -40.0f && std::abs(peak[0] - peak[1]) < 0.5f, "raw peak %f vs %f dB", static_cast<double>(peak[0]), static_cast<double>(peak[1]));
+    }
+    {   // A new run while one is listening is ignored; cancel is honoured at the next block.
+        Rig rig;
+        rig.processor.startAutoSetup();
+        renderAudio(rig, 100, setupGuitar, kNoMidi, kNoBlockHook);
+        const float progress = rig.processor.getAutoSetupProgress();
+        rig.processor.startAutoSetup();
+        CHECK(rig.processor.getAutoSetupProgress() >= progress);
+        rig.processor.cancelAutoSetup();
+        renderAudio(rig, 2, setupGuitar, kNoMidi, kNoBlockHook);
+        CHECK(rig.processor.getAutoSetupState() == AutoSetupState::Cancelled);
+    }
+}
+
 void testPracticeMode() {
     section("practice mode: count-in, loop, tempo trainer, MIDI commands, state");
     const double spb = kSampleRate * 60.0 / 120.0; // 24000 samples per beat at 120 BPM
@@ -1618,6 +1724,7 @@ int main(int argc, char** argv) {
     testVirtualLimbs();
     testAutoMeter();
     testMidiCapture();
+    testAutoSetup();
     testPracticeMode();
     testNewParameterFuzz();
     testSoak(soakMinutes);
