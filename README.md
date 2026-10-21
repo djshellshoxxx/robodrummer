@@ -24,6 +24,22 @@ Phase 3 is now active. The branch contains a causal guitar onset detector, compe
 
 See [docs/JUCE_BUILD.md](docs/JUCE_BUILD.md) for build instructions and the current MIDI map.
 
+## Build and test
+
+The portable core builds and tests without JUCE (checked on this snapshot: 53 of 53 ctest tests pass):
+
+```sh
+cmake -S . -B build-core -DCMAKE_BUILD_TYPE=Release -DROBODRUMMER_BUILD_JUCE=OFF
+cmake --build build-core --config Release --parallel
+ctest --test-dir build-core -C Release --output-on-failure --parallel 4
+```
+
+The VST3, CLAP and Standalone targets need JUCE; see [docs/BUILDING.md](docs/BUILDING.md) and [docs/JUCE_BUILD.md](docs/JUCE_BUILD.md). Installation for users is in [docs/INSTALL.md](docs/INSTALL.md). Host testing is tracked in `docs/QA.md`.
+
+## Licence and wiki
+
+Proprietary licence: see [LICENSE](LICENSE). Copyright 2026 Sheldon Davidson. Wiki source pages are in [docs/wiki/](docs/wiki/Home.md).
+
 ## Project documents
 
 - [SPEC.md](SPEC.md) — engineering/product specification
