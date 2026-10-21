@@ -1,5 +1,7 @@
 # 02 - Transient Shaper (attack / sustain)
 
+Status: Implemented (core+processor wiring); UI pending
+
 ## Purpose & user value
 Level-independent control of drum attack and sustain: snap up the stick or soften it, lengthen or tighten tails, with no thresholds to set per kit or style. Off by default.
 

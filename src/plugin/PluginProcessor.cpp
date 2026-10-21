@@ -133,6 +133,11 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     rawKitTune_ = cache(ids::kitTune);
     rawMidiOutChannel_ = cache(ids::midiOutChannel);
     rawGuitarMonitor_ = cache(ids::guitarMonitor);
+    dspParams_ = { cache(ids::drumBusEnabled), cache(ids::drumBusThreshold), cache(ids::drumBusRatio), cache(ids::drumBusKnee),
+                   cache(ids::drumBusAttack), cache(ids::drumBusRelease), cache(ids::drumBusMakeup), cache(ids::drumBusDetect),
+                   cache(ids::drumBusScHpf), cache(ids::drumBusMix), cache(ids::drumBusDrive), cache(ids::transientShaperEnabled),
+                   cache(ids::transientShaperAttack), cache(ids::transientShaperSustain), cache(ids::transientShaperMix),
+                   cache(ids::transientShaperOutput) };
     // The standalone app is a jam tool, so the guitar is monitored by default; in a host it stays on its own track.
     if (wrapperType == wrapperType_Standalone)
         if (auto* monitor = parameters_.getParameter(ids::guitarMonitor)) monitor->setValueNotifyingHost(1.0f);
@@ -261,6 +266,41 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
         if (i < 6)
             layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::mixSolo[i], 1}, name + " Solo", false));
     }
+
+    // ---- 0.4.0 additions (appended; all off / neutral by default) ----
+    const auto labelled = [](const char* unit) { return juce::AudioParameterFloatAttributes().withLabel(unit); };
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::drumBusEnabled, 1}, "Drum Bus", false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusThreshold, 1}, "Bus Threshold",
+        juce::NormalisableRange<float>(-60.0f, 0.0f, 0.1f), -18.0f, labelled("dB")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusRatio, 1}, "Bus Ratio",
+        juce::NormalisableRange<float>(1.0f, 20.0f, 0.1f, 0.5f), 4.0f, labelled(":1")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusKnee, 1}, "Bus Knee",
+        juce::NormalisableRange<float>(0.0f, 24.0f, 0.1f), 6.0f, labelled("dB")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusAttack, 1}, "Bus Attack",
+        juce::NormalisableRange<float>(0.1f, 100.0f, 0.1f, 0.4f), 10.0f, labelled("ms")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusRelease, 1}, "Bus Release",
+        juce::NormalisableRange<float>(10.0f, 1000.0f, 1.0f, 0.4f), 120.0f, labelled("ms")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusMakeup, 1}, "Bus Makeup",
+        juce::NormalisableRange<float>(-12.0f, 24.0f, 0.1f), 0.0f, labelled("dB")));
+    layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::drumBusDetect, 1}, "Bus Detector",
+        juce::StringArray{"Peak", "RMS"}, 0));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusScHpf, 1}, "Bus Sidechain HPF",
+        juce::NormalisableRange<float>(0.0f, 500.0f, 1.0f, 0.5f), 0.0f,
+        juce::AudioParameterFloatAttributes().withLabel("Hz")
+            .withStringFromValueFunction([](float v, int) { return v < 20.0f ? juce::String("Off") : juce::String(juce::roundToInt(v)) + " Hz"; })));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusMix, 1}, "Bus Mix",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 1.0f, percent));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::drumBusDrive, 1}, "Bus Drive",
+        juce::NormalisableRange<float>(0.0f, 1.0f, 0.01f), 0.0f, percent));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::transientShaperEnabled, 1}, "Transient Shaper", false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::transientShaperAttack, 1}, "Shaper Attack",
+        juce::NormalisableRange<float>(-100.0f, 100.0f, 1.0f), 0.0f, labelled("%")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::transientShaperSustain, 1}, "Shaper Sustain",
+        juce::NormalisableRange<float>(-100.0f, 100.0f, 1.0f), 0.0f, labelled("%")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::transientShaperMix, 1}, "Shaper Mix",
+        juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 100.0f, labelled("%")));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::transientShaperOutput, 1}, "Shaper Output",
+        juce::NormalisableRange<float>(-12.0f, 12.0f, 0.1f), 0.0f, labelled("dB")));
     return layout;
 }
 
@@ -413,7 +453,28 @@ void RoboDrummerAudioProcessor::applyMixerToSampler() noexcept {
     }
 }
 
-void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
+robodrummer::dsp::DrumBusParams RoboDrummerAudioProcessor::readDrumBusParams() const noexcept {
+    const auto get = [](const std::atomic<float>* raw, float fallback) { return raw != nullptr ? raw->load(std::memory_order_relaxed) : fallback; };
+    robodrummer::dsp::DrumBusParams p;
+    p.enabled = get(dspParams_.busEnabled, 0.0f) >= 0.5f;
+    p.setThresholdDb(get(dspParams_.busThreshold, -18.0f)).setRatio(get(dspParams_.busRatio, 4.0f)).setKneeDb(get(dspParams_.busKnee, 6.0f))
+        .setAttackMs(get(dspParams_.busAttack, 10.0f)).setReleaseMs(get(dspParams_.busRelease, 120.0f))
+        .setMakeupDb(get(dspParams_.busMakeup, 0.0f)).setScHpfHz(get(dspParams_.busScHpf, 0.0f))
+        .setMix(get(dspParams_.busMix, 1.0f)).setDrive(get(dspParams_.busDrive, 0.0f));
+    p.detectRms = get(dspParams_.busDetect, 0.0f) >= 0.5f;
+    return p;
+}
+
+robodrummer::dsp::TransientShaperParams RoboDrummerAudioProcessor::readShaperParams() const noexcept {
+    const auto get = [](const std::atomic<float>* raw, float fallback) { return raw != nullptr ? raw->load(std::memory_order_relaxed) : fallback; };
+    robodrummer::dsp::TransientShaperParams p;
+    p.enabled = get(dspParams_.shEnabled, 0.0f) >= 0.5f;
+    p.setAttackPct(get(dspParams_.shAttack, 0.0f)).setSustainPct(get(dspParams_.shSustain, 0.0f))
+        .setMixPct(get(dspParams_.shMix, 100.0f)).setOutputDb(get(dspParams_.shOutput, 0.0f));
+    return p;
+}
+
+void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     setLatencySamples(0); // all processing is causal and sample-aligned; nothing is delayed
     jam_.prepare(sampleRate_);
@@ -468,6 +529,11 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int) {
     roomR_.assign(MaxScratchSamples, 0.0f);
     reverb_.setSampleRate(sampleRate_);
     reverb_.reset();
+    shaper_.setParams(readShaperParams());
+    shaper_.prepare(sampleRate_, samplesPerBlock);
+    drumBus_.setParams(readDrumBusParams());
+    drumBus_.prepare(sampleRate_, samplesPerBlock);
+    setLatencySamples(shaper_.latencySamples() + drumBus_.latencySamples());
     lastRoomSize_ = -1.0f;
     lastMonitorGain_ = rawGuitarMonitor_ != nullptr ? juce::jlimit(0.0f, 1.0f, rawGuitarMonitor_->load()) : 0.0f;
     masterGain_.reset(sampleRate_, 0.02);
@@ -1162,6 +1228,12 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
     float outPeak = 0.0f;
     if (renderInternal) {
+        // Drum bus chain on the main-bus voices only: shaper first, bus compressor second. The room return is added
+        // afterwards (ambience is not pumped) and the master fader applies to the whole mix; aux stems stay dry.
+        shaper_.setParams(readShaperParams());
+        drumBus_.setParams(readDrumBusParams());
+        shaper_.processBlock(drumL_.data(), drumR_.data(), renderSamples);
+        drumBus_.processBlock(drumL_.data(), drumR_.data(), renderSamples);
         const auto channelGain = [&](robodrummer::MixerChannel c) {
             const auto i = static_cast<std::size_t>(c);
             const bool muted = rawMixMute_[i] != nullptr && rawMixMute_[i]->load(std::memory_order_relaxed) >= 0.5f;
@@ -1283,6 +1355,8 @@ void RoboDrummerAudioProcessor::resetListeningState() noexcept {
     silentBarsVisible_.store(0, std::memory_order_relaxed);
     waitingForResume_.store(false, std::memory_order_relaxed);
     sessionMemory_.reset();
+    shaper_.reset();
+    drumBus_.reset();
     manualFillSinceMemoryBar_ = false;
     jamMemoryBars_.store(0, std::memory_order_relaxed);
     jamMemoryConfidence_.store(0.0f, std::memory_order_relaxed);
@@ -1411,6 +1485,22 @@ void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData)
     if (auto xml = state.createXml()) copyXmlToBinary(*xml, destData);
 }
 
+// Sessions saved before 0.4.0 (state versions 1-3) carry none of the parameters added since: they load at their defaults,
+// which are all off / neutral, so the restored session sounds exactly as before.
+void RoboDrummerAudioProcessor::resetAbsentParametersToDefault(const juce::ValueTree& state) {
+    juce::StringArray present;
+    for (const auto& child : state)
+        if (child.hasType("PARAM")) present.add(child.getProperty("id").toString());
+    bool inAppendedRange = false;
+    for (auto* parameter : juce::AudioProcessor::getParameters()) {
+        const auto* withId = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter);
+        if (withId == nullptr) continue;
+        if (withId->paramID == robodrummer::ParamIDs::drumBusEnabled) inAppendedRange = true;
+        if (inAppendedRange && !present.contains(withId->paramID))
+            parameter->setValueNotifyingHost(parameter->getDefaultValue());
+    }
+}
+
 void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeInBytes) {
     const auto xml = getXmlFromBinary(data, sizeInBytes);
     if (xml == nullptr) return;
@@ -1428,6 +1518,7 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
         parameterState.removeChild(parameterState.getChildWithName("MidiMap"), nullptr);
         parameterState.removeChild(parameterState.getChildWithName("DrumMap"), nullptr);
         parameters_.replaceState(parameterState);
+        resetAbsentParametersToDefault(parameterState);
         if (state.hasProperty("userKitPath"))
             setUserKitFolder(juce::File(state.getProperty("userKitPath").toString()));
         if (midiMap.isValid()) applyMidiMapState(midiMap);
@@ -1450,6 +1541,7 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
         setParameterFromState(ids::leadershipMode, static_cast<float>(juce::jlimit(0, 2, static_cast<int>(state.getProperty("leadershipMode", 0)))));
         setParameterFromState(ids::leadership, static_cast<float>(state.getProperty("leadership", 0.5f)));
         setParameterFromState(ids::followRange, static_cast<float>(static_cast<double>(state.getProperty("followRange", 15.0))));
+        resetAbsentParametersToDefault(juce::ValueTree());
         arrangementSource = state;
     } else {
         return;

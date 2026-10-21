@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
 #include <new>
 
 static std::atomic<long long> gAllocations{0};
@@ -885,6 +886,218 @@ void testSoak(double minutes) {
     CHECK(minBpm >= 20.0 && maxBpm <= 400.0);
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// 0.4.0 integration tests
+// ---------------------------------------------------------------------------------------------------------------
+struct Audio {
+    std::vector<float> l, r;
+    double rms() const { double a = 0.0; for (std::size_t i = 0; i < l.size(); ++i) a += static_cast<double>(l[i]) * l[i] + static_cast<double>(r[i]) * r[i]; return l.empty() ? 0.0 : std::sqrt(a / (2.0 * static_cast<double>(l.size()))); }
+    double peak() const { double p = 0.0; for (std::size_t i = 0; i < l.size(); ++i) p = std::max({ p, static_cast<double>(std::abs(l[i])), static_cast<double>(std::abs(r[i])) }); return p; }
+    bool operator==(const Audio& o) const { return l == o.l && r == o.r; }
+};
+
+template <typename Guitar, typename MidiFn, typename PerBlock>
+Audio renderAudio(Rig& rig, int blocks, Guitar&& guitar, MidiFn&& midiFor, PerBlock&& perBlock, juce::MidiBuffer* midiOut = nullptr) {
+    Audio out;
+    for (int b = 0; b < blocks; ++b, ++rig.blockIndex) {
+        rig.buffer.clear();
+        for (int i = 0; i < kBlock; ++i) {
+            const float s = guitar(rig.blockIndex * kBlock + i);
+            for (int c = 0; c < juce::jmin(2, rig.processor.getTotalNumInputChannels()); ++c) rig.buffer.setSample(c, i, s);
+        }
+        juce::MidiBuffer midi;
+        midiFor(rig.blockIndex, midi);
+        rig.playHead.ppq += kBlock / kSampleRate * rig.playHead.bpm / 60.0;
+        rig.processor.processBlock(rig.buffer, midi);
+        if (midiOut != nullptr) for (const auto m : midi) midiOut->addEvent(m.getMessage(), static_cast<int>(rig.blockIndex) * kBlock + m.samplePosition);
+        for (int i = 0; i < kBlock; ++i) { out.l.push_back(rig.buffer.getSample(0, i)); out.r.push_back(rig.buffer.getSample(1, i)); }
+        perBlock(b);
+    }
+    return out;
+}
+const auto kNoMidi = [](long long, juce::MidiBuffer&) {};
+const auto kSilence = [](long long) { return 0.0f; };
+const auto kNoBlockHook = [](int) {};
+
+bool finiteAudio(const Audio& a) { for (std::size_t i = 0; i < a.l.size(); ++i) if (!std::isfinite(a.l[i]) || !std::isfinite(a.r[i]) || std::abs(a.l[i]) > 64.0f) return false; return true; }
+
+// Deterministic setup used by the audio comparisons: internal tempo, no humanize jitter, internal drums only.
+void setupDeterministic(Rig& rig) {
+    rig.param("tempoSource", 1); rig.param("bpm", 120.0f); rig.param("humanize", 0.0f); rig.param("outputMode", 0);
+}
+
+void testDrumBusAndShaper() {
+    section("drum bus and transient shaper wiring");
+    const auto render = [](const std::function<void(Rig&)>& setup, float* minGr = nullptr, float* maxShaperDb = nullptr, float* minShaperDb = nullptr) {
+        Rig rig; setupDeterministic(rig); setup(rig);
+        Audio a = renderAudio(rig, 400, kSilence, kNoMidi, [&](int) {
+            if (minGr) *minGr = std::min(*minGr, rig.processor.getDrumBusGainReductionDb());
+            if (maxShaperDb) *maxShaperDb = std::max(*maxShaperDb, rig.processor.getTransientShaperGainDb());
+            if (minShaperDb) *minShaperDb = std::min(*minShaperDb, rig.processor.getTransientShaperGainDb());
+        });
+        return a;
+    };
+    const Audio base = render([](Rig&) {});
+    CHECK_MSG(base.peak() > 0.05, "baseline peak %f", base.peak());
+    // Everything at its default except non-default values on a DISABLED bus/shaper: bit-identical.
+    const Audio disabled = render([](Rig& r) { r.param("drumBusThreshold", -50.0f); r.param("drumBusRatio", 20.0f); r.param("drumBusDrive", 1.0f);
+                                                r.param("transientShaperAttack", 100.0f); r.param("transientShaperOutput", 12.0f); });
+    CHECK(disabled == base);
+    // Compressor: heavy settings lower the level and the gain-reduction meter moves.
+    float minGr = 0.0f;
+    const Audio comp = render([](Rig& r) { r.param("drumBusEnabled", 1); r.param("drumBusThreshold", -40.0f); r.param("drumBusRatio", 20.0f); r.param("drumBusAttack", 0.1f); r.param("drumBusKnee", 0.0f); }, &minGr);
+    CHECK_MSG(comp.rms() < base.rms() * 0.85, "rms %f vs %f", comp.rms(), base.rms());
+    CHECK_MSG(minGr < -3.0f, "gain reduction meter %f dB", static_cast<double>(minGr));
+    CHECK(finiteAudio(comp));
+    // Makeup gain compensates.
+    const Audio makeup = render([](Rig& r) { r.param("drumBusEnabled", 1); r.param("drumBusThreshold", -40.0f); r.param("drumBusRatio", 20.0f); r.param("drumBusMakeup", 12.0f); });
+    CHECK(makeup.rms() > comp.rms());
+    // Aux stems are untouched by the bus: only the main bus changes.
+    // Transient shaper: attack boost raises peaks, attack cut lowers them; the gain meter follows.
+    float maxUp = -99.0f, minUp = 99.0f, maxDn = -99.0f, minDn = 99.0f;
+    const Audio up = render([](Rig& r) { r.param("transientShaperEnabled", 1); r.param("transientShaperAttack", 100.0f); }, nullptr, &maxUp, &minUp);
+    const Audio down = render([](Rig& r) { r.param("transientShaperEnabled", 1); r.param("transientShaperAttack", -100.0f); }, nullptr, &maxDn, &minDn);
+    CHECK_MSG(up.peak() > base.peak() * 1.05, "attack up peak %f vs %f", up.peak(), base.peak());
+    CHECK_MSG(down.peak() < base.peak() * 0.99, "attack down peak %f vs %f", down.peak(), base.peak());
+    CHECK_MSG(maxUp > 1.0f, "shaper gain meter max %f", static_cast<double>(maxUp));
+    CHECK_MSG(minDn < -1.0f, "shaper gain meter min %f", static_cast<double>(minDn));
+    CHECK(finiteAudio(up) && finiteAudio(down));
+    // Sustain cut shortens the tail: RMS drops by more than the attack-neutral case.
+    const Audio sus = render([](Rig& r) { r.param("transientShaperEnabled", 1); r.param("transientShaperSustain", -100.0f); });
+    CHECK(sus.rms() < base.rms());
+    // MIDI-only output mode renders no audio, so nothing is processed and the meters rest.
+    { Rig rig; setupDeterministic(rig); rig.param("outputMode", 1); rig.param("drumBusEnabled", 1); rig.param("drumBusThreshold", -50.0f);
+      const Audio a = renderAudio(rig, 100, kSilence, kNoMidi, kNoBlockHook); CHECK(a.peak() < 1.0e-6); }
+}
+
+// FNV-1a over the exact output bits (audio and MIDI) of several deterministic default-parameter scenarios. The constant
+// kBaselineHash was captured BEFORE the beta integration (all new features absent), so a match proves that every new
+// parameter at its default leaves the output bit-identical.
+struct Fnv {
+    std::uint64_t h{1469598103934665603ull};
+    void bytes(const void* p, std::size_t n) { const auto* b = static_cast<const unsigned char*>(p); for (std::size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } }
+};
+std::uint64_t renderBaselineHash() {
+    Fnv fnv;
+    const auto hashRun = [&](Rig& rig, int blocks, const std::function<float(long long)>& guitar, const std::function<void(long long, juce::MidiBuffer&)>& midiFor) {
+        for (int b = 0; b < blocks; ++b, ++rig.blockIndex) {
+            rig.buffer.clear();
+            for (int i = 0; i < kBlock; ++i) {
+                const float s = guitar(rig.blockIndex * kBlock + i);
+                for (int c = 0; c < juce::jmin(2, rig.processor.getTotalNumInputChannels()); ++c) rig.buffer.setSample(c, i, s);
+            }
+            juce::MidiBuffer midi;
+            midiFor(rig.blockIndex, midi);
+            rig.playHead.ppq += kBlock / kSampleRate * rig.playHead.bpm / 60.0;
+            rig.processor.processBlock(rig.buffer, midi);
+            for (int c = 0; c < juce::jmin(2, rig.buffer.getNumChannels()); ++c) fnv.bytes(rig.buffer.getReadPointer(c), sizeof(float) * kBlock);
+            for (const auto m : midi) { const auto& msg = m.getMessage(); const int pos = m.samplePosition; fnv.bytes(&pos, sizeof(pos)); fnv.bytes(msg.getRawData(), static_cast<std::size_t>(msg.getRawDataSize())); }
+        }
+    };
+    const auto none = [](long long, juce::MidiBuffer&) {};
+    const auto silent = [](long long) { return 0.0f; };
+    { Rig rig; hashRun(rig, 500, silent, none); }
+    { Rig rig; rig.param("leadershipMode", 1); hashRun(rig, 700, [](long long s) { return pluck(s, 118.0); }, none); }
+    { Rig rig; rig.param("leadershipMode", 2); rig.param("humanize", 0.8f); hashRun(rig, 700, [](long long s) { return pluck(s, 104.0, 3.0); }, none); }
+    for (int style : { 0, 4, 5, 15, 19, 21 }) {
+        Rig rig; rig.param("jamStyle", static_cast<float>(style)); rig.param("bpm", 90.0f + 11.0f * static_cast<float>(style)); rig.param("tempoSource", 1);
+        hashRun(rig, 320, silent, [](long long b, juce::MidiBuffer& m) {
+            if (b == 40) m.addEvent(juce::MidiMessage::noteOn(16, 50, 1.0f), 0);
+            if (b == 150) m.addEvent(juce::MidiMessage::noteOn(16, 39, 1.0f), 5);
+            if (b == 200) m.addEvent(juce::MidiMessage::noteOn(16, 42, 1.0f), 3);
+        });
+    }
+    { Rig rig; rig.param("arrangementEnabled", 1); rig.param("tempoSource", 1); rig.param("bpm", 180.0f); hashRun(rig, 900, silent, none); }
+    { Rig rig; rig.playHead.bpm = 133.0; hashRun(rig, 400, silent, none); }
+    { Rig rig; rig.param("outputMode", 1); rig.param("meterNumerator", 1); rig.param("manualMeterEnabled", 1); hashRun(rig, 400, silent, none); }
+    return fnv.h;
+}
+
+constexpr std::uint64_t kBaselineHash = 0x4a85caa7203610d1ull; // captured before the 0.4.0 integration
+
+void testBaselineAndMigration() {
+    section("regression: default-parameter output is bit-identical to the pre-integration baseline; old state migrates");
+    const auto hash = renderBaselineHash();
+    CHECK_MSG(hash == kBaselineHash, "baseline hash %016llx expected %016llx", static_cast<unsigned long long>(hash), static_cast<unsigned long long>(kBaselineHash));
+
+    // A version-3 session (no 0.4.0 parameters in the file) restores every new feature as off / default, even over a rig
+    // that had them switched on.
+    juce::MemoryBlock v3;
+    {
+        Rig rig;
+        rig.param("humanize", 0.66f);
+        rig.processor.getStateInformation(v3);
+        auto xml = juce::AudioProcessor::getXmlFromBinary(v3.getData(), static_cast<int>(v3.getSize()));
+        CHECK(xml != nullptr);
+        // Drop every 0.4.0 parameter from the saved file, as a session saved by 0.3.x would not contain them.
+        std::vector<juce::XmlElement*> byName;
+        for (auto* child : xml->getChildIterator()) {
+            if (!child->hasTagName("PARAM")) continue;
+            const auto id = child->getStringAttribute("id");
+            if (id.startsWith("drumBus") || id.startsWith("transientShaper") || id.startsWith("rl") || id.startsWith("prac") || id == "practiceEnabled"
+                || id.startsWith("autoMeter") || id == "limbModelAmount") byName.push_back(child);
+        }
+        for (auto* e : byName) xml->removeChildElement(e, true);
+        xml->setAttribute("stateVersion", 3);
+        juce::MemoryBlock rebuilt;
+        juce::AudioProcessor::copyXmlToBinary(*xml, rebuilt);
+        v3 = rebuilt;
+    }
+    {
+        Rig rig;
+        rig.param("drumBusEnabled", 1); rig.param("drumBusThreshold", -30.0f); rig.param("transientShaperEnabled", 1); rig.param("transientShaperAttack", 80.0f);
+        rig.processor.setStateInformation(v3.getData(), static_cast<int>(v3.getSize()));
+        CHECK(std::abs(rig.value("humanize") - 0.66f) < 0.011f);
+        CHECK(rig.value("drumBusEnabled") < 0.5f && std::abs(rig.value("drumBusThreshold") + 18.0f) < 0.11f);
+        CHECK(rig.value("transientShaperEnabled") < 0.5f && std::abs(rig.value("transientShaperAttack")) < 0.51f);
+    }
+    // Round trip of the new parameters through version-4 state.
+    juce::MemoryBlock v4;
+    {
+        Rig rig; rig.param("drumBusEnabled", 1); rig.param("drumBusRatio", 9.5f); rig.param("transientShaperSustain", -42.0f);
+        rig.processor.getStateInformation(v4);
+    }
+    {
+        Rig rig; rig.processor.setStateInformation(v4.getData(), static_cast<int>(v4.getSize()));
+        CHECK(rig.value("drumBusEnabled") > 0.5f && std::abs(rig.value("drumBusRatio") - 9.5f) < 0.2f && std::abs(rig.value("transientShaperSustain") + 42.0f) < 1.1f);
+    }
+}
+
+// Non-finite and absurd values for every 0.4.0 parameter, injected through saved state, must leave valid parameters and finite audio.
+void testNewParameterFuzz() {
+    section("fuzz: NaN / huge values for the 0.4.0 parameters through saved state");
+    juce::MemoryBlock good;
+    { Rig rig; rig.processor.getStateInformation(good); }
+    auto xml = juce::AudioProcessor::getXmlFromBinary(good.getData(), static_cast<int>(good.getSize()));
+    CHECK(xml != nullptr);
+    if (xml == nullptr) return;
+    const char* bad[] = { "nan", "inf", "-inf", "1e99", "-1e99", "-1", "7" };
+    Rig rig;
+    int variants = 0;
+    for (const char* value : bad) {
+        auto copy = std::make_unique<juce::XmlElement>(*xml);
+        bool inNew = false;
+        for (auto* child : copy->getChildIterator()) {
+            if (!child->hasTagName("PARAM")) continue;
+            if (child->getStringAttribute("id") == "drumBusEnabled") inNew = true;
+            if (inNew) child->setAttribute("value", value);
+        }
+        juce::MemoryBlock blob;
+        juce::AudioProcessor::copyXmlToBinary(*copy, blob);
+        rig.processor.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
+        ++variants;
+        const Audio a = renderAudio(rig, 60, [](long long s) { return pluck(s, 118.0); }, kNoMidi, kNoBlockHook);
+        CHECK_MSG(finiteAudio(a), "non-finite audio after state value %s", value);
+        for (auto* parameter : rig.processor.getParameters().processor.getParameters()) {
+            const float v = parameter->getValue();
+            if (!(v >= 0.0f && v <= 1.0f)) { CHECK_MSG(false, "parameter %s out of range (%s): %f", parameter->getName(64).toRawUTF8(), value, static_cast<double>(v)); break; }
+        }
+        const double bpm = rig.processor.getEffectiveDrummerBpm();
+        CHECK_MSG(std::isfinite(bpm) && bpm >= 20.0 && bpm <= 400.0, "bpm %f", bpm);
+    }
+    CHECK(variants == 7);
+}
+
 void dumpParameters(const juce::File& file) {
     RoboDrummerAudioProcessor processor;
     juce::String md;
@@ -962,6 +1175,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--screenshots") screenshotDir = juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1]);
         if (std::string(argv[i]) == "--soak-minutes") soakMinutes = std::atof(argv[i + 1]);
+        if (std::string(argv[i]) == "--baseline-hash") { std::printf("baseline %016llx\n", static_cast<unsigned long long>(renderBaselineHash())); return 0; }
         if (std::string(argv[i]) == "--dump-parameters") { dumpParameters(juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1])); return 0; }
     }
 
@@ -982,6 +1196,9 @@ int main(int argc, char** argv) {
     testCpuBudget();
     testRobustness();
     testFuzz();
+    testDrumBusAndShaper();
+    testBaselineAndMigration();
+    testNewParameterFuzz();
     testSoak(soakMinutes);
     if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, 1040, 720); renderScreenshots(screenshotDir, 900, 640); }
 

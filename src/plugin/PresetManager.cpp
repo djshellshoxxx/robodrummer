@@ -110,7 +110,11 @@ juce::StringArray idsFor(PresetType type, RoboDrummerAudioProcessor& processor) 
                   ids::fillComplexity, ids::fillSurprise, ids::crashTendency });
             break;
         case PresetType::Kit:
-            add({ ids::kit, ids::outputMode, ids::roomSize, ids::kitTune, ids::midiOutChannel });
+            add({ ids::kit, ids::outputMode, ids::roomSize, ids::kitTune, ids::midiOutChannel,
+                  ids::drumBusEnabled, ids::drumBusThreshold, ids::drumBusRatio, ids::drumBusKnee, ids::drumBusAttack, ids::drumBusRelease,
+                  ids::drumBusMakeup, ids::drumBusDetect, ids::drumBusScHpf, ids::drumBusMix, ids::drumBusDrive,
+                  ids::transientShaperEnabled, ids::transientShaperAttack, ids::transientShaperSustain, ids::transientShaperMix,
+                  ids::transientShaperOutput });
             for (std::size_t i = 0; i < 8; ++i) { result.add(ids::mixGain[i]); result.add(ids::mixMute[i]); }
             for (std::size_t i = 0; i < 7; ++i) result.add(ids::mixPan[i]);
             for (std::size_t i = 0; i < 6; ++i) result.add(ids::mixSolo[i]);

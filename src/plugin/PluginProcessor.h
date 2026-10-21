@@ -21,6 +21,8 @@
 #include "audio/DrumSamplePlayer.h"
 #include "audio/KitBuilder.h"
 #include "core/DrummerPersonality.h"
+#include "dsp/DrumBus.h"
+#include "dsp/TransientShaper.h"
 #include "analysis/PerformanceAnalyzer.h"
 #include "analysis/TempoMovement.h"
 #include "core/JamStyleProfile.h"
@@ -81,6 +83,23 @@ inline constexpr const char* confidenceSensitivity = "confidenceSensitivity";
 inline constexpr const char* kitTune = "kitTune";
 inline constexpr const char* midiOutChannel = "midiOutChannel";
 inline constexpr const char* guitarMonitor = "guitarMonitor";
+// Added in 0.4.0 (state version 4); every new feature is off / neutral by default so old sessions sound identical.
+inline constexpr const char* drumBusEnabled = "drumBusEnabled";
+inline constexpr const char* drumBusThreshold = "drumBusThreshold";
+inline constexpr const char* drumBusRatio = "drumBusRatio";
+inline constexpr const char* drumBusKnee = "drumBusKnee";
+inline constexpr const char* drumBusAttack = "drumBusAttack";
+inline constexpr const char* drumBusRelease = "drumBusRelease";
+inline constexpr const char* drumBusMakeup = "drumBusMakeup";
+inline constexpr const char* drumBusDetect = "drumBusDetect";
+inline constexpr const char* drumBusScHpf = "drumBusScHpf";
+inline constexpr const char* drumBusMix = "drumBusMix";
+inline constexpr const char* drumBusDrive = "drumBusDrive";
+inline constexpr const char* transientShaperEnabled = "transientShaperEnabled";
+inline constexpr const char* transientShaperAttack = "transientShaperAttack";
+inline constexpr const char* transientShaperSustain = "transientShaperSustain";
+inline constexpr const char* transientShaperMix = "transientShaperMix";
+inline constexpr const char* transientShaperOutput = "transientShaperOutput";
 inline constexpr std::array<const char*, 8> mixGain { "gain_kick", "gain_snare", "gain_toms", "gain_hihat", "gain_ride", "gain_cymbals", "gain_room", "gain_master" };
 inline constexpr std::array<const char*, 7> mixPan { "pan_kick", "pan_snare", "pan_toms", "pan_hihat", "pan_ride", "pan_cymbals", "pan_room" };
 inline constexpr std::array<const char*, 8> mixMute { "mute_kick", "mute_snare", "mute_toms", "mute_hihat", "mute_ride", "mute_cymbals", "mute_room", "mute_master" };
@@ -268,6 +287,10 @@ public:
     juce::ValueTree createDrumMapState() const;
     void applyDrumMapState(const juce::ValueTree& tree);
 
+    // ---- Drum Bus / Transient Shaper meters (read from the UI timer) ----
+    float getDrumBusGainReductionDb() const noexcept { return drumBus_.gainReductionDb(); }
+    float getTransientShaperGainDb() const noexcept { return shaper_.gainDb(); }
+
     // ---- tempo tools ----
     void tapTempo();
     bool isMidiClockActive() const noexcept { return midiClockActive_.load(std::memory_order_relaxed); }
@@ -292,12 +315,13 @@ public:
     void setCurrentProgramName(const juce::String& name) { currentProgram_ = -1; (void) name; }
 
 private:
-    static constexpr int StateVersion = 3;
+    static constexpr int StateVersion = 4;
 
     void parameterChanged(const juce::String& parameterID, float newValue) override;
     void timerCallback() override;
     void syncAllParametersToAtomics();
     void sanitiseParameters();
+    void resetAbsentParametersToDefault(const juce::ValueTree& state);
     void setParameterFromState(const char* id, float plainValue);
     void handleCommand(robodrummer::MidiCommand command, bool arrangementEnabled) noexcept;
     void resetListeningState() noexcept;
@@ -379,6 +403,18 @@ private:
     std::vector<float> drumL_, drumR_, roomL_, roomR_;
     std::array<float, AnalysisChunk> analysisScratch_{};
     juce::Reverb reverb_;
+    robodrummer::dsp::TransientShaper shaper_;
+    robodrummer::dsp::DrumBus drumBus_;
+    struct DspParamCache {
+        std::atomic<float>* busEnabled{nullptr}; std::atomic<float>* busThreshold{nullptr}; std::atomic<float>* busRatio{nullptr};
+        std::atomic<float>* busKnee{nullptr}; std::atomic<float>* busAttack{nullptr}; std::atomic<float>* busRelease{nullptr};
+        std::atomic<float>* busMakeup{nullptr}; std::atomic<float>* busDetect{nullptr}; std::atomic<float>* busScHpf{nullptr};
+        std::atomic<float>* busMix{nullptr}; std::atomic<float>* busDrive{nullptr};
+        std::atomic<float>* shEnabled{nullptr}; std::atomic<float>* shAttack{nullptr}; std::atomic<float>* shSustain{nullptr};
+        std::atomic<float>* shMix{nullptr}; std::atomic<float>* shOutput{nullptr};
+    } dspParams_;
+    robodrummer::dsp::DrumBusParams readDrumBusParams() const noexcept;
+    robodrummer::dsp::TransientShaperParams readShaperParams() const noexcept;
     juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> masterGain_;
 
     std::atomic<double> internalBpm_{120.0};
