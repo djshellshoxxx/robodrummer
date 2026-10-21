@@ -16,10 +16,13 @@ quarter or eighth for 6/8; eighth for 7/8). Non-finite input is ignored; a backw
    A pulse with no onset has accent 0 (a rest is evidence of structure, not an error). A pulse is committed once the
    position passes pulse+0.25. The last 60 accents are kept.
 2. Bar-length fit: for each candidate bar length L in 2..7 pulses, fold the newest `floor(n/L)*L` accents modulo L and
-   compute the variance explained by the slot (eta squared, independent of bar phase), then the adjusted value
-   `1-(1-eta2)(n-1)/(n-L)`. An L needs >= 2 bars to be valid.
-3. Choice: best adjusted fit (L=4 gets a +0.05 prior); the winner is the SMALLEST L within 0.07 of the best, so
-   2 beats 4 only when beat 3 is as strong as beat 1, and 3 beats 6 unless the second half-bar is distinct.
+   compute the weighted variance explained by the slot (eta squared, independent of bar phase), then the adjusted
+   value `1-(1-eta2)(N-1)/(N-L)`. Rest pulses (accent 0) have weight 0.1 so a dropped strum on a strong beat does not
+   wreck the fit while real rests still carry structure. An L needs >= 2 bars to be valid.
+3. Choice: best adjusted fit (L=4 gets a +0.05 prior). The winner is then reduced to the shortest divisor d of itself
+   for which the extra structure of the longer fold is not significant (nested F test, F <= 6), so 2 beats 4 only when
+   beat 3 is as strong as beat 1 and 3 beats 6 unless the second half-bar is genuinely distinct. A winner with fit
+   < 0.35 falls back to 4/4.
 4. Subdivision feel: off-beat onsets (phase 0.18..0.82) are classified to the nearest of duple {1/4,1/2,3/4} or
    triplet {1/3,2/3} centres (tolerance 0.07), strength weighted, decayed 0.97 per pulse. Ternary when
    triplet/(triplet+duple) > 0.65 with >= 2.5 evidence, back to duple below 0.35 (hysteresis).

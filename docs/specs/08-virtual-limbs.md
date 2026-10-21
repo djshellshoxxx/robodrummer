@@ -15,7 +15,9 @@ returns the new count. `amount` is 0..1 (NaN = 0); `amount <= 0` returns the inp
 Instrument-to-limb rules (lower cost wins; secondary limb +3..4 as cross-over cost; ties go to lower travel, then
 limb order RH, LH, RF, LF): Kick RF (LF as second pedal only if `doublePedal`); Snare/Rimshot/Sidestick/Clap LH (RH
 secondary); toms either hand (floor tom RH preferred); ClosedHat RH, LH secondary, or LF foot-chick when velocity <=
-`footHatMaxVelocity`; OpenHat/Ride/Crash/China/Splash/Cowbell/Tambourine RH (LH secondary).
+`footHatMaxVelocity`; OpenHat/Ride/Crash/China/Splash/Cowbell/Tambourine RH (LH secondary). The second hand may join a hat/cymbal
+line while the first is busy on another instrument, but never alternates with it on the same instrument to beat
+the single-stroke limit (snare and toms may, as in a roll).
 
 Constraints (all scaled by `amount`; amount 1 = full):
 * Stroke limit: consecutive hits on one limb are >= `handMinIntervalMs` (default 85, 16ths up to ~176 BPM) or
