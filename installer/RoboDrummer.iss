@@ -7,7 +7,7 @@
   #define OutDir "..\dist"
 #endif
 #ifndef OutName
-  #define OutName "RoboDrummer-{#AppVersion}-Windows-x64-Setup"
+  #define OutName "RoboDrummer-" + AppVersion + "-Windows-x64-Setup"
 #endif
 #ifndef StageDir
   #define StageDir "..\dist\RoboDrummer-Windows-x64"
