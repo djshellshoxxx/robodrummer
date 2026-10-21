@@ -54,6 +54,8 @@ if [ "$windows$mac_arm64$mac_x64$linux" = "falsefalsefalsefalse" ]; then
 fi
 
 base="${version%%-*}"
+pretag=""
+case "$version" in *-*) pretag="${version#*-}" ;; esac
 expected=""
 if [ "$windows" = true ]; then expected="$expected windows-x64"; fi
 if [ "$mac_arm64" = true ]; then expected="$expected mac-arm64"; fi
@@ -64,6 +66,7 @@ expected="${expected# }"
 {
   echo "version=$version"
   echo "base_version=$base"
+  echo "pretag=$pretag"
   echo "tag=v$version"
   echo "prerelease=$prerelease"
   echo "run_qa=$qa"

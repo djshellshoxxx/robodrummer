@@ -11,6 +11,13 @@ if grep -q 'RoboDrummerHarness' "$root/CMakeLists.txt"; then
   if [ -z "$harness" ]; then echo "::error::RoboDrummerHarness target exists but binary not found"; exit 1; fi
   echo "Running harness: $harness"
   xvfb-run -a "$harness"
+  # docs/PARAMETERS.md is generated from the real parameter layout; fail when it has drifted.
+  params_out="$(mktemp)"
+  xvfb-run -a "$harness" --dump-parameters "$params_out"
+  if ! diff -u "$root/docs/PARAMETERS.md" "$params_out"; then
+    echo "::error::docs/PARAMETERS.md is out of date. Regenerate: RoboDrummerHarness --dump-parameters docs/PARAMETERS.md"
+    exit 1
+  fi
 else
   echo "No RoboDrummerHarness target in CMakeLists.txt; skipping harness."
 fi

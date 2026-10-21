@@ -7,6 +7,19 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(ROBODRUMMER_BUILD_JUCE "Build VST3 and Standalone targets" ON)
 option(ROBODRUMMER_BUILD_CLAP "Also build the CLAP target (requires ROBODRUMMER_BUILD_JUCE)" ON)
+# Shown in Help/About next to the version (spec 17). Release CI passes the part of the version after the first '-' (e.g. beta.1).
+set(ROBODRUMMER_PRERELEASE_TAG "" CACHE STRING "Pre-release tag appended to the version in About, e.g. beta.1 (empty for a final release)")
+set(ROBODRUMMER_GIT_HASH "" CACHE STRING "Short git hash shown in About (detected from the checkout when empty)")
+if(ROBODRUMMER_GIT_HASH STREQUAL "")
+  find_package(Git QUIET)
+  if(GIT_FOUND)
+    execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short=8 HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                    OUTPUT_VARIABLE ROBODRUMMER_GIT_HASH OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _rd_git_result)
+    if(NOT _rd_git_result EQUAL 0)
+      set(ROBODRUMMER_GIT_HASH "")
+    endif()
+  endif()
+endif()
 
 add_library(robodrummer_core INTERFACE)
 target_include_directories(robodrummer_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -95,6 +108,17 @@ if(ROBODRUMMER_BUILD_JUCE)
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
   )
+  # Build info for Help/About (spec 17) goes through a generated header so a new commit only recompiles its includers.
+  file(WRITE ${CMAKE_BINARY_DIR}/generated/RoboDrummerBuildInfo.h.tmp
+"#pragma once\n#define ROBODRUMMER_BUILD_INFO 1\n")
+  if(NOT ROBODRUMMER_PRERELEASE_TAG STREQUAL "")
+    file(APPEND ${CMAKE_BINARY_DIR}/generated/RoboDrummerBuildInfo.h.tmp "#define ROBODRUMMER_PRERELEASE_TAG \"${ROBODRUMMER_PRERELEASE_TAG}\"\n")
+  endif()
+  if(NOT ROBODRUMMER_GIT_HASH STREQUAL "")
+    file(APPEND ${CMAKE_BINARY_DIR}/generated/RoboDrummerBuildInfo.h.tmp "#define ROBODRUMMER_GIT_HASH \"${ROBODRUMMER_GIT_HASH}\"\n")
+  endif()
+  configure_file(${CMAKE_BINARY_DIR}/generated/RoboDrummerBuildInfo.h.tmp ${CMAKE_BINARY_DIR}/generated/RoboDrummerBuildInfo.h COPYONLY)
+  target_include_directories(RoboDrummer PUBLIC ${CMAKE_BINARY_DIR}/generated)
 
   # Headless end-to-end checks against the real AudioProcessor (no host or audio device needed).
   juce_add_console_app(RoboDrummerHarness PRODUCT_NAME "RoboDrummerHarness")

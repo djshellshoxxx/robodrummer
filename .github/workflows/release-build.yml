@@ -41,6 +41,7 @@ jobs:
     outputs:
       version: ${{ steps.p.outputs.version }}
       base_version: ${{ steps.p.outputs.base_version }}
+      pretag: ${{ steps.p.outputs.pretag }}
       tag: ${{ steps.p.outputs.tag }}
       prerelease: ${{ steps.p.outputs.prerelease }}
       run_qa: ${{ steps.p.outputs.run_qa }}
@@ -101,6 +102,7 @@ jobs:
         run: >
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
           -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON
+          -DROBODRUMMER_PRERELEASE_TAG="${{ needs.plan.outputs.pretag }}"
           -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR"
       - name: Build
         shell: bash
@@ -142,6 +144,7 @@ jobs:
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON
+          -DROBODRUMMER_PRERELEASE_TAG="${{ needs.plan.outputs.pretag }}"
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
           -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR"
@@ -183,6 +186,7 @@ jobs:
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON
+          -DROBODRUMMER_PRERELEASE_TAG="${{ needs.plan.outputs.pretag }}"
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           -DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
           -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR"
@@ -228,6 +232,7 @@ jobs:
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON
+          -DROBODRUMMER_PRERELEASE_TAG="${{ needs.plan.outputs.pretag }}"
           -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR"
           -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Build

@@ -1874,6 +1874,17 @@ void testEditorUi() {
         CHECK(rdui::EditorSettings::setBool("tourSeen", true) && rdui::EditorSettings::load().tourSeen);
     }
 
+    // ---- About/version line (spec 17): plugin version, plus the pre-release tag when the build defines one ----
+    {
+        const auto line = rdui::versionLine();
+        CHECK_MSG(line.startsWith(juce::String("RoboDrummer ") + JucePlugin_VersionString), "version line '%s'", line.toRawUTF8());
+#ifdef ROBODRUMMER_PRERELEASE_TAG
+        CHECK_MSG(line.endsWith(juce::String("-") + ROBODRUMMER_PRERELEASE_TAG), "pre-release tag missing from '%s'", line.toRawUTF8());
+#else
+        CHECK_MSG(line == juce::String("RoboDrummer ") + JucePlugin_VersionString, "unexpected suffix in '%s'", line.toRawUTF8());
+#endif
+    }
+
     // ---- context menu parsers (spec 15) ----
     {
         const juce::StringArray choices { "Rock", "Blues", "1 beat", "4 beats" };
