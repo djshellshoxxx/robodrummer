@@ -1,7 +1,6 @@
 #include "core/GrooveGenerator.h"
 #include <array>
 #include <cassert>
-#include <cstdio>
 #include <cstdlib>
 int main() {
     using namespace robodrummer;
@@ -14,15 +13,7 @@ int main() {
     // Humanize 0 / feel 0 is bit-exact with the plain groove.
     GrooveContext zero = exact; zero.humanize = 0.0f; zero.feelMs = 0.0f;
     assert(g.generateBar(style, zero, b) == na);
-    for (std::size_t i = 0; i < na; ++i) {
-        if (!(a[i].sampleOffset == b[i].sampleOffset && a[i].velocity == b[i].velocity)) {
-            std::fprintf(stderr, "DIAG na=%zu i=%zu a=(%d,%d,%.9g,%u) b=(%d,%d,%.9g,%u)\n", na, i,
-                         static_cast<int>(a[i].instrument), a[i].sampleOffset, static_cast<double>(a[i].velocity), a[i].sequence,
-                         static_cast<int>(b[i].instrument), b[i].sampleOffset, static_cast<double>(b[i].velocity), b[i].sequence);
-            for (std::size_t j = 0; j < na; ++j) std::fprintf(stderr, "  %zu a=(%d,%d,%.9g) b=(%d,%d,%.9g)\n", j, static_cast<int>(a[j].instrument), a[j].sampleOffset, static_cast<double>(a[j].velocity), static_cast<int>(b[j].instrument), b[j].sampleOffset, static_cast<double>(b[j].velocity));
-        }
-        assert(a[i].sampleOffset == b[i].sampleOffset && a[i].velocity == b[i].velocity);
-    }
+    for (std::size_t i = 0; i < na; ++i) assert(a[i].sampleOffset == b[i].sampleOffset && a[i].velocity == b[i].velocity);
 
     // Humanize moves hits, deterministically per seed, never out of the bar, and never the event count.
     GrooveContext loose = exact; loose.humanize = 1.0f;

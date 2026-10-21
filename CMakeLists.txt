@@ -23,6 +23,13 @@ endif()
 
 add_library(robodrummer_core INTERFACE)
 target_include_directories(robodrummer_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# Bit-reproducible floating point: no fused multiply-add contraction, so identical inputs give identical
+# generated bars/analysis regardless of compiler version, inlining or host CPU (GCC 15 diverged otherwise).
+if(NOT MSVC)
+  target_compile_options(robodrummer_core INTERFACE -ffp-contract=off)
+else()
+  target_compile_options(robodrummer_core INTERFACE /fp:precise)
+endif()
 
 enable_testing()
 # Every tests/test_*.cpp is a core test (auto-discovered so features add tests without editing this file).
