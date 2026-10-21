@@ -1,6 +1,6 @@
 # 04 - Practice Mode
 
-Status: Implemented (core+processor wiring); UI pending
+Status: Implemented (core, processor wiring and editor UI)
 
 ## 1. Purpose & user value
 Lets a guitarist rehearse with RoboDrummer: a count-in before the drums start, a bar loop (current groove or a programmed

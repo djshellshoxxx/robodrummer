@@ -6,9 +6,13 @@ The intended product is a VST3/CLAP/AU instrument plus a standalone application.
 
 The design target is roughly 90% autonomous performance with the remaining 10% exposed as optional MIDI intervention: fills, next section, intensity changes, half/double time, crash, break, stop/resume, and listening reset.
 
-## Current development status (0.3.0)
+## Current development status (0.4.0 beta)
 
-All SPEC sections up to Phase 4 are implemented and tested; see [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md) for the traceability matrix, the defects found, and the remaining backlog, [docs/QA.md](docs/QA.md) for validation status, and [docs/PARAMETERS.md](docs/PARAMETERS.md) for every host parameter. Highlights: 22 styles, humanization, 1-beat to 2-bar fills, drummer personalities, a phase-locked tempo/beat tracker with movement classification, input conditioning and calibration, tap tempo and MIDI clock, user WAV/AIFF kits, mixer with room and aux outputs, presets, MIDI Learn, and an 8-tab editor (LIVE, KIT, DRUMMER, STYLE, SONG, MIDI, ANALYSIS, SETTINGS).
+0.4.0 adds a full editor for the new engine features. Nine tabs: LIVE, KIT, DRUMMER, STYLE, SONG, PRACTICE, MIDI, ANALYSIS, SETTINGS. New in the UI: Learn My Playing (progress card, review card with per-field Apply, Undo), Transient Shaper and Drum Bus sections with gain meters on KIT, Riff Lock and Playability on DRUMMER, a PRACTICE tab (count-in, loop, tempo trainer), Auto meter controls on STYLE, MIDI capture export (drag out or save .mid) with the Riff Lock grid and limb report on ANALYSIS, right-click menus (reset, copy, paste, MIDI Learn) on every control, keyboard focus ring, Reduce motion and High-contrast options, a sectioned Help/About generated from [docs/HELP.md](docs/HELP.md) and an optional first-run tour. MIDI commands 51 to 55 control practice mode. See [docs/COMPLIANCE.md](docs/COMPLIANCE.md) and the feature specs in [docs/specs](docs/specs) (all marked Implemented).
+
+## Previous status (0.3.0)
+
+All SPEC sections up to Phase 4 are implemented and tested; see [docs/feature-audit/FEATURE_AUDIT_2026-10-14.md](docs/feature-audit/FEATURE_AUDIT_2026-10-14.md) for the traceability matrix, the defects found, and the remaining backlog, [docs/QA.md](docs/QA.md) for validation status, and [docs/PARAMETERS.md](docs/PARAMETERS.md) for every host parameter. Highlights: 22 styles, humanization, 1-beat to 2-bar fills, drummer personalities, a phase-locked tempo/beat tracker with movement classification, input conditioning and calibration, tap tempo and MIDI clock, user WAV/AIFF kits, mixer with room and aux outputs, presets, MIDI Learn, and a tabbed editor (see above).
 
 Windows users: download `RoboDrummer-<version>-Windows-x64-Setup.exe` (or the zip) from the **RoboDrummer Release Build** workflow artifacts; see [docs/INSTALL.md](docs/INSTALL.md).
 

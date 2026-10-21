@@ -1,5 +1,7 @@
 # 17. Accessibility, options and Help/About (CDL 2.4 and 7)
 
+Status: Implemented (see COMPLIANCE.md for the two documented deviations: OS reduced-motion preference not read, onset scroll slowed rather than frozen)
+
 ## Purpose & user value
 
 Make the editor usable without a mouse and without relying on colour or motion, keep tooltips optional (already done), and give users one in-repo Help document plus a complete Help/About panel. This spec records what exists (read from the code, nothing changed by this spec) and defines the remaining work. `docs/COMPLIANCE.md` currently rates 2.3 and 2.4 Partial; 7.1 and 7.2 Implemented.

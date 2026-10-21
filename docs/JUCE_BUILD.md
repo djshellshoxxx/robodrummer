@@ -42,6 +42,10 @@ Intensity and Jam Style can also be changed by the audio thread (MIDI intensity 
 * **Auto Setup** ("Learn My Playing"): proposals only; nothing changes until Apply, and Undo restores exactly the applied fields.
 * **Auto meter** (`autoMeterEnabled`, `autoMeterThreshold`) and **Playability** (`limbModelAmount`).
 
+### Editor (0.4.0)
+
+Nine tabs (LIVE, KIT, DRUMMER, STYLE, SONG, PRACTICE, MIDI, ANALYSIS, SETTINGS), minimum size 960×680. The in-plug-in Help is generated at build time from `docs/HELP.md` (`juce_add_binary_data`, namespace `rdhelp`). Per-user interface options live in `<userApplicationData>/Circuit Drift Labs/RoboDrummer/settings.xml`. `RoboDrummerHarness --ui-only` runs only the editor checks; `--screenshots <dir>` renders every tab and the Learn My Playing, Help, tour, focus-ring and high-contrast states at the default and minimum sizes.
+
 ## Targets
 
 VST3, CLAP and Standalone on Windows, macOS and Linux, plus AU on macOS. `RoboDrummerHarness` is a headless console test of the real processor (`ctest` runs it as `plugin_harness`).

@@ -1,6 +1,6 @@
 # 06 - Auto Setup ("Learn My Playing") and optional First-Run Tour
 
-Status: Implemented (core+processor wiring); UI pending
+Status: Implemented (core, processor wiring and editor UI)
 
 ## 1. Purpose and user value
 One button. The guitarist plays naturally for about 10 seconds and the plug-in proposes sensible values for input gain, noise gate, follow behaviour, timing mode, base BPM, Jam Style and intensity. Nothing changes until the player presses Apply, Apply can be undone, and every proposal comes with a plain-language reason ("Gate set to -52 dB because noise floor measured -63 dB"). Goal: a new user gets a usable setup without understanding gate thresholds or inertia.

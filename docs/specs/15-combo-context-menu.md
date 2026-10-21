@@ -1,5 +1,7 @@
 # 15. Right-click menu for combo boxes and toggles (CDL 2.3)
 
+Status: Implemented (ParamCombo, ParamToggle and ParamSlider share `showParamContextMenu`)
+
 ## Purpose & user value
 
 Sliders already offer a right-click menu (reset to default, copy value, paste value; `ParamSlider::mouseDown`, `src/plugin/EditorWidgets.h`). Combo boxes and toggles have none, which `docs/COMPLIANCE.md` lists as Partial for CDL 2.3 and the audit lists as P3. This spec gives choice and toggle parameters the same predictable gestures: reset to default, copy and paste of the value (validated), and MIDI Learn entries only where a mapping really exists.

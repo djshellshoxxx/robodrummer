@@ -1,6 +1,6 @@
 # 08 Virtual limb model (SPEC 22 "future")
 
-Status: Implemented (core+processor wiring); UI pending
+Status: Implemented (core, processor wiring and editor UI)
 
 ## Purpose & user value
 Generated grooves and fills should be physically playable by one four-limb drummer. The limb model post-processes a

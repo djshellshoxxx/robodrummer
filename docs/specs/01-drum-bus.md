@@ -1,6 +1,6 @@
 # 01 - Drum Bus (compressor + parallel mix + drive)
 
-Status: Implemented (core+processor wiring); UI pending
+Status: Implemented (core, processor wiring and editor UI)
 
 ## Purpose & user value
 Glue and punch for the internal drum mix: a feed-forward bus compressor with soft knee, an optional sidechain high-pass (so the kick does not pump the hats), a dry/wet "New York" parallel blend, and a gentle saturation stage. Off by default so existing renders are unchanged.

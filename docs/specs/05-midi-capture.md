@@ -1,6 +1,6 @@
 # 05 - MIDI Capture & Export
 
-Status: Implemented (core+processor wiring); UI pending
+Status: Implemented (core, processor wiring and editor UI)
 
 ## Purpose & user value
 The drummer plays something great; the user wants it in their DAW as editable MIDI. The plug-in continuously records what it
