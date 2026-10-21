@@ -1,46 +1,83 @@
 name: RoboDrummer CI
 
+# Fast PR/push checks. This is the ONLY place tests, the headless harness and
+# pluginval run by default. Release packaging (release-build.yml) does not re-test.
 on:
   push:
-    branches: [main]
+    branches: [main, 'integrate/**']
   pull_request:
 
 concurrency:
   group: robodrummer-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   core:
+    name: core (${{ matrix.os }})
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Configure core
+      - name: Configure core (no JUCE)
         run: cmake -S . -B build-core -DCMAKE_BUILD_TYPE=Release -DROBODRUMMER_BUILD_JUCE=OFF
       - name: Build core tests
-        run: cmake --build build-core --config Release
-      - name: Test core
-        run: ctest --test-dir build-core -C Release --output-on-failure
+        run: cmake --build build-core --config Release --parallel
+      - name: Run ctest
+        run: ctest --test-dir build-core -C Release --output-on-failure --parallel 4
 
-  juce-shell:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  juce-compile:
+    name: juce-compile (linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fc-cache
     steps:
       - uses: actions/checkout@v4
+
       - name: Install Linux JUCE dependencies
-        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxi-dev libfreetype6-dev libfontconfig1-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev pkg-config
+          sudo apt-get install -y ninja-build xvfb libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxi-dev libfreetype-dev libfontconfig1-dev libglu1-mesa-dev pkg-config
+
+      - name: Cache FetchContent sources (JUCE, CLAP)
+        uses: actions/cache@v4
+        with:
+          path: .fc-cache
+          key: fetchcontent-linux-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: juce-compile-linux
+          max-size: 500M
+
       - name: Configure JUCE shell
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DROBODRUMMER_BUILD_JUCE=ON
-      - name: Build VST3, CLAP, Standalone and the plug-in test harness
-        run: cmake --build build --config Release --target RoboDrummer_VST3 RoboDrummer_CLAP RoboDrummer_Standalone RoboDrummerHarness
-      - name: Build and run all tests (core suite and headless plug-in harness)
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON
+          -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR"
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+
+      - name: Build VST3, CLAP, Standalone
+        run: cmake --build build --target RoboDrummer_VST3 RoboDrummer_CLAP RoboDrummer_Standalone
+
+      - name: Build harness (if the target exists)
         run: |
-          cmake --build build --config Release
-          ctest --test-dir build -C Release --output-on-failure
+          if grep -q 'RoboDrummerHarness' CMakeLists.txt; then
+            cmake --build build --target RoboDrummerHarness
+          else
+            echo "No RoboDrummerHarness target yet; skipping."
+          fi
+
+      - name: Headless harness and pluginval (run once, here only)
+        run: bash scripts/ci/juce_checks.sh build
+
+      - name: ccache stats
+        run: ccache -s

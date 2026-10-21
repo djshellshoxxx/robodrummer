@@ -3,6 +3,12 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+#ifndef OutDir
+  #define OutDir "..\dist"
+#endif
+#ifndef OutName
+  #define OutName "RoboDrummer-{#AppVersion}-Windows-x64-Setup"
+#endif
 #ifndef StageDir
   #define StageDir "..\dist\RoboDrummer-Windows-x64"
 #endif
@@ -16,8 +22,8 @@ AppPublisherURL=https://djshellshoxxx.github.io/circuitdriftlabs/
 DefaultDirName={autopf}\Circuit Drift Labs\RoboDrummer
 DefaultGroupName=Circuit Drift Labs
 DisableProgramGroupPage=yes
-OutputDir=..\dist
-OutputBaseFilename=RoboDrummer-{#AppVersion}-Windows-x64-Setup
+OutputDir={#OutDir}
+OutputBaseFilename={#OutName}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=admin
