@@ -10,6 +10,7 @@
 #include "analysis/InputConditioner.h"
 #include "analysis/JamBrain.h"
 #include "analysis/JamCoordinator.h"
+#include "analysis/MeterDetector.h"
 #include "analysis/PerformanceAnalyzer.h"
 #include "analysis/PhaseFollower.h"
 #include "analysis/RiffLock.h"
@@ -105,6 +106,8 @@ inline constexpr const char* rlAmount = "rlAmount";
 inline constexpr const char* rlSensitivity = "rlSensitivity";
 inline constexpr const char* rlAccentCrash = "rlAccentCrash";
 inline constexpr const char* limbModelAmount = "limbModelAmount";
+inline constexpr const char* autoMeterEnabled = "autoMeterEnabled";
+inline constexpr const char* autoMeterThreshold = "autoMeterThreshold";
 inline constexpr std::array<const char*, 8> mixGain { "gain_kick", "gain_snare", "gain_toms", "gain_hihat", "gain_ride", "gain_cymbals", "gain_room", "gain_master" };
 inline constexpr std::array<const char*, 7> mixPan { "pan_kick", "pan_snare", "pan_toms", "pan_hihat", "pan_ride", "pan_cymbals", "pan_room" };
 inline constexpr std::array<const char*, 8> mixMute { "mute_kick", "mute_snare", "mute_toms", "mute_hihat", "mute_ride", "mute_cymbals", "mute_room", "mute_master" };
@@ -137,6 +140,15 @@ struct LimbSummary {
     int nonDefaultLimb{0}, protectedKept{0}, protectedDropped{0};
     bool overflow{false};
     std::uint32_t revision{0};     // increments each time a bar was processed
+};
+
+// What the automatic meter detector currently thinks (ANALYSIS tab and the readout under the meter selector).
+struct AutoMeterStatus {
+    bool enabled{false};
+    bool applied{false};      // true while the suggestion is actually driving the drummer's meter
+    int numerator{4}, denominator{4}, pulsesPerBar{4};
+    float confidence{0.0f};
+    bool ternary{false};
 };
 
 struct LearnTarget {
@@ -311,6 +323,10 @@ public:
     int getRiffLastAdded() const noexcept { return riffAdded_.load(std::memory_order_relaxed); }
     int getRiffLastRemoved() const noexcept { return riffRemoved_.load(std::memory_order_relaxed); }
 
+    // ---- Automatic meter (ANALYSIS tab, under the meter selector) ----
+    robodrummer::AutoMeterStatus getAutoMeterStatus() const noexcept;
+    juce::String getAutoMeterReadout() const; // "Auto meter: 3/4 (82%)", "Auto meter: --" or "Auto meter: off"
+
     // ---- Virtual limbs (ANALYSIS tab) ----
     robodrummer::LimbSummary getLimbSummary() const noexcept;
 
@@ -454,6 +470,21 @@ private:
     std::atomic<bool> riffTriplet_{false};
     std::atomic<int> riffAdded_{0}, riffRemoved_{0};
     void feedRiffLock(int numSamples, bool trackerLocked) noexcept;
+    // Automatic meter (audio thread).
+    robodrummer::MeterDetector meterDetector_;
+    robodrummer::AutoMeterGate meterGate_;
+    long long meterPulseCounter_{0};
+    double meterLastPhase_{0.0};
+    bool meterPhaseValid_{false};
+    bool autoMeterWasEnabled_{false};
+    bool autoMeterLastManual_{false};
+    bool autoMeterLastStopped_{false};
+    std::atomic<float>* rawAutoMeterEnabled_{nullptr};
+    std::atomic<float>* rawAutoMeterThreshold_{nullptr};
+    std::atomic<bool> autoMeterEnabledVisible_{false}, autoMeterApplied_{false}, autoMeterTernary_{false};
+    std::atomic<int> autoMeterNum_{4}, autoMeterDen_{4}, autoMeterPulses_{4};
+    std::atomic<float> autoMeterConfidence_{0.0f};
+    void resetAutoMeter() noexcept;
     std::atomic<float>* rawLimbAmount_{nullptr};
     std::array<std::atomic<int>, 12> limbValues_{}; // input, kept, removed, 4 reasons, nonDefault, protKept, protDropped, overflow, spare
     std::atomic<std::uint32_t> limbRevisionPublished_{0};

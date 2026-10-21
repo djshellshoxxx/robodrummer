@@ -122,7 +122,7 @@ juce::StringArray idsFor(PresetType type, RoboDrummerAudioProcessor& processor) 
         case PresetType::Song: add({ ids::arrangementEnabled }); break;
         case PresetType::Analysis:
             add({ ids::inputMode, ids::inputGain, ids::autoGain, ids::gateThreshold, ids::followResponse, ids::followRange,
-                  ids::dynamicFollow, ids::silenceMode, ids::silenceStopBars, ids::followStrength, ids::tempoInertia,
+                  ids::dynamicFollow, ids::silenceMode, ids::silenceStopBars, ids::followStrength, ids::tempoInertia, ids::autoMeterEnabled, ids::autoMeterThreshold,
                   ids::beatCorrection, ids::confidenceSensitivity, ids::guitarMonitor });
             break;
         case PresetType::Jam:

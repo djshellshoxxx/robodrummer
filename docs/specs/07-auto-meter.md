@@ -1,5 +1,7 @@
 # 07 Automatic meter detection (SPEC 16 "later")
 
+Status: Implemented (core+processor wiring); UI pending
+
 ## Purpose & user value
 Guitarists playing 3/4, 6/8, 5/4 or 7/8 should not have to set the meter by hand. A causal detector watches the
 played accents and suggests a meter plus a confidence. It never overrides anything: manual meter and host meter

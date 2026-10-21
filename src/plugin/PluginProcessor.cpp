@@ -133,6 +133,8 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
     rawKitTune_ = cache(ids::kitTune);
     rawMidiOutChannel_ = cache(ids::midiOutChannel);
     rawGuitarMonitor_ = cache(ids::guitarMonitor);
+    rawAutoMeterEnabled_ = cache(ids::autoMeterEnabled);
+    rawAutoMeterThreshold_ = cache(ids::autoMeterThreshold);
     rawLimbAmount_ = cache(ids::limbModelAmount);
     rawRlAmount_ = cache(ids::rlAmount);
     rawRlSensitivity_ = cache(ids::rlSensitivity);
@@ -310,6 +312,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::rlSensitivity, 1}, "Riff Sensitivity",
         juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 50.0f, labelled("%")));
     layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::rlAccentCrash, 1}, "Riff Crash Accents", false));
+    layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::autoMeterEnabled, 1}, "Auto Meter", false));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::autoMeterThreshold, 1}, "Auto-meter Confidence",
+        juce::NormalisableRange<float>(0.5f, 0.95f, 0.01f), 0.75f, percent));
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::limbModelAmount, 1}, "Playability",
         juce::NormalisableRange<float>(0.0f, 100.0f, 1.0f), 0.0f, labelled("%")));
     return layout;
@@ -545,6 +550,7 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     drumBus_.setParams(readDrumBusParams());
     drumBus_.prepare(sampleRate_, samplesPerBlock);
     setLatencySamples(shaper_.latencySamples() + drumBus_.latencySamples());
+    resetAutoMeter();
     riffLock_.reset();
     lowBand_.prepare(sampleRate_);
     riffBar_ = -1;
@@ -851,6 +857,48 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     const auto selectedMeter = robodrummer::MeterSelection::resolve(meterInput);
     numerator = selectedMeter.numerator;
     denominator = selectedMeter.denominator;
+
+    // Automatic meter: only ever replaces the Default result (manual and host meters always win).
+    {
+        const bool autoEnabled = rawAutoMeterEnabled_ != nullptr && rawAutoMeterEnabled_->load(std::memory_order_relaxed) >= 0.5f;
+        if (autoEnabled != autoMeterWasEnabled_ || meterInput.manualEnabled != autoMeterLastManual_ || transportStopped != autoMeterLastStopped_) {
+            resetAutoMeter();
+            autoMeterWasEnabled_ = autoEnabled;
+            autoMeterLastManual_ = meterInput.manualEnabled;
+            autoMeterLastStopped_ = transportStopped;
+        }
+        autoMeterEnabledVisible_.store(autoEnabled, std::memory_order_relaxed);
+        if (autoEnabled && getTotalNumInputChannels() > 0 && numSamples > 0) {
+            // Pulse positions follow the guitar tracker's own beat grid (monotone: a phase wrap adds one pulse).
+            if (meterPhaseValid_ && rhythm.beatPhase < meterLastPhase_ - 0.5) ++meterPulseCounter_;
+            meterLastPhase_ = rhythm.beatPhase;
+            meterPhaseValid_ = true;
+            const double positionAtEnd = static_cast<double>(meterPulseCounter_) + rhythm.beatPhase;
+            if (rhythm.locked && std::isfinite(positionAtEnd) && rhythm.tempoBpm > 20.0) {
+                const double pulsesPerSample = rhythm.tempoBpm / 60.0 / sampleRate_;
+                for (std::size_t i = 0; i < blockOnsetCount_; ++i)
+                    meterDetector_.observeOnset(positionAtEnd - static_cast<double>(numSamples - blockOnsets_[i].offset) * pulsesPerSample, blockOnsets_[i].strength);
+                meterDetector_.advanceTo(positionAtEnd - 0.3); // onset latency: let a pulse close only after its onsets had time to arrive
+            }
+            const float thresholdRaw = rawAutoMeterThreshold_ != nullptr ? rawAutoMeterThreshold_->load(std::memory_order_relaxed) : 0.75f;
+            meterGate_.setThreshold(thresholdRaw);
+            const auto suggestion = meterDetector_.suggestion();
+            const auto decision = meterGate_.update(meterInput.manualEnabled, hostMeterAvailable, suggestion);
+            autoMeterNum_.store(suggestion.numerator, std::memory_order_relaxed);
+            autoMeterDen_.store(suggestion.denominator, std::memory_order_relaxed);
+            autoMeterPulses_.store(suggestion.pulsesPerBar, std::memory_order_relaxed);
+            autoMeterTernary_.store(suggestion.ternary, std::memory_order_relaxed);
+            autoMeterConfidence_.store(suggestion.confidence, std::memory_order_relaxed);
+            const bool applying = decision.apply && selectedMeter.source == robodrummer::MeterSource::Default;
+            autoMeterApplied_.store(applying, std::memory_order_relaxed);
+            if (applying) {
+                numerator = decision.numerator;
+                denominator = decision.denominator;
+            }
+        } else {
+            autoMeterApplied_.store(false, std::memory_order_relaxed);
+        }
+    }
     effectiveMeterNumerator_.store(numerator, std::memory_order_relaxed);
     effectiveMeterDenominator_.store(denominator, std::memory_order_relaxed);
 
@@ -1343,6 +1391,44 @@ void RoboDrummerAudioProcessor::publishRiffSnapshot(const robodrummer::RiffSnaps
     riffDenominator_.store(snapshot.grid.denominator, std::memory_order_relaxed);
     riffTriplet_.store(snapshot.grid.triplet, std::memory_order_relaxed);
     riffLocked_.store(snapshot.locked, std::memory_order_release);
+}
+
+void RoboDrummerAudioProcessor::resetAutoMeter() noexcept {
+    meterDetector_.reset();
+    meterGate_.reset();
+    meterPulseCounter_ = 0;
+    meterLastPhase_ = 0.0;
+    meterPhaseValid_ = false;
+    autoMeterApplied_.store(false, std::memory_order_relaxed);
+    autoMeterNum_.store(4, std::memory_order_relaxed);
+    autoMeterDen_.store(4, std::memory_order_relaxed);
+    autoMeterPulses_.store(4, std::memory_order_relaxed);
+    autoMeterTernary_.store(false, std::memory_order_relaxed);
+    autoMeterConfidence_.store(0.0f, std::memory_order_relaxed);
+}
+
+robodrummer::AutoMeterStatus RoboDrummerAudioProcessor::getAutoMeterStatus() const noexcept {
+    robodrummer::AutoMeterStatus status;
+    status.enabled = autoMeterEnabledVisible_.load(std::memory_order_relaxed);
+    status.applied = autoMeterApplied_.load(std::memory_order_relaxed);
+    status.numerator = autoMeterNum_.load(std::memory_order_relaxed);
+    status.denominator = autoMeterDen_.load(std::memory_order_relaxed);
+    status.pulsesPerBar = autoMeterPulses_.load(std::memory_order_relaxed);
+    status.confidence = autoMeterConfidence_.load(std::memory_order_relaxed);
+    status.ternary = autoMeterTernary_.load(std::memory_order_relaxed);
+    return status;
+}
+
+juce::String RoboDrummerAudioProcessor::getAutoMeterReadout() const {
+    const auto status = getAutoMeterStatus();
+    if (!status.enabled) return "Auto meter: off";
+    robodrummer::MeterDetector::Suggestion suggestion;
+    suggestion.numerator = status.numerator;
+    suggestion.denominator = status.denominator;
+    suggestion.confidence = status.confidence;
+    char text[48];
+    robodrummer::AutoMeterGate::formatReadout(text, sizeof(text), suggestion);
+    return juce::String(text);
 }
 
 robodrummer::LimbSummary RoboDrummerAudioProcessor::getLimbSummary() const noexcept {

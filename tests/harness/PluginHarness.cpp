@@ -1074,6 +1074,51 @@ void testVirtualLimbs() {
     CHECK(zeroTotal == offTotal);
 }
 
+// Strummed quarter notes with a strong beat every `cycle` beats: abrupt attack (cosine start), short decay.
+float accentGuitar(long long sample, double bpm, int cycle) {
+    const double period = kSampleRate * 60.0 / bpm;
+    const long long beat = static_cast<long long>(static_cast<double>(sample) / period);
+    const double t = static_cast<double>(sample) - static_cast<double>(beat) * period;
+    const double amp = (beat % cycle == 0) ? 0.9 : 0.3;
+    return static_cast<float>(amp * std::exp(-t / 1500.0) * std::cos(6.2831853 * 196.0 * t / kSampleRate));
+}
+
+void testAutoMeter() {
+    section("automatic meter detection wiring");
+    const int blocks = 3600; // ~38 s of 120 BPM playing
+    const auto make = [&](Rig& rig, int accentEvery, bool enabled) {
+        rig.processor.setPlayHead(nullptr);                       // no host: the meter source is Default
+        rig.param("tempoSource", 1); rig.param("bpm", 120.0f); rig.param("outputMode", 0); rig.param("autoMeterEnabled", enabled ? 1.0f : 0.0f);
+        rig.param("autoMeterThreshold", 0.6f);
+        return renderAudio(rig, blocks, [accentEvery](long long s) { return accentGuitar(s, 120.0, accentEvery); }, kNoMidi, kNoBlockHook);
+    };
+    // Off by default: a 3/4 accent pattern leaves the drummer in 4/4.
+    { Rig rig; make(rig, 3, false); CHECK(rig.processor.getEffectiveMeterNumerator() == 4 && rig.processor.getEffectiveMeterDenominator() == 4);
+      CHECK(rig.processor.getAutoMeterReadout() == "Auto meter: off"); }
+    // On: a 3-beat accent cycle suggests 3/4 and the drummer follows.
+    {
+        Rig rig; make(rig, 3, true);
+        const auto status = rig.processor.getAutoMeterStatus();
+        CHECK_MSG(status.numerator == 3 && status.denominator == 4, "suggested %d/%d conf %f", status.numerator, status.denominator, static_cast<double>(status.confidence));
+        CHECK_MSG(status.confidence > 0.6f, "confidence %f", static_cast<double>(status.confidence));
+        CHECK(status.applied && rig.processor.getEffectiveMeterNumerator() == 3 && rig.processor.getEffectiveMeterDenominator() == 4);
+        CHECK_MSG(rig.processor.getAutoMeterReadout().startsWith("Auto meter: 3/4 ("), "readout %s", rig.processor.getAutoMeterReadout().toRawUTF8());
+        // Manual meter always wins, whatever the detector says.
+        rig.param("manualMeterEnabled", 1.0f); rig.param("meterNumerator", 3.0f); rig.param("meterDenominator", 1.0f); // 5/4
+        renderAudio(rig, 300, [](long long s) { return accentGuitar(s, 120.0, 3); }, kNoMidi, kNoBlockHook);
+        CHECK_MSG(rig.processor.getEffectiveMeterNumerator() == 5 && rig.processor.getEffectiveMeterDenominator() == 4, "manual meter %d/%d", rig.processor.getEffectiveMeterNumerator(), rig.processor.getEffectiveMeterDenominator());
+        CHECK(!rig.processor.getAutoMeterStatus().applied);
+    }
+    // A 4-beat accent cycle stays in 4/4.
+    { Rig rig; make(rig, 4, true); CHECK_MSG(rig.processor.getEffectiveMeterNumerator() == 4 && rig.processor.getEffectiveMeterDenominator() == 4, "4/4 stream gave %d/%d", rig.processor.getEffectiveMeterNumerator(), rig.processor.getEffectiveMeterDenominator()); }
+    // A host-provided meter is never replaced.
+    {
+        Rig rig; rig.param("tempoSource", 0); rig.param("autoMeterEnabled", 1.0f); rig.param("autoMeterThreshold", 0.6f);
+        renderAudio(rig, blocks, [](long long s) { return accentGuitar(s, 120.0, 3); }, kNoMidi, kNoBlockHook);
+        CHECK(rig.processor.getEffectiveMeterNumerator() == 4 && !rig.processor.getAutoMeterStatus().applied);
+    }
+}
+
 void testDrumBusAndShaper() {
     section("drum bus and transient shaper wiring");
     const auto render = [](const std::function<void(Rig&)>& setup, float* minGr = nullptr, float* maxShaperDb = nullptr, float* minShaperDb = nullptr) {
@@ -1348,6 +1393,7 @@ int main(int argc, char** argv) {
     testBaselineAndMigration();
     testRiffLock();
     testVirtualLimbs();
+    testAutoMeter();
     testNewParameterFuzz();
     testSoak(soakMinutes);
     if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, 1040, 720); renderScreenshots(screenshotDir, 900, 640); }
