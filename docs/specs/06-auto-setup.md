@@ -4,7 +4,7 @@
 One button. The guitarist plays naturally for about 10 seconds and the plug-in proposes sensible values for input gain, noise gate, follow behaviour, timing mode, base BPM, Jam Style and intensity. Nothing changes until the player presses Apply, Apply can be undone, and every proposal comes with a plain-language reason ("Gate set to -52 dB because noise floor measured -63 dB"). Goal: a new user gets a usable setup without understanding gate thresholds or inertia.
 
 ## 2. Behavior (precise)
-Class `robodrummer::AutoSetup` (`src/analysis/AutoSetup.h`, header-only, JUCE-free). It consumes the RAW guitar signal (mono sum, before `InputConditioner`, so proposed gain is absolute) and runs its own `CalibrationAnalyzer` (levels, noise histogram), `AdaptiveOnsetDetector` + `TempoTracker` (onsets, tempo) and `PerformanceAnalyzer` (band shares, strength, intensity). These are the same feature extractors the live path uses.
+Class `robodrummer::AutoSetup` (`src/analysis/AutoSetup.h`, header-only, JUCE-free). It consumes the RAW guitar signal (mono sum, before `InputConditioner`, so proposed gain is absolute) and runs the same 10 ms / 1 dB RMS histogram method as `CalibrationAnalyzer` (levels, noise floor), `AdaptiveOnsetDetector` + `TempoTracker` (onsets, tempo) and `PerformanceAnalyzer` (band shares, strength, intensity). These are the same feature extractors the live path uses.
 
 ### 2.1 State machine
 `Idle -> Listening -> Analyzing -> Done` plus terminal `Cancelled`. `Listening` has prompts driven by elapsed time and activity:
@@ -21,8 +21,8 @@ A window is "active" when its 10 ms RMS is more than 12 dB above the measured le
 
 ### 2.2 Measurements
 * Lead noise floor: median 10 ms RMS (dBFS) over the first 1 s. Final noise floor = min(lead median, p10 of the whole run) so a player who starts immediately is still measured from gaps.
-* Levels (from `CalibrationAnalyzer`): typical, loud (p95) RMS, peak. Clipping = peak >= 0.98 or 3+ samples at >= 0.99.
-* Rhythm: onset times kept (cap 256). Tracked tempo sampled every 250 ms once 8 onsets exist; median of samples with confidence >= 0.25 (all samples if none). The median is folded by octaves into 70..180 BPM. Grid fit: for subdivisions {1,2,3,4} of the folded beat, onsets are assigned to the nearest grid index and a least-squares line `t = a + b*n` gives refined period and residuals. Normalised residual = RMS residual / grid step; random onsets give 0.289, so `regularity = 1 - normalised/0.289` (clamped 0..1). The subdivision with the best score is used (+0.02 penalty per step to prefer coarse grids). `timingSdMs` is the residual RMS in ms for that grid. If regularity >= 0.6 the refined line BPM replaces the median.
+* Levels (same histogram method as `CalibrationAnalyzer`): typical, loud (p95) RMS, peak. Clipping = peak >= 0.98 or 3+ samples at >= 0.99.
+* Rhythm: onset times kept (cap 256). Tracked tempo sampled every 250 ms once 8 onsets exist; median of samples with confidence >= 0.25 (all samples if none). The median is folded by octaves into 60..170 BPM. Candidate beat tempi are the folded value, x2, x1/2, x2/3 and x3/2 (so swung 8ths at 90 are not mistaken for a dotted grid at 135). Grid fit: for subdivisions {1,2,3,4} of the folded beat, onsets are assigned to the nearest grid index and a least-squares line `t = a + b*n` gives refined period and residuals. Normalised residual = RMS residual / grid step; random onsets give 0.289, so `regularity = 1 - normalised/0.289` (clamped 0..1). The best (candidate, subdivision) wins on `normalised + 0.002*(sub-1) + 0.02*|log2(bpm/105)|` (tiny penalties that only settle genuine ties). `timingSdMs` is the residual RMS in ms for that grid. If regularity >= 0.6 the refined line BPM replaces the median.
 * Looseness `L = clamp(0.6*clamp((timingSdMs-12)/28,0,1) + 0.4*(1-regularity), 0, 1)`.
 * Swing ratio: over consecutive onset pairs whose two intervals sum to one beat (+/-12%), mean of longer/(sum). 0.5 straight, 0.67 triplet swing; needs 4 pairs else treated as unknown.
 * Style features: onset density (onsets/s over the run), low-band share (low/(low+mid+high), averaged over active blocks), transient strength (mean onset strength), swing, base BPM.
@@ -32,13 +32,13 @@ A window is "active" when its 10 ms RMS is more than 12 dB above the measured le
 |---|---|
 | `inputGainDb` | `clamp(-9 - peakDb, -12, 24)`; if clipping, `min(that, -6)` and an explicit "lower the input" advice line. Level validity needs >= 1.5 s active audio. |
 | `autoGain` | on only when the manual gain needed would exceed +24 dB (very quiet source), else off. |
-| `gateThresholdDb` | in the post-gain domain: `noisePost = noiseFloorDb + gain`; if `noisePost < -72` gate off (-90); else `clamp(noisePost + 9, -80, min(-30, loudPost - 20))`, floor -80, max -20. |
+| `gateThresholdDb` | in the post-gain domain: `noisePost = noiseFloorDb + gain`; if `noisePost < -72` gate off (-90); else `clamp(noisePost + 12, -80, min(-20, max(-80, min(-30, loudPost - 20))))` (+12 dB because the conditioner's envelope follower reads noise peaks about 8 dB above RMS), floor -80, max -20. |
 | `followStrength` | `1 - 0.45*L` |
 | `tempoInertia` | `0.35 + 0.50*L` |
 | `confidenceSensitivity` | `0.60 - 0.35*L`, minus 0.10 when tempo confidence < 0.4 (demand stronger evidence) |
-| `timingMode` | `Hybrid` with `leadership = 0.70` when `L < 0.35`, tempo confidence >= 0.4 and regularity >= 0.5; otherwise `DrummerLeads` (leadership not proposed). |
+| `timingMode` | `Hybrid` with `leadership = 0.70` when `L < 0.35`, tracker tempo confidence >= 0.4 and regularity >= 0.5; otherwise `DrummerLeads` (leadership not proposed). |
 | `bpm` | folded median/refined BPM, clamped 40..240. |
-| `jamStyle` | transparent score table over 16 styles (below); falls back to Rock below score 0.45. |
+| `jamStyle` | transparent score table over 18 styles (below); falls back to Rock below score 0.45. |
 | `intensity` | `0.25 + 0.60*meanActiveIntensity`, clamped 0.25..0.85. |
 
 Style score = 0.40 tempo fit + 0.25 density fit + 0.15 low-band fit + 0.10 strength fit + 0.10 swing fit. Tempo fit is 1 inside the style's soft region (`Style::tempoMinBpm..tempoMaxBpm`, via `styleFor`) and falls linearly to 0 over 25 BPM outside. Other fits are `max(0, 1-|x-target|/scale)` against a small constexpr table in the header (scales: density 3/s, low share 0.3, strength 0.4, swing 1). Unknown swing scores 0.5. Experimental, Breakbeat, HalfTime and ElectronicRock are never auto-suggested. Ties keep table order, so results are deterministic.
