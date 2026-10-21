@@ -12,59 +12,19 @@ add_library(robodrummer_core INTERFACE)
 target_include_directories(robodrummer_core INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 enable_testing()
-foreach(test_name IN ITEMS
-    assertions_active
-    musical_clock
-    event_scheduler
-    groove_generator
-    midi_commands
-    host_transport_adapter
-    midi_command_mapper
-    drum_sample_player
-    jam_engine
-    onset_detector
-    tempo_tracker
-    rhythm_analyzer
-    timing_authority
-    phase_follower
-    performance_analyzer
-    dynamics_follower
-    downbeat_tracker
-    resync_planner
-    jam_brain
-    jam_style_profile
-    section_sequencer
-    style_grooves
-    fill_strength
-    phrase_groove_modifier
-    session_memory
-    session_memory_policy
-    meter_profiles
-    meter_selection
-    silence_controller
-    jam_coordinator
-    output_mode
-    live_control_policy
-    style_library
-    humanize
-    fill_generator
-    drummer_personality
-    midi_tools
-    input_conditioner
-    mixer_kit
-    realtime_safety
-    tracking_fixtures
-    performance_features
-    follow_controls
-    lookahead)
-  add_executable(test_${test_name} tests/test_${test_name}.cpp)
-  target_link_libraries(test_${test_name} PRIVATE robodrummer_core)
+# Every tests/test_*.cpp is a core test (auto-discovered so features add tests without editing this file).
+file(GLOB ROBODRUMMER_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_*.cpp)
+foreach(test_src IN LISTS ROBODRUMMER_TEST_SOURCES)
+  get_filename_component(test_target ${test_src} NAME_WE)
+  string(REGEX REPLACE "^test_" "" test_name ${test_target})
+  add_executable(${test_target} ${test_src})
+  target_link_libraries(${test_target} PRIVATE robodrummer_core)
   if(MSVC)
-    target_compile_options(test_${test_name} PRIVATE /UNDEBUG)
+    target_compile_options(${test_target} PRIVATE /UNDEBUG)
   else()
-    target_compile_options(test_${test_name} PRIVATE -UNDEBUG)
+    target_compile_options(${test_target} PRIVATE -UNDEBUG)
   endif()
-  add_test(NAME ${test_name} COMMAND test_${test_name})
+  add_test(NAME ${test_name} COMMAND ${test_target})
 endforeach()
 
 if(ROBODRUMMER_BUILD_JUCE)
