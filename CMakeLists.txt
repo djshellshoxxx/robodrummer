@@ -136,6 +136,7 @@ if(ROBODRUMMER_BUILD_JUCE)
   target_include_directories(RoboDrummerHarness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(RoboDrummerHarness PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
   target_link_libraries(RoboDrummerHarness PRIVATE
+    robodrummer_core
     RoboDrummer
     juce::juce_audio_utils
     juce::juce_dsp
@@ -145,7 +146,13 @@ if(ROBODRUMMER_BUILD_JUCE)
   else()
     target_compile_options(RoboDrummerHarness PRIVATE -UNDEBUG)
   endif()
-  add_test(NAME plugin_harness COMMAND RoboDrummerHarness)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_test(NAME default_output_reference COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/build_compat_reference.py" "${CMAKE_BINARY_DIR}" --jobs 2 --config "$<CONFIG>")
+  set_tests_properties(default_output_reference PROPERTIES FIXTURES_SETUP default_output_reference TIMEOUT 2400)
+  add_test(NAME plugin_harness COMMAND RoboDrummerHarness
+    --baseline-reference "${CMAKE_BINARY_DIR}/compat-reference/reference.bin")
+  set_tests_properties(plugin_harness PROPERTIES FIXTURES_REQUIRED default_output_reference)
 
   if(ROBODRUMMER_BUILD_CLAP)
     FetchContent_Declare(

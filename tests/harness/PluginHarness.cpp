@@ -1376,9 +1376,17 @@ void testPracticeMode() {
     {   // MIDI commands (channel 16, notes 51-55) flip the practice parameters through the message thread.
         Rig rig; setupMidiOnly(rig);
         const auto press = [&](int note) {
+            const char* id = note == 51 ? "practiceEnabled" : note == 52 ? "pracLoopOn"
+                           : note == 53 ? "pracTrainOn" : note == 55 ? "pracCountInLen" : nullptr;
+            const float before = id != nullptr ? rig.value(id) : 0.0f;
             renderAudio(rig, 2, kSilence, [note](long long b, juce::MidiBuffer& m) { if (b % 2 == 0) m.addEvent(juce::MidiMessage::noteOn(16, note, 1.0f), 0); }, kNoBlockHook);
-            // Only the first of the two blocks carries the note; flush it through the timer.
-            pump(120);
+            // Wait for the actual message-thread effect, with a bounded failure
+            // deadline. A fixed 120 ms sleep races JUCE's first timer startup on macOS.
+            if (id != nullptr) {
+                const auto start = juce::Time::getMillisecondCounterHiRes();
+                while (std::abs(rig.value(id) - before) < 0.1f && juce::Time::getMillisecondCounterHiRes() - start < 2000.0)
+                    pump(10);
+            } else pump(120);
         };
         press(51); CHECK_MSG(rig.value("practiceEnabled") > 0.5f, "PracticeToggle on");
         press(52); CHECK_MSG(rig.value("pracLoopOn") > 0.5f, "LoopToggle on");
@@ -1542,10 +1550,17 @@ void testDrumBusAndShaper() {
 // parameter at its default leaves the output bit-identical.
 struct Fnv {
     std::uint64_t h{1469598103934665603ull};
-    void bytes(const void* p, std::size_t n) { const auto* b = static_cast<const unsigned char*>(p); for (std::size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; } }
+    juce::OutputStream* capture{nullptr};
+    void bytes(const void* p, std::size_t n) {
+        // Framing preserves both packet lengths and exact audio/MIDI bytes.
+        if (capture != nullptr) { capture->writeInt64(static_cast<juce::int64>(n)); capture->write(p, n); }
+        const auto* b = static_cast<const unsigned char*>(p);
+        for (std::size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+    }
 };
-std::uint64_t renderBaselineHash() {
+std::uint64_t renderBaselineHash(juce::OutputStream* capture = nullptr) {
     Fnv fnv;
+    fnv.capture = capture;
     const auto hashRun = [&](Rig& rig, int blocks, const std::function<float(long long)>& guitar, const std::function<void(long long, juce::MidiBuffer&)>& midiFor) {
         for (int b = 0; b < blocks; ++b, ++rig.blockIndex) {
             rig.buffer.clear();
@@ -1582,10 +1597,28 @@ std::uint64_t renderBaselineHash() {
 
 constexpr std::uint64_t kBaselineHash = 0x4a85caa7203610d1ull; // captured before the 0.4.0 integration
 
-void testBaselineAndMigration() {
+void testBaselineAndMigration(const juce::File& baselineReference) {
     section("regression: default-parameter output is bit-identical to the pre-integration baseline; old state migrates");
-    const auto hash = renderBaselineHash();
-    CHECK_MSG(hash == kBaselineHash, "baseline hash %016llx expected %016llx", static_cast<unsigned long long>(hash), static_cast<unsigned long long>(kBaselineHash));
+    if (baselineReference == juce::File()) {
+        // Historical golden from the original Linux toolchain. Cross-platform
+        // CI supplies a same-toolchain pre-integration reference instead.
+        const auto hash = renderBaselineHash();
+        CHECK_MSG(hash == kBaselineHash, "baseline hash %016llx expected %016llx", static_cast<unsigned long long>(hash), static_cast<unsigned long long>(kBaselineHash));
+    } else {
+        CHECK(baselineReference.existsAsFile() && baselineReference.getSize() > 0);
+        juce::TemporaryFile temporary(".rd-baseline");
+        {
+            juce::FileOutputStream capture(temporary.getFile());
+            CHECK(capture.openedOk());
+            const auto hash = renderBaselineHash(&capture);
+            capture.flush();
+            CHECK(capture.getStatus().wasOk());
+            std::printf("  same-toolchain baseline hash %016llx (%lld bytes)\n",
+                        static_cast<unsigned long long>(hash), static_cast<long long>(temporary.getFile().getSize()));
+        }
+        CHECK_MSG(temporary.getFile().hasIdenticalContentTo(baselineReference),
+                  "exact audio/MIDI reference differs: %s", baselineReference.getFullPathName().toRawUTF8());
+    }
 
     // A version-3 session (no 0.4.0 parameters in the file) restores every new feature as off / default, even over a rig
     // that had them switched on.
@@ -2540,6 +2573,7 @@ int main(int argc, char** argv) {
 #endif
     juce::ScopedJuceInitialiser_GUI juceInit;
     juce::File screenshotDir;
+    juce::File baselineReference;
     double soakMinutes = 5.0;
     rdui::EditorSettings::fileOverride() = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("robodrummer-ui-test").getChildFile("settings.xml");
     rdui::EditorSettings::fileOverride().getParentDirectory().createDirectory();
@@ -2551,6 +2585,15 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--screenshots") screenshotDir = juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1]);
         if (std::string(argv[i]) == "--soak-minutes") soakMinutes = std::atof(argv[i + 1]);
         if (std::string(argv[i]) == "--baseline-hash") { std::printf("baseline %016llx\n", static_cast<unsigned long long>(renderBaselineHash())); return 0; }
+        if (std::string(argv[i]) == "--baseline-reference") baselineReference = juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1]);
+        if (std::string(argv[i]) == "--export-baseline") {
+            juce::FileOutputStream capture(juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1]));
+            if (!capture.openedOk() || !capture.setPosition(0) || capture.truncate().failed()) return 1;
+            const auto hash = renderBaselineHash(&capture);
+            capture.flush();
+            std::printf("baseline %016llx\n", static_cast<unsigned long long>(hash));
+            return capture.getStatus().wasOk() ? 0 : 1;
+        }
         if (std::string(argv[i]) == "--dump-parameters") { dumpParameters(juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1])); return 0; }
     }
 
@@ -2586,7 +2629,7 @@ int main(int argc, char** argv) {
     testRobustness();
     testFuzz();
     testDrumBusAndShaper();
-    testBaselineAndMigration();
+    testBaselineAndMigration(baselineReference);
     testRiffLock();
     testVirtualLimbs();
     testAutoMeter();

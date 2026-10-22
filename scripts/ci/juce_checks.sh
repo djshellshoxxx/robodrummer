@@ -24,8 +24,14 @@ esac
 if grep -q 'RoboDrummerHarness' "$root/CMakeLists.txt"; then
   harness="$build/RoboDrummerHarness_artefacts/Release/RoboDrummerHarness$suffix"
   if [ ! -f "$harness" ]; then echo "::error::RoboDrummerHarness target exists but binary not found: $harness"; exit 1; fi
+  # Raw floating-point audio can differ between native math libraries. Prove
+  # default-off compatibility against actual pinned historical source, using
+  # the identical fixture, SDK and native toolchain. Never replace its golden
+  # hash with an arbitrary hash from the new implementation.
+  run_gui python3 -B "$root/tools/build_compat_reference.py" "$build" --jobs "${CMAKE_BUILD_PARALLEL_LEVEL:-2}" \
+    | tee "$build/qa/compatibility.txt"
   echo "Running harness: $harness"
-  run_gui "$harness" | tee "$build/qa/harness.txt"
+  run_gui "$harness" --baseline-reference "$build/compat-reference/reference.bin" | tee "$build/qa/harness.txt"
   # docs/PARAMETERS.md is generated from the real parameter layout; fail when it has drifted.
   params_out="$tmp/parameters.md"
   run_gui "$harness" --dump-parameters "$params_out"

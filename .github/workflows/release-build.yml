@@ -70,7 +70,7 @@ jobs:
       - name: Run ctest
         run: ctest --test-dir build-core --output-on-failure --parallel 4
       - name: Release script regression tests
-        run: python3 -B -m unittest discover -s tests -p test_release_pipeline.py -v
+        run: python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 
   windows-x64:
     name: windows-x64
@@ -107,7 +107,7 @@ jobs:
       - name: Core tests, processor harness and blocking pluginval
         shell: bash
         run: |
-          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^plugin_harness$'
+          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^(plugin_harness|default_output_reference)$'
           bash scripts/ci/juce_checks.sh build windows
       - uses: actions/upload-artifact@v4
         if: always()
@@ -160,7 +160,7 @@ jobs:
           cmake --build build
       - name: Core tests, processor harness and blocking auval
         run: |
-          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^plugin_harness$'
+          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^(plugin_harness|default_output_reference)$'
           bash scripts/ci/juce_checks.sh build mac
       - uses: actions/upload-artifact@v4
         if: always()
@@ -212,7 +212,7 @@ jobs:
           cmake --build build
       - name: Core tests, processor harness and blocking auval
         run: |
-          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^plugin_harness$'
+          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^(plugin_harness|default_output_reference)$'
           bash scripts/ci/juce_checks.sh build mac
       - uses: actions/upload-artifact@v4
         if: always()
@@ -267,7 +267,7 @@ jobs:
           cmake --build build
       - name: Core tests, processor harness and blocking pluginval
         run: |
-          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^plugin_harness$'
+          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^(plugin_harness|default_output_reference)$'
           bash scripts/ci/juce_checks.sh build linux
       - uses: actions/upload-artifact@v4
         if: always()

@@ -49,8 +49,21 @@ Debian 13 x86_64, GCC 14.2, CMake/Ninja Release build:
   against its upstream SHA-256 release manifest. GitHub's runner-images table
   confirms the `macos-15-intel` native x64 label.
 
-Native plug-in builds, validators and current CI results are recorded below
-when completed; this record alone does not claim they passed.
+Native Linux VST3, CLAP and standalone builds completed in the cloud machine.
+The real processor harness passed **2333 checks, zero failures**, including
+real preset save/load with approved application-data access. pluginval 1.0.3 at
+strictness 10 completed with exit 0. The exact same-toolchain historical/current
+comparison passed (four identical 22,716,916-byte captures); see
+[the compatibility gate](../../tools/COMPATIBILITY.md).
+
+The first four-platform CI run
+[39799479625](https://github.com/djshellshoxxx/robodrummer/actions/runs/39799479625)
+compiled all native formats. Linux passed validation and packaging. Windows
+and both Macs correctly blocked packaging on the single-platform raw-audio
+golden comparison. Intel macOS also exposed a first-timer startup race in the
+practice-command test's fixed 120 ms wait; it now waits for the actual parameter
+change with a bounded deadline and retains every toggle assertion. These
+diagnosed gates are being rerun with the pinned same-toolchain reference.
 
 ## Remaining product qualification
 

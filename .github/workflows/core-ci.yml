@@ -32,7 +32,7 @@ jobs:
         run: ctest --test-dir build-core -C Release --output-on-failure --parallel 4
       - name: Release script regression tests
         if: runner.os == 'Linux'
-        run: python3 -B -m unittest discover -s tests -p test_release_pipeline.py -v
+        run: python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 
   juce-compile:
     name: juce-compile (linux)
