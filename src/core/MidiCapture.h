@@ -92,6 +92,12 @@ public:
             const std::int64_t barLen = static_cast<std::int64_t>(num) * (4 * kPpq) / den;
             const std::int64_t into = b.hostPpqValid ? tick % std::max<std::int64_t>(1, barLen) : 0;
             Rec r{}; r.kind = kSegment; r.tick = tick; r.aux = static_cast<std::uint32_t>(into); r.value = static_cast<double>(prevEnd_);  // end of the previous take
+            // Carry the producer sequence explicitly: requestClear may discard
+            // segment records before the consumer can count them.
+            const auto nextSegment = (segSeq_ + 1u) & 0xFFFFFFu;
+            r.a = static_cast<std::uint8_t>(nextSegment);
+            r.b = static_cast<std::uint8_t>(nextSegment >> 8);
+            r.c = static_cast<std::uint8_t>(nextSegment >> 16);
             started_ = false;
             if (push(r)) {
                 Rec t{}; t.kind = kTempo; t.tick = tick; t.value = bpm;
@@ -124,7 +130,7 @@ public:
         if (!started_ || static_cast<unsigned>(instrument) >= 16) return false;
         const double off = static_cast<double>(std::max(0, sampleOffset)) * tps_;
         Rec r{}; r.kind = kNote; r.a = static_cast<std::uint8_t>(instrument);
-        r.b = static_cast<std::uint8_t>(std::isfinite(velocity) ? std::clamp(static_cast<int>(std::lround(velocity * 127.0f)), 1, 127) : 64);
+        r.b = static_cast<std::uint8_t>(std::isfinite(velocity) ? std::clamp(static_cast<int>(std::lround(std::clamp(velocity, 0.0f, 1.0f) * 127.0f)), 1, 127) : 64);
         r.aux = std::clamp<std::uint32_t>(durationTicks, 1, 0xFFFFFu);
         r.tick = blockTick_ + static_cast<std::int64_t>(std::llround(off));
         if (push(r)) return true;
@@ -263,7 +269,9 @@ private:
 
     bool apply(const Rec& r) {  // returns true when a new take began
         if (r.kind == kSegment) {
-            ++seenSegments_;
+            seenSegments_ = static_cast<std::uint32_t>(r.a)
+                          | (static_cast<std::uint32_t>(r.b) << 8)
+                          | (static_cast<std::uint32_t>(r.c) << 16);
             if (!takes_.empty() && r.value >= 0.0) takes_.back().latest = std::max(takes_.back().latest, static_cast<std::int64_t>(r.value));
             CaptureTake t;
             t.origin = t.latest = r.tick;
