@@ -1,7 +1,6 @@
 name: RoboDrummer Release Build
 
-# Packaging only. No ctest here: core-ci.yml already tests every PR/push.
-# Set run_qa=true to also run the core test suite before publishing.
+# Native tests and validators must pass before any packages reach a draft release.
 on:
   workflow_dispatch:
     inputs:
@@ -15,15 +14,10 @@ on:
         type: boolean
         default: true
       platforms:
-        description: "'all' or a comma list of: windows,mac-arm64,mac-x64,linux (or mac for both Macs)"
+        description: "all creates a release draft; subsets build artifacts only: windows,mac-arm64,mac-x64,linux (mac selects both Macs)"
         required: false
         type: string
         default: all
-      run_qa:
-        description: 'Also run the core test suite (off by default; core-ci already does)'
-        required: false
-        type: boolean
-        default: false
   push:
     tags: ['v*']
 
@@ -60,13 +54,11 @@ jobs:
           IN_VERSION: ${{ inputs.version }}
           IN_PRERELEASE: ${{ inputs.prerelease }}
           IN_PLATFORMS: ${{ inputs.platforms }}
-          IN_QA: ${{ inputs.run_qa }}
         run: bash scripts/ci/plan.sh
 
   qa:
     name: qa (core tests)
     needs: plan
-    if: needs.plan.outputs.run_qa == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -77,6 +69,8 @@ jobs:
         run: cmake --build build-core --parallel
       - name: Run ctest
         run: ctest --test-dir build-core --output-on-failure --parallel 4
+      - name: Release script regression tests
+        run: python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 
   windows-x64:
     name: windows-x64
@@ -109,6 +103,17 @@ jobs:
         run: |
           read -ra targets <<< "$(bash scripts/ci/targets.sh windows)"
           cmake --build build --config Release --parallel --target "${targets[@]}"
+          cmake --build build --config Release --parallel
+      - name: Core tests, processor harness and blocking pluginval
+        shell: bash
+        run: |
+          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^(plugin_harness|default_output_reference)$'
+          bash scripts/ci/juce_checks.sh build windows
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-windows-x64
+          path: build/qa
       - name: Package (zip and Inno installer)
         shell: bash
         env:
@@ -134,7 +139,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .fc-cache
-          key: fetchcontent-mac-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-mac-arm64-${{ hashFiles('CMakeLists.txt') }}
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -152,6 +157,16 @@ jobs:
         run: |
           read -ra targets <<< "$(bash scripts/ci/targets.sh mac)"
           cmake --build build --target "${targets[@]}"
+          cmake --build build
+      - name: Core tests, processor harness and blocking auval
+        run: |
+          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^(plugin_harness|default_output_reference)$'
+          bash scripts/ci/juce_checks.sh build mac
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-mac-arm64
+          path: build/qa
       - name: Package (ad-hoc signed, ditto zip)
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -166,7 +181,7 @@ jobs:
     name: mac-x64
     needs: plan
     if: needs.plan.outputs.mac_x64 == 'true'
-    runs-on: macos-latest
+    runs-on: macos-15-intel
     timeout-minutes: 75
     env:
       FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fc-cache
@@ -176,13 +191,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .fc-cache
-          key: fetchcontent-mac-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-mac-x64-${{ hashFiles('CMakeLists.txt') }}
       - name: ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
           key: release-mac-x64
           max-size: 500M
-      - name: Configure (cross-build x86_64 on the arm64 runner)
+      - name: Configure (native x86_64 runner)
         run: >
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON
@@ -194,6 +209,16 @@ jobs:
         run: |
           read -ra targets <<< "$(bash scripts/ci/targets.sh mac)"
           cmake --build build --target "${targets[@]}"
+          cmake --build build
+      - name: Core tests, processor harness and blocking auval
+        run: |
+          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^(plugin_harness|default_output_reference)$'
+          bash scripts/ci/juce_checks.sh build mac
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-mac-x64
+          path: build/qa
       - name: Package (ad-hoc signed, ditto zip)
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -217,7 +242,7 @@ jobs:
       - name: Install Linux JUCE dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxi-dev libfreetype-dev libfontconfig1-dev libglu1-mesa-dev pkg-config
+          sudo apt-get install -y ninja-build xvfb libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxi-dev libfreetype-dev libfontconfig1-dev libglu1-mesa-dev pkg-config
       - name: Cache FetchContent sources (JUCE, CLAP)
         uses: actions/cache@v4
         with:
@@ -239,6 +264,16 @@ jobs:
         run: |
           read -ra targets <<< "$(bash scripts/ci/targets.sh linux)"
           cmake --build build --target "${targets[@]}"
+          cmake --build build
+      - name: Core tests, processor harness and blocking pluginval
+        run: |
+          ctest --test-dir build -C Release --output-on-failure --parallel 4 -E '^(plugin_harness|default_output_reference)$'
+          bash scripts/ci/juce_checks.sh build linux
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-linux-x64
+          path: build/qa
       - name: Package (tar.gz)
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -252,8 +287,12 @@ jobs:
   release:
     name: release
     needs: [plan, qa, windows-x64, mac-arm64, mac-x64, linux-x64]
-    # Publish whatever succeeded; a failed QA run (when requested) blocks publishing.
-    if: always() && !cancelled() && needs.plan.result == 'success' && needs.qa.result != 'failure'
+    # Subset dispatches are diagnostic builds, never incomplete public releases.
+    if: >-
+      always() && !cancelled() && needs.plan.result == 'success' &&
+      needs.qa.result == 'success' && needs.windows-x64.result == 'success' &&
+      needs.mac-arm64.result == 'success' && needs.mac-x64.result == 'success' &&
+      needs.linux-x64.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -265,7 +304,7 @@ jobs:
           pattern: pkg-*
           path: artifacts
           merge-multiple: true
-      - name: Create or update release and upload assets
+      - name: Create complete release draft with immutable assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.plan.outputs.version }}

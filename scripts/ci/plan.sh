@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
 # Resolve release inputs (workflow_dispatch inputs or a pushed v* tag) into job outputs.
-# Env: EVENT_NAME REF_NAME IN_VERSION IN_PRERELEASE IN_PLATFORMS IN_QA GITHUB_OUTPUT
+# Env: EVENT_NAME REF_NAME IN_VERSION IN_PRERELEASE IN_PLATFORMS GITHUB_OUTPUT
 set -euo pipefail
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 if [ "${EVENT_NAME:-}" = "push" ]; then
   version="${REF_NAME#v}"
   platforms="all"
-  qa="false"
   case "$version" in *-*) prerelease="true" ;; *) prerelease="false" ;; esac
 else
   version="${IN_VERSION:-}"
   platforms="${IN_PLATFORMS:-all}"
   prerelease="${IN_PRERELEASE:-true}"
-  qa="${IN_QA:-false}"
 fi
+qa="true"
 
 if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
   echo "::error::Invalid version '$version' (expected e.g. 0.4.0 or 0.4.0-beta.1)"
+  exit 1
+fi
+
+compiled_version="$(sed -nE 's/^project\(RoboDrummer VERSION ([0-9.]+).*/\1/p' "$root/CMakeLists.txt")"
+if [ "${version%%-*}" != "$compiled_version" ]; then
+  echo "::error::Release version '$version' does not match CMake project version '$compiled_version'"
+  exit 1
+fi
+case "$prerelease" in
+  true|false) ;;
+  *) echo "::error::prerelease must be true or false"; exit 1 ;;
+esac
+if [[ "$version" == *-* ]] && [ "$prerelease" != true ]; then
+  echo "::error::A version with a pre-release suffix must be marked prerelease"
   exit 1
 fi
 

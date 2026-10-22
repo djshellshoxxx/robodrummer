@@ -3,6 +3,9 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
+#ifndef AppNumericVersion
+  #define AppNumericVersion "0.0.0"
+#endif
 #ifndef OutDir
   #define OutDir "..\dist"
 #endif
@@ -17,6 +20,7 @@
 AppId={{6E0D6E7B-52A4-4F5B-9B1B-3C8E5D2A7F01}
 AppName=RoboDrummer
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppNumericVersion}
 AppPublisher=Circuit Drift Labs
 AppPublisherURL=https://djshellshoxxx.github.io/circuitdriftlabs/
 DefaultDirName={autopf}\Circuit Drift Labs\RoboDrummer
@@ -49,6 +53,9 @@ Source: "{#StageDir}\RoboDrummer.exe"; DestDir: "{app}"; Flags: ignoreversion; C
 Source: "{#StageDir}\INSTALL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\COPYRIGHT-TRADEMARK.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\PARAMETERS.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\HELP.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\third-party-notices\*"; DestDir: "{app}\third-party-notices"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{group}\RoboDrummer"; Filename: "{app}\RoboDrummer.exe"; Components: standalone
