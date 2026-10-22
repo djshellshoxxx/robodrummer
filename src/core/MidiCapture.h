@@ -158,7 +158,7 @@ public:
 
     void requestClear() noexcept {  // message thread
         tail_.store(head_.load(std::memory_order_acquire), std::memory_order_release);
-        takes_.clear();  // seenSegments_ keeps counting so stale latest values never match a later take
+        takes_.clear();  // the next segment supplies its producer sequence even if queued records were discarded
         clearGen_.fetch_add(1, std::memory_order_release);
         ++version_;
     }

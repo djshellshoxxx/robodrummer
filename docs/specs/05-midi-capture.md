@@ -18,7 +18,7 @@ transport stop then start, host position jumps (|actual - expected| > 480 ticks 
 (a record was dropped). Tempo and meter changes do NOT start a take; they go into the take's tempo map / meter map. Up to 8 takes are
 kept (oldest dropped). Export uses ONE take (default newest non-empty).
 
-**Records** (audio thread -> ring, 24 bytes): Segment(origin tick, ticks-into-bar), Tempo(tick, bpm), Meter(tick, num, den),
+**Records** (audio thread -> ring, 24 bytes): Segment(origin tick, ticks-into-bar, 24-bit producer take sequence), Tempo(tick, bpm), Meter(tick, num, den),
 Note(tick, instrument, velocity 1..127, duration ticks). A hit is ONE record; the note-off is derived by the writer. Default duration
 120 ticks (a 32nd). The writer shortens a note to end before the next same-pitch onset.
 
@@ -62,7 +62,7 @@ All controls focusable; "Save MIDI..." is the keyboard alternative to dragging. 
 ## Threading/real-time
 Audio thread calls only `onBlock` and `noteAtSample` (noexcept, allocation-free, lock-free, NaN-safe). Message thread: `drain`,
 `buildExport`, `exportSmf`, `requestClear`, stats. SPSC contract: one producer thread, one consumer thread. Take history is
-message-thread-only. `requestClear` and the latest-position value use atomics.
+message-thread-only. `requestClear` and the latest-position value use atomics. Segment records carry the producer take sequence explicitly, so clearing undrained records cannot desynchronize the consumer from the packed latest-position sequence. Velocity is clamped in floating point before rounding to MIDI 1..127; non-finite velocity uses 64.
 
 ## Test plan
 `test_midi_file_writer`: round trip through an in-test SMF parser (VLQ, no running status, EOT, deltas, off-before-on, tempo and
