@@ -29,7 +29,11 @@ case "$platform" in
   linux-*) need "$src/Standalone/RoboDrummer"; cp "$src/Standalone/RoboDrummer" "$stage/"; chmod +x "$stage/RoboDrummer" ;;
   *) echo "::error::Unknown platform $platform"; exit 1 ;;
 esac
-cp "$root/LICENSE" "$root/COPYRIGHT-TRADEMARK.md" "$root/docs/INSTALL.md" "$stage/"
+cp "$root/LICENSE" "$root/COPYRIGHT-TRADEMARK.md" "$root/docs/INSTALL.md" \
+  "$root/docs/PARAMETERS.md" "$root/docs/HELP.md" "$stage/"
+need "$build/third-party-notices/JUCE-LICENSE.md"
+need "$build/third-party-notices/CLAP-LICENSE"
+cp -R "$build/third-party-notices" "$stage/"
 
 cd "$out"
 hash_file() {
@@ -58,7 +62,7 @@ if [ "${platform%%-*}" = "windows" ]; then
   if [ -z "$iscc" ]; then echo "::error::ISCC.exe (Inno Setup) not found"; exit 1; fi
   win() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else echo "$1"; fi; }
   # MSYS_NO_PATHCONV stops git-bash mangling the /D switches.
-  MSYS_NO_PATHCONV=1 "$iscc" "/DAppVersion=${version%%-*}" "/DStageDir=$(win "$out/$name")" \
+  MSYS_NO_PATHCONV=1 "$iscc" "/DAppVersion=$version" "/DAppNumericVersion=${version%%-*}" "/DStageDir=$(win "$out/$name")" \
     "/DOutDir=$(win "$out")" "/DOutName=$name-setup" "$(win "$root/installer/RoboDrummer.iss")"
   hash_file "$name-setup.exe"
 fi

@@ -50,6 +50,18 @@ Nine tabs (LIVE, KIT, DRUMMER, STYLE, SONG, PRACTICE, MIDI, ANALYSIS, SETTINGS),
 
 VST3, CLAP and Standalone on Windows, macOS and Linux, plus AU on macOS. `RoboDrummerHarness` is a headless console test of the real processor (`ctest` runs it as `plugin_harness`).
 
+Release builds run the core tests and processor harness on every native target,
+pluginval strictness 10 on Windows/Linux, and auval on both macOS architectures.
+Run `bash scripts/ci/juce_checks.sh build linux` after building the harness and
+plug-ins (use `windows` or `mac` on those systems). Linux requires Xvfb.
+`python3 -B -m unittest discover -s tests -p test_release_pipeline.py -v` checks
+the release scripts without network access or publication.
+
+Only a complete four-architecture matrix creates a new draft release. A subset
+workflow dispatch builds downloadable CI artifacts without creating a release.
+Existing releases cannot be overwritten; use a new beta/rc or patch version.
+The qualification record is [RELEASE_QA_2026-10-22.md](feature-audit/RELEASE_QA_2026-10-22.md).
+
 ## Tempo sources
 
 `tempoSource`: **Host / Internal** (host tempo and transport when available, Internal BPM otherwise), **Internal BPM only** (free-running, ignores the host transport), **MIDI Clock** (24 ppqn with Start/Stop/Continue; falls back to the host/internal tempo when no clock is present). Tap tempo sets Internal BPM.

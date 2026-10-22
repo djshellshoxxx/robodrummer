@@ -70,6 +70,8 @@ if(ROBODRUMMER_BUILD_JUCE)
     PLUGIN_CODE RDrm
     FORMATS ${ROBODRUMMER_FORMATS}
     AU_MAIN_TYPE kAudioUnitType_MusicEffect
+    MICROPHONE_PERMISSION_ENABLED TRUE
+    MICROPHONE_PERMISSION_TEXT "RoboDrummer listens to your guitar input to follow your playing."
     PLUGIN_DESCRIPTION "Adaptive virtual drummer for a live guitarist"
 
     VST3_CATEGORIES Instrument Drum
@@ -158,5 +160,20 @@ if(ROBODRUMMER_BUILD_JUCE)
       CLAP_ID "com.circuitdriftlabs.robodrummer"
       CLAP_FEATURES instrument drum-machine stereo
     )
+  endif()
+
+  # Stage notices from the exact dependency sources used by this build, including
+  # configurations that place FetchContent outside the build directory.
+  set(ROBODRUMMER_NOTICES_DIR "${CMAKE_BINARY_DIR}/third-party-notices")
+  file(MAKE_DIRECTORY "${ROBODRUMMER_NOTICES_DIR}")
+  configure_file("${juce_SOURCE_DIR}/LICENSE.md" "${ROBODRUMMER_NOTICES_DIR}/JUCE-LICENSE.md" COPYONLY)
+  configure_file("${juce_SOURCE_DIR}/JUCE.spdx.json" "${ROBODRUMMER_NOTICES_DIR}/JUCE.spdx.json" COPYONLY)
+  if(ROBODRUMMER_BUILD_CLAP)
+    configure_file("${clap_juce_extensions_SOURCE_DIR}/LICENSE.md"
+      "${ROBODRUMMER_NOTICES_DIR}/clap-juce-extensions-LICENSE.md" COPYONLY)
+    configure_file("${clap_juce_extensions_SOURCE_DIR}/clap-libs/clap/LICENSE"
+      "${ROBODRUMMER_NOTICES_DIR}/CLAP-LICENSE" COPYONLY)
+    configure_file("${clap_juce_extensions_SOURCE_DIR}/clap-libs/clap-helpers/LICENSE"
+      "${ROBODRUMMER_NOTICES_DIR}/clap-helpers-LICENSE" COPYONLY)
   endif()
 endif()
