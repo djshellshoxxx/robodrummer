@@ -43,3 +43,7 @@ The fast synchronization layer and the slower musical-coordination layer must re
 | Tests | `tests/*.cpp` (JUCE-free), `tests/harness/PluginHarness.cpp` (headless plug-in) |
 
 Threading: the audio thread owns all analysis and generation state; the UI reads atomics and a lock-free onset FIFO; kits are built on a loader thread and handed over through an atomic pointer swap (old samplers are deleted on the message thread); MIDI Learn writes land in per-target atomics that the message-thread timer applies to host parameters.
+
+## MIDI capture boundary (0.4.0)
+
+`core/MidiCapture.h` owns an allocation-free audio producer and a message-thread consumer. The producer records segment, tempo, meter and note records into a fixed SPSC ring; only the consumer owns the take vectors and calls `core/MidiFileWriter.h` to export. Clear discards queued history and requests producer resynchronization. Each segment carries the producer's 24-bit take sequence, matching the packed latest-position sequence even if clear discarded undrained segments. Overflow drops the newest record and begins another take; history retention and export allocate only on the message thread. See spec 05 and `feature-audit/CAPTURE_QA_2026-10-22.md` for the clear/velocity regressions.

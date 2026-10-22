@@ -141,6 +141,17 @@ int main() {
         assert((vel == std::vector<int>{1, 127, 1, 64}));
         for (auto& e : vn) if (e.d1 == 39) assert(e.tick == 0 && e.d2 == 127);
     }
+    // Finite out-of-range velocities must saturate before integer conversion.
+    {
+        Sim<Cap> s;
+        s.block(kBlock);
+        assert(s.cap.noteAtSample(0, DrumInstrument::Snare, std::numeric_limits<float>::max()));
+        assert(s.cap.noteAtSample(100, DrumInstrument::Snare, -std::numeric_limits<float>::max()));
+        s.cap.drain();
+        const auto& notes = s.cap.takes().back().notes;
+        assert(notes.size() == 2);
+        assert(notes[0].velocity == 127 && notes[1].velocity == 1);
+    }
     // ---- tempo change map ----
     {
         Sim<Cap> s;
@@ -318,6 +329,28 @@ int main() {
         assert(s.cap.takes().size() == 1 && s.cap.takes()[0].notes.size() == 4);
         std::vector<std::uint8_t> b;
         assert(s.cap.exportSmf({}, b).status == CaptureStatus::Ok);
+    }
+    // Clear can discard undrained segment records. Later block ends must still
+    // extend the correct take, even with silence after its last note.
+    {
+        Sim<Cap> s;
+        s.block(48000, {0});
+        s.cap.requestClear();
+        s.block(48000, {0});
+        s.cap.drain();
+        assert(s.cap.takes().size() == 1);
+        assert(s.cap.takes().back().latest == 3840);
+        s.block(48000);
+        s.cap.drain();
+        assert(s.cap.takes().back().latest == 5760);
+        // Repeated clears before a drain must not accumulate sequence drift.
+        for (int i = 0; i < 20; ++i) {
+            s.cap.requestClear();
+            s.block(48000, {0});
+        }
+        s.cap.drain();
+        assert(s.cap.takes().size() == 1);
+        assert(s.cap.takes().back().latest == 44160);
     }
     // ---- custom drum map ----
     {

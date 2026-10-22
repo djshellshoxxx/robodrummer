@@ -2,6 +2,8 @@
 
 Status: **BETA READY candidate** — see "Known blockers" before calling it RELEASE READY (CDL §9). Nothing below is claimed unless it was run and the result checked.
 
+Follow-up capture robustness validation: [2026-10-22 record](feature-audit/CAPTURE_QA_2026-10-22.md). This does not close the manual/platform blockers below.
+
 ## Automated suites (run in CI on every push)
 
 | Suite | What it covers | Result on this branch |
