@@ -13,6 +13,23 @@ stage="$out/$name"
 rm -rf "$stage"; mkdir -p "$stage"
 
 need() { if [ ! -e "$1" ]; then echo "::error::Missing build output: $1"; exit 1; fi; }
+need_file() { if [ ! -f "$1" ] || [ ! -s "$1" ]; then echo "::error::Missing or empty binary: $1"; exit 1; fi; }
+case "$platform" in
+  windows-x64)
+    need_file "$src/VST3/RoboDrummer.vst3/Contents/x86_64-win/RoboDrummer.vst3"
+    need_file "$src/CLAP/RoboDrummer.clap"
+    need_file "$src/Standalone/RoboDrummer.exe" ;;
+  mac-arm64|mac-x64)
+    need_file "$src/VST3/RoboDrummer.vst3/Contents/MacOS/RoboDrummer"
+    need_file "$src/CLAP/RoboDrummer.clap/Contents/MacOS/RoboDrummer"
+    need_file "$src/AU/RoboDrummer.component/Contents/MacOS/RoboDrummer"
+    need_file "$src/Standalone/RoboDrummer.app/Contents/MacOS/RoboDrummer" ;;
+  linux-x64)
+    need_file "$src/VST3/RoboDrummer.vst3/Contents/x86_64-linux/RoboDrummer.so"
+    need_file "$src/CLAP/RoboDrummer.clap"
+    need_file "$src/Standalone/RoboDrummer" ;;
+  *) echo "::error::Unknown platform $platform"; exit 1 ;;
+esac
 need "$src/VST3/RoboDrummer.vst3"; need "$src/CLAP/RoboDrummer.clap"
 cp -R "$src/VST3/RoboDrummer.vst3" "$src/CLAP/RoboDrummer.clap" "$stage/"
 

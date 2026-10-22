@@ -13,10 +13,14 @@ the real-guitar, DAW-host, clean-machine or signing qualification protocols.
   pluginval strictness 10; both macOS architectures require auval. Reports are
   retained as CI artifacts. Intel macOS uses a native Intel runner, allowing its
   harness and Audio Unit to execute rather than only cross-compile.
+  FetchContent caches are separated by architecture, and macOS validation
+  checks the architecture of every shipped binary with lipo.
 * Failed or skipped platform jobs could produce a public release containing
   only the successful platforms. Releases now require Windows x64, macOS arm64,
   macOS x64 and Linux x64, including the Windows installer. Subset dispatches
   remain useful build diagnostics and cannot create releases.
+  Packaging checks the actual nonempty binaries inside format bundles, so an
+  empty VST3/CLAP/AU directory cannot masquerade as a completed build.
 * Release versions could disagree with the compiled CMake version, and beta
   versions could be marked stable. The planner rejects both inconsistencies.
 * Re-running publication replaced previously distributed assets. Publication
@@ -37,7 +41,7 @@ the real-guitar, DAW-host, clean-machine or signing qualification protocols.
 Debian 13 x86_64, GCC 14.2, CMake/Ninja Release build:
 
 * Core suite: **53/53 passed**, assertions enabled, 4.03 seconds.
-* Release script regression suite: **10/10 passed**. It exercises missing
+* Release script regression suite: **11/11 passed**. It exercises missing
   platform/installer rejection, immutable draft creation, version/label/QA
   rules, and archive contents/checksums without making release writes.
 * `bash -n scripts/ci/*.sh`: passed.
@@ -56,6 +60,6 @@ when completed; this record alone does not claim they passed.
   installer checks remain unrun in this cloud Linux machine.
 * Paid Windows signing and macOS Developer ID/notarization are not configured.
   Unsigned betas remain explicitly documented; stable-release criteria apply.
-* Existing proprietary project licensing and JUCE's dual-license terms are
-  preserved. Bundled notices are not evidence of a JUCE commercial entitlement;
-  the distributor must satisfy the applicable JUCE license terms.
+* Existing proprietary project licensing and JUCE notices are preserved. The
+  owner confirmed a valid commercial JUCE license covering RoboDrummer
+  distribution on 2026-10-22.

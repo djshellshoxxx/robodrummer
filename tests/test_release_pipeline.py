@@ -158,6 +158,24 @@ class ReleasePipelineTests(unittest.TestCase):
             )
             self.assertEqual(verify.returncode, 0, verify.stdout + verify.stderr)
 
+    def test_empty_plugin_bundle_cannot_be_packaged(self):
+        with tempfile.TemporaryDirectory() as temp:
+            temp = Path(temp)
+            build, out = temp / "build", temp / "out"
+            artifacts = build / "RoboDrummer_artefacts/Release"
+            (artifacts / "VST3/RoboDrummer.vst3").mkdir(parents=True)
+            for name in ("CLAP/RoboDrummer.clap", "Standalone/RoboDrummer"):
+                path = artifacts / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"fixture build output")
+            result = subprocess.run(
+                ["bash", "scripts/ci/package.sh", "linux-x64", "0.4.0-beta.1", str(build), str(out)],
+                cwd=ROOT, text=True, capture_output=True, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("RoboDrummer.so", result.stdout + result.stderr)
+            self.assertFalse(list(out.glob("*.tar.gz")))
+
 
 if __name__ == "__main__":
     unittest.main()
