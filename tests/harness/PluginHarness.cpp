@@ -178,6 +178,15 @@ void pump(int milliseconds) {
     juce::MessageManager::getInstance()->runDispatchLoopUntil(milliseconds);
 }
 
+// The timer that publishes audio-thread changes may start late on a busy runner.
+// Pump the real message loop until the expected effect, retaining a bounded failure deadline.
+template <typename Predicate>
+void pumpUntil(Predicate&& ready) {
+    const auto start = juce::Time::getMillisecondCounterHiRes();
+    while (!ready() && juce::Time::getMillisecondCounterHiRes() - start < 2000.0)
+        pump(10);
+}
+
 void section(const char* name) { std::printf("[%s]\n", name); }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -264,7 +273,7 @@ void testMidiCommandsAndLearn() {
 
     // Default expression pedal: CC11 -> Intensity
     rig.run(1, [](long long) { return 0.0f; }, [](long long, juce::MidiBuffer& m) { m.addEvent(juce::MidiMessage::controllerEvent(1, 11, 127), 0); });
-    pump(120);
+    pumpUntil([&] { return rig.value("intensity") > 0.95f; });
     CHECK_MSG(rig.value("intensity") > 0.95f, "intensity %f", rig.value("intensity"));
     // MIDI learn a controller to Humanize.
     int humanizeTarget = -1;
@@ -523,7 +532,7 @@ void testProgrammedArrangement() {
     rig.runSilent(200); // 240 BPM, 4/4: 1 bar = 1 s = ~94 blocks -> 2 bars passed
     CHECK_MSG(rig.processor.getCurrentArrangementSection() == 1, "section %d", rig.processor.getCurrentArrangementSection());
     CHECK_MSG(rig.processor.getTimeScale() < 0.75, "timeScale %f", rig.processor.getTimeScale());
-    pump(150);
+    pumpUntil([&] { return std::abs(rig.value("jamStyle") - 15.0f) < 0.01f; });
     CHECK_MSG(std::abs(rig.value("jamStyle") - 15.0f) < 0.01f, "style param %f", rig.value("jamStyle"));
     CHECK(rig.processor.isArrangementEnabled());
     // manual navigation

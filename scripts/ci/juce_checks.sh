@@ -46,14 +46,7 @@ fi
 
 if [ "$platform" = mac ]; then
   # Catch wrong-architecture cache/output reuse before registering an Audio Unit.
-  native_arch="$(uname -m)"
-  for binary in \
-    "$build/RoboDrummer_artefacts/Release/VST3/RoboDrummer.vst3/Contents/MacOS/RoboDrummer" \
-    "$build/RoboDrummer_artefacts/Release/CLAP/RoboDrummer.clap/Contents/MacOS/RoboDrummer" \
-    "$build/RoboDrummer_artefacts/Release/AU/RoboDrummer.component/Contents/MacOS/RoboDrummer" \
-    "$build/RoboDrummer_artefacts/Release/Standalone/RoboDrummer.app/Contents/MacOS/RoboDrummer"; do
-    lipo -verify_arch "$native_arch" "$binary"
-  done
+  bash "$root/scripts/ci/macos_architectures.sh" "$build"
   plist="$build/RoboDrummer_artefacts/Release/Standalone/RoboDrummer.app/Contents/Info.plist"
   usage="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$plist")"
   if [ -z "$usage" ]; then echo "::error::Standalone microphone permission description missing"; exit 1; fi
