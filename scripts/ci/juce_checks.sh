@@ -52,12 +52,7 @@ if [ "$platform" = mac ]; then
   if [ -z "$usage" ]; then echo "::error::Standalone microphone permission description missing"; exit 1; fi
   component="$build/RoboDrummer_artefacts/Release/AU/RoboDrummer.component"
   if [ ! -d "$component" ]; then echo "::error::Missing $component"; exit 1; fi
-  # Isolated GitHub runner: register the candidate in the user's Audio Unit domain.
-  mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
-  ditto "$component" "$HOME/Library/Audio/Plug-Ins/Components/RoboDrummer.component"
-  codesign --force --deep --sign - "$HOME/Library/Audio/Plug-Ins/Components/RoboDrummer.component"
-  codesign --verify --deep --strict "$HOME/Library/Audio/Plug-Ins/Components/RoboDrummer.component"
-  auval -v aumf RDrm CDrf | tee "$build/qa/auval.txt"
+  bash "$root/scripts/ci/macos_au_validation.sh" "$component" "$build/qa"
   exit 0
 fi
 

@@ -17,3 +17,7 @@
 - [ ] Audit the complete repository by module, with independent review of core/analysis, DSP/sampler, plugin/threading/persistence, and build/release/security. Record reproducible findings, severity and platform limitations.
 
 **Constraints:** Stable parameter IDs, state/preset formats, plugin identity and musical behavior stay intact. No allocations, locks or deletion on the audio thread. No main merge, tag or public release as part of this work. Native CI and device/DAW evidence must be reported separately.
+
+## Native AU follow-up
+
+Run 41173404802 passed all 2,333 arm64 harness checks, exact compatibility, architecture verification and signing, then auval could not discover the just-installed AU. Automation now follows spec 12's registrar refresh and bounded discovery sequence, validates and retains the actual bundle identity/plist, and still requires the unchanged auval validation to pass. Four executable regressions preserve missing-component, delayed-discovery, identity and validator-failure behavior. The fix remains subject to native CI.
