@@ -128,10 +128,17 @@ struct ParamMenuActions {
     std::function<void(const juce::String&)> paste;
 };
 
-// Items: Reset to default, Copy value, Paste value, then (only for MIDI-learnable parameters) MIDI Learn / Cancel / Clear.
-inline void showParamContextMenu(juce::Component& target, const juce::String& paramId, RoboDrummerAudioProcessor* host, ParamMenuActions actions) {
-    const int learn = host != nullptr ? findLearnTarget(paramId) : -1;
+struct ParamMenuSession {
     juce::PopupMenu menu;
+    std::function<void(int)> complete;
+};
+
+// The same session drives the asynchronous menu and direct action/gesture tests.
+// Items: Reset, Copy, Paste, then only functional MIDI Learn / Cancel / Clear.
+inline ParamMenuSession makeParamContextMenu(juce::Component& target, const juce::String& paramId, RoboDrummerAudioProcessor* host, ParamMenuActions actions) {
+    const int learn = host != nullptr ? findLearnTarget(paramId) : -1;
+    ParamMenuSession session;
+    auto& menu = session.menu;
     menu.addItem(1, "Reset to default");
     menu.addItem(2, "Copy value");
     menu.addItem(3, "Paste value");
@@ -143,7 +150,7 @@ inline void showParamContextMenu(juce::Component& target, const juce::String& pa
             menu.addItem(12, "Clear MIDI mapping (CC " + juce::String(host->getMidiLearn().ccForTarget(learn)) + ")");
     }
     juce::Component::SafePointer<juce::Component> safe(&target);
-    menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&target), [safe, actions, host, learn](int choice) {
+    session.complete = [safe, actions, host, learn](int choice) {
         if (safe == nullptr || choice == 0) return;
         if (choice == 1 && actions.reset) actions.reset();
         else if (choice == 2 && actions.copyText) juce::SystemClipboard::copyTextToClipboard(actions.copyText());
@@ -151,7 +158,13 @@ inline void showParamContextMenu(juce::Component& target, const juce::String& pa
         else if (choice == 10 && host != nullptr) host->getMidiLearn().armTarget(learn);
         else if (choice == 11 && host != nullptr) host->getMidiLearn().cancelLearn();
         else if (choice == 12 && host != nullptr) host->getMidiLearn().unbindTarget(learn);
-    });
+    };
+    return session;
+}
+
+inline void showParamContextMenu(juce::Component& target, const juce::String& paramId, RoboDrummerAudioProcessor* host, ParamMenuActions actions) {
+    auto session = makeParamContextMenu(target, paramId, host, std::move(actions));
+    session.menu.showMenuAsync(juce::PopupMenu::Options().withTargetComponent(&target), std::move(session.complete));
 }
 
 inline RoboDrummerAudioProcessor* learnHostOf(APVTS& state) { return dynamic_cast<RoboDrummerAudioProcessor*>(&state.processor); }
@@ -197,7 +210,7 @@ public:
         slider_.updateText();
     }
 
-    void showMenu() {
+    ParamMenuActions menuActions() {
         ParamMenuActions actions;
         juce::Component::SafePointer<ParamSlider> safe(this);
         actions.reset = [safe] { if (safe != nullptr) safe->slider_.setValue(safe->defaultValue_, juce::sendNotificationSync); };
@@ -211,8 +224,9 @@ public:
             if (numeric && std::isfinite(value) && value >= slider.getMinimum() && value <= slider.getMaximum())
                 slider.setValue(value, juce::sendNotificationSync);
         };
-        showParamContextMenu(slider_, id_, host_, std::move(actions));
+        return actions;
     }
+    void showMenu() { showParamContextMenu(slider_, id_, host_, menuActions()); }
     // Right-click: reset to default, copy or paste the value (pasted text is range-checked, never silently altered).
     void mouseDown(const juce::MouseEvent& e) override { if (e.mods.isPopupMenu()) showMenu(); }
     bool keyPressed(const juce::KeyPress& k) override {
@@ -264,9 +278,9 @@ public:
         combo_.addMouseListener(this, false);
     }
     ~ParamCombo() override { combo_.removeMouseListener(this); }
-    void showMenu() {
+    ParamMenuActions menuActions() {
         auto* choice = dynamic_cast<juce::AudioParameterChoice*>(parameter_);
-        if (choice == nullptr) return;
+        if (choice == nullptr) return {};
         ParamMenuActions actions;
         auto* ranged = parameter_;
         actions.reset = [ranged] { setParameterPlain(ranged, ranged->convertFrom0to1(ranged->getDefaultValue())); };
@@ -275,8 +289,9 @@ public:
             int index = 0;
             if (parseChoiceText(raw, choice->choices, index)) setParameterPlain(choice, static_cast<float>(index));
         };
-        showParamContextMenu(combo_, id_, host_, std::move(actions));
+        return actions;
     }
+    void showMenu() { if (dynamic_cast<juce::AudioParameterChoice*>(parameter_) != nullptr) showParamContextMenu(combo_, id_, host_, menuActions()); }
     void mouseDown(const juce::MouseEvent& e) override { if (e.mods.isPopupMenu()) showMenu(); }
     bool keyPressed(const juce::KeyPress& k) override {
         if (k == juce::KeyPress(juce::KeyPress::F10Key, juce::ModifierKeys::shiftModifier, 0)) { showMenu(); return true; }
@@ -305,8 +320,8 @@ public:
         describe(*this, caption, tooltip, id);
         attachment_ = std::make_unique<APVTS::ButtonAttachment>(state, id, *this);
     }
-    void showMenu() {
-        if (parameter_ == nullptr) return;
+    ParamMenuActions menuActions() {
+        if (parameter_ == nullptr) return {};
         ParamMenuActions actions;
         auto* parameter = parameter_;
         actions.reset = [parameter] { setParameterPlain(parameter, parameter->convertFrom0to1(parameter->getDefaultValue())); };
@@ -316,8 +331,9 @@ public:
             bool value = false;
             if (parseToggleText(raw, value)) setParameterPlain(parameter, value ? 1.0f : 0.0f);
         };
-        showParamContextMenu(*this, id_, host_, std::move(actions));
+        return actions;
     }
+    void showMenu() { if (parameter_ != nullptr) showParamContextMenu(*this, id_, host_, menuActions()); }
     void mouseDown(const juce::MouseEvent& e) override {
         if (e.mods.isPopupMenu()) { showMenu(); return; } // a right click never toggles
         juce::ToggleButton::mouseDown(e);
