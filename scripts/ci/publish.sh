@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create or update the GitHub Release from downloaded artifacts and upload them.
+# Create an immutable draft only after the complete platform matrix is present.
 # Env: GH_TOKEN GITHUB_SHA GITHUB_REPOSITORY VERSION BASE_VERSION TAG PRERELEASE EXPECTED
 # usage: publish.sh <artifact_dir>
 set -euo pipefail
@@ -7,19 +7,24 @@ dir="${1:?artifact dir}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$dir"
 
-shopt -s nullglob
-files=(RoboDrummer-*.zip RoboDrummer-*.tar.gz RoboDrummer-*-setup.exe RoboDrummer-*.sha256)
-if [ "${#files[@]}" -eq 0 ]; then echo "::error::No artifacts to publish"; exit 1; fi
-
-missing=""
-for p in $EXPECTED; do
-  if ! compgen -G "RoboDrummer-$VERSION-$p.*" >/dev/null; then missing="$missing $p"; fi
+if [ "$EXPECTED" != "windows-x64 mac-arm64 mac-x64 linux-x64" ]; then
+  echo "::error::Only a complete Windows, macOS and Linux matrix can create a release"
+  exit 1
+fi
+files=(
+  "RoboDrummer-$VERSION-windows-x64.zip"
+  "RoboDrummer-$VERSION-windows-x64-setup.exe"
+  "RoboDrummer-$VERSION-mac-arm64.zip"
+  "RoboDrummer-$VERSION-mac-x64.zip"
+  "RoboDrummer-$VERSION-linux-x64.tar.gz"
+)
+for f in "${files[@]}"; do
+  if [ ! -s "$f" ]; then echo "::error::Missing or empty release payload: $f"; exit 1; fi
 done
-missing="${missing# }"
 
 # Combined checksums: every payload file, hashed here so the list is always complete.
 : > SHA256SUMS.txt
-for f in RoboDrummer-*.zip RoboDrummer-*.tar.gz RoboDrummer-*-setup.exe; do
+for f in "${files[@]}"; do
   sha256sum "$f" >> SHA256SUMS.txt
 done
 
@@ -45,20 +50,20 @@ else
     echo "Verify downloads with \`SHA256SUMS.txt\`."
   } > "$notes"
 fi
-if [ -n "$missing" ]; then
-  {
-    echo
-    echo "> **Missing platforms:** $missing (build failed or was skipped). Re-run the workflow for these to add them."
-  } >> "$notes"
-fi
+{
+  echo
+  echo '## SHA-256 checksums'
+  echo '```text'
+  cat SHA256SUMS.txt
+  echo '```'
+} >> "$notes"
 
 repo="${GITHUB_REPOSITORY}"
 if [ "$PRERELEASE" = "true" ]; then pre="--prerelease=true"; else pre="--prerelease=false"; fi
 if gh release view "$TAG" --repo "$repo" >/dev/null 2>&1; then
-  gh release edit "$TAG" --repo "$repo" --title "RoboDrummer $VERSION" --notes-file "$notes" "$pre"
-else
-  gh release create "$TAG" --repo "$repo" --target "$GITHUB_SHA" --title "RoboDrummer $VERSION" \
-    --notes-file "$notes" "$pre"
+  echo "::error::Release $TAG already exists; use a new patch or pre-release version instead of replacing artifacts"
+  exit 1
 fi
-gh release upload "$TAG" --repo "$repo" --clobber "${files[@]}" SHA256SUMS.txt
-echo "Published $TAG (missing: ${missing:-none})"
+gh release create "$TAG" --repo "$repo" --target "$GITHUB_SHA" --title "RoboDrummer $VERSION" \
+  --notes-file "$notes" --draft "$pre" "${files[@]}" SHA256SUMS.txt
+echo "Created draft $TAG with the complete platform matrix; clean-machine qualification is required before publication"

@@ -1,7 +1,6 @@
 name: RoboDrummer CI
 
-# Fast PR/push checks. This is the ONLY place tests, the headless harness and
-# pluginval run by default. Release packaging (release-build.yml) does not re-test.
+# Fast PR/push checks. Tagged release builds repeat their own native quality gates.
 on:
   push:
     branches: [main, 'integrate/**']
@@ -15,6 +14,50 @@ permissions:
   contents: read
 
 jobs:
+  mac-native:
+    name: native macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fc-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: .fc-cache
+          key: fetchcontent-mac-${{ matrix.arch }}-${{ hashFiles('CMakeLists.txt') }}
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: native-mac-${{ matrix.arch }}
+          max-size: 500M
+      - name: Configure native formats and harness
+        run: >
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }} -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+          -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR"
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - name: Build native formats and harness
+        run: |
+          read -ra targets <<< "$(bash scripts/ci/targets.sh mac)"
+          cmake --build build --target "${targets[@]}" RoboDrummerHarness
+      - name: Processor harness, exact compatibility, and auval
+        run: bash scripts/ci/juce_checks.sh build mac
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-native-mac-${{ matrix.arch }}
+          path: build/qa
+
   core:
     name: core (${{ matrix.os }})
     strategy:
@@ -31,6 +74,9 @@ jobs:
         run: cmake --build build-core --config Release --parallel
       - name: Run ctest
         run: ctest --test-dir build-core -C Release --output-on-failure --parallel 4
+      - name: Release script regression tests
+        if: runner.os == 'Linux'
+        run: python3 -B -m unittest discover -s tests -p 'test_*.py' -v
 
   juce-compile:
     name: juce-compile (linux)
