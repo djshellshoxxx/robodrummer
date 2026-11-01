@@ -117,7 +117,6 @@ RoboDrummerAudioProcessor::RoboDrummerAudioProcessor()
       parameters_(*this, nullptr, "RoboDrummerParams", createParameterLayout()) {
     namespace ids = robodrummer::ParamIDs;
     for (auto& v : pendingCc_) v.store(-1.0f);
-    for (auto& r : retiredPlayers_) r.store(nullptr);
     installStarterArrangement();
     for (const auto* id : kParameterIds)
         parameters_.addParameterListener(id, this);
@@ -191,12 +190,11 @@ RoboDrummerAudioProcessor::~RoboDrummerAudioProcessor() {
             fs::remove(captureDirectory_, ec); // only succeeds when empty
         }
     }
-    kitLoader_.removeAllJobs(true, 15000);
+    stopKitLoader();
     for (const auto* id : kParameterIds)
         parameters_.removeParameterListener(id, this);
-    delete player_;
-    delete pendingPlayer_.exchange(nullptr);
-    for (auto& r : retiredPlayers_) delete r.exchange(nullptr);
+    player_ = nullptr;
+    playerHandoff_.resetWhenStopped();
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::createParameterLayout() {
@@ -265,8 +263,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
     for (const auto* name : robodrummer::kDrummerPersonalityNames) personalities.add(name);
     layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::drummer, 1}, "Drummer", personalities, 0));
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::crashTendency, 1}, "Crash Tendency",
-        juce::NormalisableRange<float>(0.0f, 2.0f, 0.01f), 1.0f,
-        juce::AudioParameterFloatAttributes().withStringFromValueFunction([](float v, int) { return juce::String(juce::roundToInt(v * 100.0f)) + "%"; })));
+        juce::NormalisableRange<float>(0.0f, 2.0f, 0.01f), 1.0f, percent));
     layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::inputMode, 1}, "Guitar Input",
         juce::StringArray{"Auto (mono / stereo sum)", "Left only", "Right only"}, 0));
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::inputGain, 1}, "Input Gain",
@@ -274,7 +271,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout RoboDrummerAudioProcessor::c
     layout.add(std::make_unique<juce::AudioParameterBool>(ParameterID{ids::autoGain, 1}, "Auto Gain", false));
     layout.add(std::make_unique<juce::AudioParameterFloat>(ParameterID{ids::gateThreshold, 1}, "Noise Gate",
         juce::NormalisableRange<float>(-90.0f, -20.0f, 0.5f), -90.0f,
-        juce::AudioParameterFloatAttributes().withStringFromValueFunction([](float v, int) { return v <= -80.0f ? juce::String("Off") : juce::String(v, 1) + " dB"; })));
+        juce::AudioParameterFloatAttributes().withStringFromValueFunction([](float v, int) { return v <= -80.0f ? juce::String("Off") : juce::String(v, 1) + " dB"; })
+            .withValueFromStringFunction([](const juce::String& text) { return text.trim().equalsIgnoreCase("Off") ? -90.0f : text.retainCharacters("0123456789.-").getFloatValue(); })));
     juce::StringArray kits;
     for (const auto* name : robodrummer::kKitNames) kits.add(name);
     layout.add(std::make_unique<juce::AudioParameterChoice>(ParameterID{ids::kit, 1}, "Kit", kits, 0));
@@ -459,7 +457,7 @@ void RoboDrummerAudioProcessor::timerCallback() {
         lastKitChoice_ = kitChoice;
         loadKitAsync(kitChoice);
     }
-    for (auto& slot : retiredPlayers_) delete slot.exchange(nullptr);
+    playerHandoff_.drainRetired();
 }
 
 void RoboDrummerAudioProcessor::drainMidiLearnToParameters() {
@@ -483,10 +481,24 @@ void RoboDrummerAudioProcessor::setParameterFromState(const char* id, float plai
         parameter->setValueNotifyingHost(parameter->convertTo0to1(plainValue));
 }
 
+void RoboDrummerAudioProcessor::stopKitLoader() {
+    {
+        const juce::ScopedLock submission(kitSubmissionLock_);
+        kitSubmissionsEnabled_ = false;
+        kitLoadCancelled_.store(true, std::memory_order_release);
+    }
+    // Lifecycle only: a decoder still running after the grace period must finish
+    // before its result mailbox, status lock or processor can be destroyed.
+    (void) robodrummer::finishKitLoaderJobs(kitLoader_, kitLoadCancelled_);
+}
+
 void RoboDrummerAudioProcessor::loadKitAsync(int kitIndex) {
+    const juce::ScopedLock submission(kitSubmissionLock_);
+    if (!kitSubmissionsEnabled_) return;
     const double sr = sampleRate_;
     const auto folder = getUserKitFolder();
     kitLoader_.addJob([this, kitIndex, sr, folder] {
+        if (kitLoadCancelled_.load(std::memory_order_acquire)) return;
         juce::String report;
         std::unique_ptr<robodrummer::DrumSamplePlayer> built;
         if (kitIndex == robodrummer::kUserKitIndex) {
@@ -495,27 +507,17 @@ void RoboDrummerAudioProcessor::loadKitAsync(int kitIndex) {
             built = robodrummer::KitBuilder::buildBuiltIn(kitIndex, sr);
             report = robodrummer::kKitNames[static_cast<std::size_t>(juce::jlimit(0, robodrummer::kKitChoiceCount - 1, kitIndex))];
         }
+        if (kitLoadCancelled_.load(std::memory_order_acquire)) return;
         {
             const juce::ScopedLock lock(uiTextLock_);
             kitStatus_ = report;
         }
-        delete pendingPlayer_.exchange(built.release(), std::memory_order_acq_rel);
+        playerHandoff_.publish(std::move(built));
     });
 }
 
 void RoboDrummerAudioProcessor::swapInPendingKit() noexcept {
-    if (pendingPlayer_.load(std::memory_order_relaxed) == nullptr) return;
-    auto* incoming = pendingPlayer_.exchange(nullptr, std::memory_order_acq_rel);
-    if (incoming == nullptr) return;
-    // Hand the old sampler back for deletion on the message thread; if every slot is somehow busy keep it alive.
-    robodrummer::DrumSamplePlayer* previous = player_;
-    player_ = incoming;
-    if (previous != nullptr) {
-        for (auto& slot : retiredPlayers_) {
-            robodrummer::DrumSamplePlayer* empty = nullptr;
-            if (slot.compare_exchange_strong(empty, previous, std::memory_order_acq_rel)) { previous = nullptr; break; }
-        }
-    }
+    if (playerHandoff_.tryAdoptPending()) player_ = playerHandoff_.current();
 }
 
 void RoboDrummerAudioProcessor::applyMixerToSampler() noexcept {
@@ -558,6 +560,7 @@ robodrummer::dsp::TransientShaperParams RoboDrummerAudioProcessor::readShaperPar
 }
 
 void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerBlock) {
+    stopKitLoader(); // gate submissions before changing the rate or sampler lifecycle
     sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
     setLatencySamples(0); // all processing is causal and sample-aligned; nothing is delayed
     jam_.prepare(sampleRate_);
@@ -633,12 +636,15 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
 
     // Rebuild the sampler for the new sample rate. Built-in kits are generated synchronously; a user folder
     // starts on the built-in kit and swaps in as soon as the loader thread has read the files.
-    kitLoader_.removeAllJobs(true, 15000);
-    delete pendingPlayer_.exchange(nullptr);
-    for (auto& r : retiredPlayers_) delete r.exchange(nullptr);
-    delete player_;
     lastKitChoice_ = choiceIndex(rawKit_, robodrummer::kKitChoiceCount);
-    player_ = robodrummer::KitBuilder::buildBuiltIn(lastKitChoice_ == robodrummer::kUserKitIndex ? 0 : lastKitChoice_, sampleRate_).release();
+    playerHandoff_.resetWhenStopped(robodrummer::KitBuilder::buildBuiltIn(lastKitChoice_ == robodrummer::kUserKitIndex ? 0 : lastKitChoice_, sampleRate_));
+    player_ = playerHandoff_.current();
+    {
+        const juce::ScopedLock submission(kitSubmissionLock_);
+        kitLoadCancelled_.store(false, std::memory_order_release);
+        kitSubmissionsEnabled_ = true;
+    }
+    midiSafetyStopped_ = midiPanicOutputPending_ = midiSafetyHostStopSeen_ = false;
     if (lastKitChoice_ == robodrummer::kUserKitIndex) loadKitAsync(lastKitChoice_);
 }
 
@@ -683,28 +689,60 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     // they cannot trigger a downstream drum instrument. Controllers bound to a parameter are consumed too.
     // Everything else passes through.
     midiOut_.clear();
+    rd::MidiBlockPolicy midiPolicy;
+    bool midiFailSafe = false;
+    const auto emitMidiPanic = [&] {
+        midiOut_.clear();
+        midiPolicy.resetOutput();
+        midiPanicOutputPending_ = numSamples <= 0;
+        if (numSamples > 0) {
+            const std::uint8_t stop[] = { 0xfc };
+            if (midiPolicy.admitOutput(sizeof(stop), rd::MidiOutputClass::Critical)) midiOut_.addEvent(stop, sizeof(stop), 0);
+            for (int channel = 1; channel <= 16; ++channel) {
+                for (const int controller : { 120, 123 }) {
+                    const std::uint8_t bytes[] = { static_cast<std::uint8_t>(0xb0 | (channel - 1)), static_cast<std::uint8_t>(controller), 0 };
+                    if (midiPolicy.admitOutput(sizeof(bytes), rd::MidiOutputClass::Critical))
+                        midiOut_.addEvent(bytes, sizeof(bytes), 0);
+                }
+            }
+        }
+    };
+    if (midiPanicOutputPending_ && numSamples > 0) emitMidiPanic();
+    const auto forwardInput = [&](const auto& metadata, const rd::MidiMessageView& message) {
+        const auto kind = message.requiresCriticalOutput() ? rd::MidiOutputClass::Critical : rd::MidiOutputClass::Ordinary;
+        if (midiPolicy.admitOutput(static_cast<std::size_t>(metadata.numBytes), kind))
+            midiOut_.addEvent(metadata.data, metadata.numBytes, metadata.samplePosition);
+        else if (midiPolicy.needsPanic() || message.isMidiClock() || message.isMidiStart() || message.isMidiContinue())
+            midiFailSafe = true; // never silently desynchronise a downstream clock/transport
+    };
     std::array<rd::MidiCommand, 24> midiCommands{};
     std::size_t midiCommandCount = 0;
     for (const auto metadata : midi) {
-        const auto msg = metadata.getMessage();
+        if (midiFailSafe || !midiPolicy.scanNext()) { midiFailSafe = true; break; }
+        const rd::MidiMessageView msg(metadata.data, metadata.numBytes);
         const long long absoluteSample = midiSampleCursor_ + metadata.samplePosition;
         if (msg.isMidiClock()) {
             midiClock_.tick(absoluteSample);
-            midiOut_.addEvent(msg, metadata.samplePosition);
+            forwardInput(metadata, msg);
             continue;
         }
         if (msg.isMidiStart() || msg.isMidiContinue() || msg.isMidiStop()) {
+            if (msg.isMidiStart() || msg.isMidiContinue()) {
+                if (midiSafetyStopped_) jam_.apply(rd::MidiCommand::Resume);
+                midiSafetyStopped_ = false;
+                midiSafetyHostStopSeen_ = false;
+            }
             if (msg.isMidiStart()) midiClock_.start();
             else if (msg.isMidiContinue()) midiClock_.continueClock();
             else midiClock_.stop();
-            midiOut_.addEvent(msg, metadata.samplePosition);
+            forwardInput(metadata, msg);
             continue;
         }
         const int channel = msg.getChannel();
         if (msg.isAllNotesOff() || msg.isAllSoundOff()) {
             // Drums are one-shots, but "all sound off / all notes off" must still silence anything ringing.
             if (player_ != nullptr) player_->clear();
-            if (channel != rd::MidiLearnMap::DefaultChannel) midiOut_.addEvent(msg, metadata.samplePosition);
+            if (channel != rd::MidiLearnMap::DefaultChannel) forwardInput(metadata, msg);
             continue;
         }
         if (msg.isController()) {
@@ -726,14 +764,25 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             lastMidiData1_.store(note, std::memory_order_relaxed);
             lastMidiData2_.store(msg.getVelocity(), std::memory_order_relaxed);
             lastMidiChannel_.store(channel, std::memory_order_relaxed);
-            if (command >= 0 && midiCommandCount < midiCommands.size())
+            if (command >= 0) {
+                if (midiCommandCount == midiCommands.size()) { midiFailSafe = true; break; }
                 midiCommands[midiCommandCount++] = static_cast<rd::MidiCommand>(command);
+            }
             if (learning || command >= 0) continue;
         } else if (msg.isNoteOff()) {
             if (midiLearn_.commandForNote(msg.getNoteNumber(), channel) >= 0) continue;
         }
         if (channel == rd::MidiLearnMap::DefaultChannel) continue;
-        midiOut_.addEvent(msg, metadata.samplePosition);
+        forwardInput(metadata, msg);
+    }
+    if (midiFailSafe) {
+        midiSafetyStopped_ = true;
+        midiSafetyHostStopSeen_ = false;
+        jam_.apply(rd::MidiCommand::Stop);
+        midiClock_.stop();
+        if (player_ != nullptr) player_->clear();
+        midiCommandCount = 0;
+        emitMidiPanic();
     }
     const bool clockValid = midiClock_.valid(midiSampleCursor_ + numSamples);
     midiClockActive_.store(clockValid, std::memory_order_relaxed);
@@ -1063,15 +1112,17 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
 
     if (arrangementEnabled) {
         const auto currentBar = jam_.currentBarIndex();
-        while (lastArrangementBarIndex_ < currentBar) {
-            const auto step = arrangement_.advanceBar();
-            ++lastArrangementBarIndex_;
-            if (step.sectionChanged) {
+        if (currentBar > lastArrangementBarIndex_) {
+            const auto advancedBars = static_cast<std::uint64_t>(currentBar) - static_cast<std::uint64_t>(lastArrangementBarIndex_);
+            const auto step = arrangement_.advanceBars(advancedBars);
+            lastArrangementBarIndex_ = currentBar;
+            if (advancedBars > 1) {
+                if (step.sectionChanged) { publishArrangementSection(); applyCurrentArrangementSection(); }
+            } else if (step.sectionChanged) {
                 enterArrangementSection(true);
             } else if (!arrangement_.empty() && arrangement_.current().autoAdvance &&
                        arrangement_.barsIntoSection() == arrangement_.current().bars - 1 &&
                        arrangement_.currentSectionIndex() + 1 < arrangement_.size()) {
-                // Lead into the next section: its transition may ask for a fill or a break on this final bar.
                 switch (arrangement_.section(arrangement_.currentSectionIndex() + 1).transition) {
                     case robodrummer::SectionTransition::Fill:
                         if (!jam_.state().fillRequested) jam_.requestFill(0.8f);
@@ -1080,9 +1131,9 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                     default: break;
                 }
             }
-        }
-        if (currentBar < lastArrangementBarIndex_)
+        } else if (currentBar < lastArrangementBarIndex_) {
             lastArrangementBarIndex_ = currentBar;
+        }
     }
 
     // ---- drummer character -------------------------------------------------------------------------------------
@@ -1320,7 +1371,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     }
 
     const auto pending = pendingUiCommands_.exchange(0, std::memory_order_acquire);
-    for (int bit = 0; bit < kCommandCount; ++bit)
+    for (int bit = 0; !midiFailSafe && bit < kCommandCount; ++bit)
         if ((pending & (1u << static_cast<unsigned>(bit))) != 0)
             handleCommand(static_cast<robodrummer::MidiCommand>(bit), arrangementEnabled);
     for (std::size_t i = 0; i < midiCommandCount; ++i)
@@ -1335,7 +1386,16 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     const bool waitingToJoin = settings.mode != robodrummer::LeadershipMode::DrummerLeads && !adaptiveJoined_;
     std::array<robodrummer::DrumEvent, 128> events{};
     std::size_t eventCount = 0;
-    if (hostStopped || waitingToJoin) {
+    if (midiSafetyStopped_ && hostPositionAvailable) {
+        if (transportStopped) midiSafetyHostStopSeen_ = true;
+        else if (midiSafetyHostStopSeen_) {
+            midiSafetyStopped_ = false;
+            midiSafetyHostStopSeen_ = false;
+            jam_.apply(rd::MidiCommand::Resume);
+        }
+    }
+    if (midiSafetyStopped_) jam_.apply(rd::MidiCommand::Stop);
+    if (hostStopped || waitingToJoin || midiSafetyStopped_) {
         if (practiceSessionWanted_) practiceNeedsResume_ = true; // the next running block re-plans the count-in
     } else if (practiceSessionWanted_ && practice_.isActive()) {
         eventCount = processJamWithPractice(numSamples, events.data(), events.size(), rhythm.beatConfidence, arrangementEnabled);
@@ -1427,8 +1487,13 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             const int note = midiNoteFor(events[i].instrument);
             const int outChannel = rawMidiOutChannel_ != nullptr ? juce::jlimit(1, 16, juce::roundToInt(rawMidiOutChannel_->load(std::memory_order_relaxed))) : 10;
             if (note >= 0 && numSamples > 0) {
-                midiOut_.addEvent(juce::MidiMessage::noteOn(outChannel, note, events[i].velocity), offset);
-                midiOut_.addEvent(juce::MidiMessage::noteOff(outChannel, note), juce::jmin(numSamples - 1, offset + 1));
+                if (midiPolicy.admitOutput(3, rd::MidiOutputClass::Generated) &&
+                    midiPolicy.admitOutput(3, rd::MidiOutputClass::Generated)) {
+                    midiOut_.addEvent(juce::MidiMessage::noteOn(outChannel, note, events[i].velocity), offset);
+                    midiOut_.addEvent(juce::MidiMessage::noteOff(outChannel, note), juce::jmin(numSamples - 1, offset + 1));
+                } else {
+                    midiFailSafe = true;
+                }
             }
         }
         if (events[i].sequence != kClickTag && midiNoteFor(events[i].instrument) >= 0)
@@ -1493,7 +1558,18 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             if (outR != nullptr) outR[n] += r;
         }
     }
-    outputPeak_.store(outPeak, std::memory_order_relaxed);
+    if (midiFailSafe) {
+        midiSafetyStopped_ = true;
+        midiSafetyHostStopSeen_ = false;
+        jam_.apply(rd::MidiCommand::Stop);
+        midiClock_.stop();
+        midiClockActive_.store(false, std::memory_order_relaxed);
+        if (player_ != nullptr) player_->clear();
+        buffer.clear();
+        drummerStopped_.store(true, std::memory_order_relaxed);
+        emitMidiPanic();
+    }
+    outputPeak_.store(midiFailSafe ? 0.0f : outPeak, std::memory_order_relaxed);
     // Copy instead of swapWith: a swap hands our pre-sized buffer to the host and leaves us with whatever (possibly tiny)
     // buffer the host owned, so the next block's addEvent could allocate on the audio thread.
     midi.clear();
@@ -1699,10 +1775,12 @@ void RoboDrummerAudioProcessor::feedRiffLock(int numSamples, bool trackerLocked)
     const auto advanceTo = [&](long long bar) {
         if (riffBar_ < 0 || bar < riffBar_) { riffBar_ = bar; return; } // first block, or a seek / loop wrap: no bar to commit
         int guard = 0;
-        while (riffBar_ < bar) {
+        while (riffBar_ < bar && guard < 8) {
             ++riffBar_;
-            if (guard++ < 8) { riffLock_.endBar(); committed = true; } // silent bars decay the histogram; a long gap needs no more
+            ++guard;
+            riffLock_.endBar(); committed = true;
         }
+        riffBar_ = bar; // eight decay updates suffice, irrespective of seek distance
     };
     for (std::size_t i = 0; i < blockOnsetCount_; ++i) {
         long long bar = 0; double phase = 0.0;
@@ -1721,14 +1799,16 @@ void RoboDrummerAudioProcessor::feedRiffLock(int numSamples, bool trackerLocked)
 
 // ---- Auto Setup ------------------------------------------------------------------------------------------------------
 void RoboDrummerAudioProcessor::startAutoSetup(float seconds) {
+    const auto transaction = lockNonRealtimeStateChange();
     if (autoSetup_.state() == robodrummer::AutoSetupState::Listening) return;
-    autoSetupUndo_.clear();
+    clearAutoSetupUndo();
     autoSetup_.start(seconds);
 }
 
-void RoboDrummerAudioProcessor::cancelAutoSetup() { autoSetup_.cancel(); }
+void RoboDrummerAudioProcessor::cancelAutoSetup() { const auto transaction = lockNonRealtimeStateChange(); autoSetup_.cancel(); }
 
 void RoboDrummerAudioProcessor::finalizeAutoSetupIfReady() {
+    const auto transaction = lockNonRealtimeStateChange();
     if (autoSetup_.state() == robodrummer::AutoSetupState::Analyzing) autoSetup_.finalize();
 }
 
@@ -1750,13 +1830,19 @@ robodrummer::AutoSetupSnapshot RoboDrummerAudioProcessor::getAutoSetupCurrentVal
 }
 
 // Writes the masked fields through the host-notifying API, one change gesture per parameter (message thread).
-void RoboDrummerAudioProcessor::writeAutoSetupSnapshot(const robodrummer::AutoSetupSnapshot& v, std::uint32_t mask) {
+bool RoboDrummerAudioProcessor::writeAutoSetupSnapshot(const robodrummer::AutoSetupSnapshot& v, std::uint32_t mask,
+                                                       std::uint64_t expectedGeneration) {
     namespace ids = robodrummer::ParamIDs;
-    const auto write = [this](const char* id, float plain) {
+    bool valid = true;
+    const auto current = [&] { return autoSetup_.generation() == expectedGeneration; };
+    const auto write = [&](const char* id, float plain) {
+        if (!valid || !current()) { valid = false; return; }
         if (auto* parameter = parameters_.getParameter(id)) {
             parameter->beginChangeGesture();
-            parameter->setValueNotifyingHost(parameter->convertTo0to1(plain));
+            // Host notifications may reenter state restoration on this thread.
+            if (current()) parameter->setValueNotifyingHost(parameter->convertTo0to1(plain));
             parameter->endChangeGesture();
+            valid = current();
         }
     };
     if (mask & robodrummer::kAsInputGain) write(ids::inputGain, v.inputGainDb);
@@ -1770,27 +1856,34 @@ void RoboDrummerAudioProcessor::writeAutoSetupSnapshot(const robodrummer::AutoSe
     if (mask & robodrummer::kAsBpm) write(ids::bpm, v.bpm);
     if (mask & robodrummer::kAsStyle) write(ids::jamStyle, static_cast<float>(static_cast<int>(v.jamStyle)));
     if (mask & robodrummer::kAsIntensity) write(ids::intensity, v.intensity);
+    return valid && current();
 }
 
 bool RoboDrummerAudioProcessor::applyAutoSetup() {
+    const auto transaction = lockNonRealtimeStateChange();
     if (autoSetup_.state() != robodrummer::AutoSetupState::Done || autoSetup_.result().status != robodrummer::AutoSetupStatus::Ok) return false;
     return applyAutoSetup(autoSetup_.result().proposal);
 }
 
 bool RoboDrummerAudioProcessor::applyAutoSetup(const robodrummer::AutoSetupProposal& selected) {
+    const auto transaction = lockNonRealtimeStateChange();
+    if (!autoSetup_.accepts(selected)) return false;
     const auto mask = robodrummer::appliedMask(selected);
     if (mask == 0) return false;
     const auto current = getAutoSetupCurrentValues();
     autoSetupUndo_.capture(current, selected);
-    writeAutoSetupSnapshot(robodrummer::applyProposal(selected, current), mask);
+    if (!writeAutoSetupSnapshot(robodrummer::applyProposal(selected, current), mask, selected.generation)) return false;
+    autoSetupUndoGeneration_.store(selected.generation, std::memory_order_release);
     return true;
 }
 
 bool RoboDrummerAudioProcessor::undoAutoSetup() {
-    if (!autoSetupUndo_.available()) return false;
+    const auto transaction = lockNonRealtimeStateChange();
+    if (!canUndoAutoSetup()) return false;
     const auto mask = autoSetupUndo_.mask();
     const auto restored = autoSetupUndo_.restore(getAutoSetupCurrentValues());
-    writeAutoSetupSnapshot(restored, mask);
+    if (!writeAutoSetupSnapshot(restored, mask, getAutoSetupGeneration())) return false;
+    clearAutoSetupUndo();
     return true;
 }
 
@@ -2034,6 +2127,7 @@ void RoboDrummerAudioProcessor::drainParameterToggles() {
 }
 
 void RoboDrummerAudioProcessor::handleCommand(robodrummer::MidiCommand command, bool arrangementEnabled) noexcept {
+    if (command == robodrummer::MidiCommand::Resume) midiSafetyStopped_ = false;
     using C = robodrummer::MidiCommand;
     switch (command) {
         case C::SoloSupport: coordinatorSoloCuePending_ = true; return;
@@ -2185,12 +2279,12 @@ juce::ValueTree RoboDrummerAudioProcessor::createMidiMapState() const {
         map.appendChild(node, nullptr);
     }
     for (int note = 0; note < 128; ++note) {
-        const int command = midiLearn_.commandForNote(note, midiLearn_.channelForNote(note));
-        if (command < 0) continue;
+        const auto binding = midiLearn_.noteBindingForNote(note);
+        if (binding.command < 0) continue;
         juce::ValueTree node("Note");
         node.setProperty("note", note, nullptr);
-        node.setProperty("command", command, nullptr);
-        node.setProperty("channel", midiLearn_.channelForNote(note), nullptr);
+        node.setProperty("command", binding.command, nullptr);
+        node.setProperty("channel", binding.channel, nullptr);
         map.appendChild(node, nullptr);
     }
     return map;
@@ -2225,6 +2319,7 @@ void RoboDrummerAudioProcessor::resetMidiMappingsToDefault() {
 }
 
 void RoboDrummerAudioProcessor::getStateInformation(juce::MemoryBlock& destData) {
+    const auto transaction = lockNonRealtimeStateChange();
     auto state = parameters_.copyState();
     state.setProperty("stateVersion", StateVersion, nullptr);
     state.setProperty("userKitPath", getUserKitFolder().getFullPathName(), nullptr);
@@ -2258,6 +2353,9 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
     if (xml == nullptr) return;
     const auto state = juce::ValueTree::fromXml(*xml);
     if (!state.isValid()) return;
+    if (!state.hasType(parameters_.state.getType()) && !state.hasType("RoboDrummerState")) return;
+    const auto transaction = lockNonRealtimeStateChange();
+    invalidateAutoSetup(); // accepted state replaces transient proposals before any parameter changes
 
     namespace ids = robodrummer::ParamIDs;
     juce::ValueTree arrangementSource;
@@ -2299,13 +2397,13 @@ void RoboDrummerAudioProcessor::setStateInformation(const void* data, int sizeIn
         return;
     }
     sanitiseParameters();
-    autoSetupUndo_.clear(); // an Auto Setup undo never survives a state restore
     // A practice session is runtime state: it never resumes from a saved session (the settings do).
     for (const char* id : { ids::practiceEnabled, ids::pracLoopOn })
         if (auto* parameter = parameters_.getParameter(id)) parameter->setValueNotifyingHost(0.0f);
     syncAllParametersToAtomics();
     applyArrangementState(arrangementSource);
     requestKitReload();
+    updateHostDisplay(juce::AudioProcessorListener::ChangeDetails{}.withProgramChanged(true));
 }
 
 // ---------------------------------------------------------------------------------------------------------------

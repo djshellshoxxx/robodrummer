@@ -47,3 +47,15 @@ See INSTALL.md inside each package. Verify downloads with `SHA256SUMS.txt`.
 * Windows: `-windows-x64.zip` or the `-setup.exe` installer
 * macOS Apple silicon: `-mac-arm64.zip`; Intel: `-mac-x64.zip`
 * Linux: `-linux-x64.tar.gz`
+
+
+## Source hardening (2026-10-31)
+
+- Bound dense/long MIDI input and extreme arrangement seeks; retain Stop/voice safety without callback allocation or sampler destruction.
+- Sanitize imported floating-point audio, bound kit decoding memory and apply mixer changes to ringing voices smoothly.
+- Publish coherent MIDI bindings; keep analysis finite and predicted beat-in-bar advancing through rests.
+- Validate preset slices transactionally and invalidate stale Learn My Playing reviews/Undo across preset and host-state replacement.
+- Validate complete numeric menu paste, balance host gestures, guard detached drum-map actions and honor platform reduced motion with frozen, manually refreshed onset presentation.
+- Add offline fixture ingestion/metrics, native Windows qualification, pinned CLAP reporting, archive inspection, isolated installer smoke and fail-closed signing preparation.
+
+These are source changes, not a published release. Real recordings, physical DAW/device/screen-reader acceptance and paid signing/notarization remain outstanding; see [QA](QA.md).

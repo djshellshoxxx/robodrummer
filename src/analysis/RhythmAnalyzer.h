@@ -212,9 +212,11 @@ private:
         state_.tempoConfidence = targetConfidence;
 
         const double period = 60.0 / std::max(45.0, state_.tempoBpm);
+        long long currentBeat = beatCounter_;
         if (std::isfinite(phaseAnchorSeconds_)) {
             const double beats = (nowSeconds - phaseAnchorSeconds_) / period;
             const double floorBeats = std::floor(beats);
+            currentBeat += static_cast<long long>(floorBeats);
             state_.beatPhase = beats - floorBeats;
             if (state_.beatPhase < 0.0) state_.beatPhase += 1.0;
             state_.predictedNextBeatSeconds = phaseAnchorSeconds_ + (floorBeats + 1.0) * period;
@@ -223,7 +225,7 @@ private:
             state_.predictedNextBeatSeconds = nowSeconds + period;
         }
 
-        const auto bar = downbeat_.state();
+        const auto bar = downbeat_.stateAt(currentBeat);
         state_.meterNumerator = bar.meterNumerator;
         state_.beatInBar = bar.currentBeatInBar;
         state_.downbeatConfidence = bar.downbeatConfidence;

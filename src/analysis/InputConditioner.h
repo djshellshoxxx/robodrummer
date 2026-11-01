@@ -61,6 +61,10 @@ public:
                 case InputMode::AutoSum: default: x = right != nullptr ? 0.5 * (static_cast<double>(left[i]) + right[i]) : left[i]; break;
             }
             if (!std::isfinite(x)) x = 0.0;
+            // This is the analysis copy only. Leave generous headroom above
+            // full scale, but bound the input before persistent filter state
+            // and gain can turn finite host garbage into nonfinite floats.
+            x = std::clamp(x, -1.0e4, 1.0e4);
             // DC blocker then high-pass (transposed direct form II).
             const double dc = x - dcX_ + 0.995 * dcY_;
             dcX_ = x; dcY_ = dc;

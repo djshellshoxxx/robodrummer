@@ -28,6 +28,9 @@ public:
     // Factory presets first, then user presets alphabetically.
     static std::vector<PresetEntry> list(PresetType type);
     static bool load(RoboDrummerAudioProcessor& processor, PresetType type, const PresetEntry& entry);
+    // Real file-import boundary. Validation completes before any live state or
+    // pending Auto Setup changes; absent legacy type/version mean requested type/v1.
+    static bool loadUserFile(RoboDrummerAudioProcessor& processor, PresetType type, const juce::File& file);
     static bool saveUser(RoboDrummerAudioProcessor& processor, PresetType type, const juce::String& name);
     static bool deleteUser(PresetType type, const juce::String& name);
 

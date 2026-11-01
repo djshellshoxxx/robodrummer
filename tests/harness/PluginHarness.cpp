@@ -24,8 +24,19 @@
 #include <set>
 #include <new>
 #include "../smf_test_parser.h"
+#include "../audio/KitImportChecks.h"
+#include "KitLoaderLifecycleTests.h"
+#include "MidiViewParity.h"
+#include "ParameterTextRoundtripTests.h"
+#include "PresetRegressionTests.h"
+#include "ProcessorSafetyChecks.h"
+#include "StateTransactionChecks.h"
+#include "ParamMenuChecks.h"
+#include "DrumMapLifetimeChecks.h"
+#include "EditorAccessibilityChecks.h"
 
 static std::atomic<long long> gAllocations{0};
+static std::atomic<long long> gDeallocations{0};
 static std::atomic<bool> gCounting{false};
 static thread_local bool tCountThisThread = false; // only the thread that armed the audit is counted (worker threads may be alive)
 static bool gAuditRun = false; // Rig::run counts allocations inside processBlock only
@@ -34,38 +45,66 @@ static bool gAuditRun = false; // Rig::run counts allocations inside processBloc
 #if defined(__GLIBC__)
 #define RD_ALLOC_HOOK_MALLOC 1
 static bool gTraceAllocations = false;   // RD_ALLOC_TRACE=1: print the call stack of the first audited allocations (symbolise with addr2line)
+static thread_local bool tInsideAllocatorHook = false;
 extern "C" {
 void* __libc_malloc(std::size_t);
 void* __libc_calloc(std::size_t, std::size_t);
 void* __libc_realloc(void*, std::size_t);
+void __libc_free(void*);
 }
 static void rdNoteAllocation() {
-    static thread_local bool inside = false;
-    if (inside) return;
-    inside = true;
+    if (tInsideAllocatorHook) return;
+    tInsideAllocatorHook = true;
     if (gAllocations.fetch_add(1) < 3 && gTraceAllocations) {
         void* frames[16];
         const int count = backtrace(frames, 16);
         backtrace_symbols_fd(frames, count, 2);
         if (write(2, "----- audited allocation\n", 25) < 0) {}
     }
-    inside = false;
+    tInsideAllocatorHook = false;
 }
 extern "C" {
 void* malloc(std::size_t n) { if (gCounting.load(std::memory_order_relaxed) && tCountThisThread) rdNoteAllocation(); return __libc_malloc(n); }
 void* calloc(std::size_t a, std::size_t b) { if (gCounting.load(std::memory_order_relaxed) && tCountThisThread) rdNoteAllocation(); return __libc_calloc(a, b); }
 void* realloc(void* p, std::size_t n) { if (gCounting.load(std::memory_order_relaxed) && tCountThisThread) rdNoteAllocation(); return __libc_realloc(p, n); }
+void free(void* p) {
+    if (p != nullptr && !tInsideAllocatorHook && gCounting.load(std::memory_order_relaxed) && tCountThisThread)
+        gDeallocations.fetch_add(1, std::memory_order_relaxed);
+    __libc_free(p);
+}
 }
 static inline void rdCountNew() {}
+static inline void rdCountDelete(void*) {}
 #else
 static inline void rdCountNew() { if (gCounting.load(std::memory_order_relaxed) && tCountThisThread) gAllocations.fetch_add(1); }
+static inline void rdCountDelete(void* p) {
+    if (p != nullptr && gCounting.load(std::memory_order_relaxed) && tCountThisThread)
+        gDeallocations.fetch_add(1, std::memory_order_relaxed);
+}
 #endif
 void* operator new(std::size_t n) { rdCountNew(); if (void* p = std::malloc(n)) return p; throw std::bad_alloc(); }
 void* operator new[](std::size_t n) { rdCountNew(); if (void* p = std::malloc(n)) return p; throw std::bad_alloc(); }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete[](void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t) noexcept { std::free(p); }
-void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p) noexcept { rdCountDelete(p); std::free(p); }
+void operator delete[](void* p) noexcept { rdCountDelete(p); std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { rdCountDelete(p); std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { rdCountDelete(p); std::free(p); }
+
+// The callback is invoked synchronously without std::function allocation. Only
+// the audited thread contributes; restore prior state before any diagnostics.
+template <class Operation>
+bool rdAuditNoHeap(Operation&& operation) {
+    const auto allocations = gAllocations.load(std::memory_order_relaxed);
+    const auto deallocations = gDeallocations.load(std::memory_order_relaxed);
+    const bool previousCounting = gCounting.load(std::memory_order_relaxed);
+    const bool previousThread = tCountThisThread;
+    tCountThisThread = true;
+    gCounting.store(true, std::memory_order_relaxed);
+    operation();
+    gCounting.store(previousCounting, std::memory_order_relaxed);
+    tCountThisThread = previousThread;
+    return allocations == gAllocations.load(std::memory_order_relaxed)
+        && deallocations == gDeallocations.load(std::memory_order_relaxed);
+}
 
 namespace {
 int gFailures = 0;
@@ -93,6 +132,7 @@ struct TestPlayHead final : juce::AudioPlayHead {
 
 struct Result {
     double peak{0.0};
+    double callbackTotalMs{0.0}, callbackWorstMs{0.0};
     int noteOns{0};
     std::array<int, 128> notes{};
     int drumNoteOns() const { return noteOns; }
@@ -104,6 +144,7 @@ struct Rig {
     TestPlayHead playHead;
     long long blockIndex{0};
     int numChannels{2};
+    bool measureCallbackTime{false};
 
     explicit Rig(bool withAux = false) {
         processor.setPlayHead(&playHead);
@@ -146,7 +187,13 @@ struct Rig {
             midiFor(blockIndex, midi);
             playHead.ppq += kBlock / kSampleRate * playHead.bpm / 60.0;
             if (gAuditRun) { tCountThisThread = true; gCounting = true; }
+            const auto callbackStart = measureCallbackTime ? juce::Time::getMillisecondCounterHiRes() : 0.0;
             processor.processBlock(buffer, midi);
+            if (measureCallbackTime) {
+                const auto callbackMs = juce::Time::getMillisecondCounterHiRes() - callbackStart;
+                result.callbackTotalMs += callbackMs;
+                result.callbackWorstMs = std::max(result.callbackWorstMs, callbackMs);
+            }
             if (gAuditRun) { gCounting = false; tCountThisThread = false; }
             for (const auto m : midi) {
                 const auto msg = m.getMessage();
@@ -188,6 +235,41 @@ void pumpUntil(Predicate&& ready) {
 }
 
 void section(const char* name) { std::printf("[%s]\n", name); }
+
+void testFirstWaveSafetyRegressions() {
+    section("allocator audit hooks count each allocation and free once");
+    const auto allocations = gAllocations.load();
+    const auto deallocations = gDeallocations.load();
+    // Volatile function pointers keep this characterization from being
+    // optimized into an elided new/delete expression.
+    void* (*volatile allocate)(std::size_t) = ::operator new;
+    void (*volatile release)(void*) = ::operator delete;
+    CHECK(!rdAuditNoHeap([&] { void* p = allocate(64); release(p); }));
+    CHECK(gAllocations.load() - allocations == 1);
+    CHECK(gDeallocations.load() - deallocations == 1);
+    CHECK(rdAuditNoHeap([] {}));
+
+    section("raw MIDI classification matches pinned JUCE");
+    checkMidiViewParity([](bool equivalent) { CHECK(equivalent); });
+    state_transaction_checks::run([](bool ok, const char* detail) { CHECK_MSG(ok, "%s", detail); });
+    runProcessorSafetyChecks([](bool valid) { CHECK(valid); }, [](auto&& callback) { return rdAuditNoHeap(callback); });
+
+    const auto labelledCheck = [](bool valid, const juce::String& label) { CHECK_MSG(valid, "%s", label.toRawUTF8()); };
+    section("real WAV/AIFF import and aggregate sample storage");
+    robodrummer::test::runKitImportChecks(labelledCheck);
+    section("controlled real loader cancellation and production join");
+    robodrummer::tests::testKitLoaderLifecycle(labelledCheck);
+    const auto scratch = juce::File::getSpecialLocation(juce::File::tempDirectory)
+        .getNonexistentChildFile("robodrummer-safety-regressions", "", false);
+    struct Cleanup { juce::File directory; ~Cleanup() { directory.deleteRecursively(); } } cleanup{scratch};
+    CHECK(scratch.createDirectory().wasOk());
+    section("preset slice validation and stale proposal lifecycle");
+    preset_regressions::validation(scratch.getChildFile("presets"), labelledCheck);
+    preset_regressions::lifecycle(scratch.getChildFile("proposals"), labelledCheck);
+    section("actual host parameter text round trips");
+    RoboDrummerAudioProcessor processor;
+    parameter_text_regressions::roundTrips(processor, labelledCheck);
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 void testBasicPlayback() {
@@ -703,10 +785,12 @@ void testRealtimeAllocations() {
     // Warm-up: grows any lazily-sized internal storage once.
     rig.run(600, [](long long s) { return pluck(s, 110.0); }, midiFn);
     gAllocations = 0;
+    gDeallocations = 0;
     gAuditRun = true;
     rig.run(1500, [](long long s) { return pluck(s, 110.0); }, midiFn);
     gAuditRun = false;
     CHECK_MSG(gAllocations.load() == 0, "%lld allocations on the audio thread", gAllocations.load());
+    CHECK_MSG(gDeallocations.load() == 0, "%lld frees on the audio thread", gDeallocations.load());
 }
 
 void testCpuBudget() {
@@ -715,12 +799,14 @@ void testCpuBudget() {
     rig.param("leadershipMode", 2); rig.param("gain_room", -6.0f);
     rig.run(200, [](long long s) { return pluck(s, 120.0); }, [](long long, juce::MidiBuffer&) {});
     const int blocks = 4000;
+    rig.measureCallbackTime = true;
     const auto start = juce::Time::getMillisecondCounterHiRes();
-    rig.run(blocks, [](long long s) { return pluck(s, 120.0); }, [](long long, juce::MidiBuffer&) {});
+    const auto measured = rig.run(blocks, [](long long s) { return pluck(s, 120.0); }, [](long long, juce::MidiBuffer&) {});
     const double elapsedMs = juce::Time::getMillisecondCounterHiRes() - start;
     const double audioMs = blocks * kBlock / kSampleRate * 1000.0;
     const double load = elapsedMs / audioMs;
     std::printf("  processing load: %.2f%% of real time (%.1f ms for %.0f ms of audio)\n", load * 100.0, elapsedMs, audioMs);
+    std::printf("  actual callback: mean %.3f ms, worst observed %.3f ms (block deadline %.3f ms; shared-runner scheduling included)\n", measured.callbackTotalMs / blocks, measured.callbackWorstMs, 1000.0 * kBlock / kSampleRate);
     CHECK_MSG(load < 0.25, "load %.3f", load);
 }
 
@@ -1237,11 +1323,16 @@ void testAutoSetup() {
         juce::MemoryBlock blob; rig.processor.getStateInformation(blob);
         rig.processor.setStateInformation(blob.getData(), static_cast<int>(blob.getSize()));
         CHECK(!rig.processor.canUndoAutoSetup());
-        // ... and so does a preset load, and a new run.
-        CHECK(rig.processor.applyAutoSetup(result.proposal) && rig.processor.canUndoAutoSetup());
+        CHECK(!rig.processor.applyAutoSetup(result.proposal)); // state replacement invalidated this captured proposal
+        // Fresh results still apply and create Undo, which a successful preset load invalidates.
+        rig.processor.startAutoSetup();
+        renderAudio(rig, 1180, setupGuitar, kNoMidi, kNoBlockHook);
+        rig.processor.finalizeAutoSetupIfReady();
+        const auto fresh = rig.processor.getAutoSetupResult();
+        CHECK(rig.processor.applyAutoSetup(fresh.proposal) && rig.processor.canUndoAutoSetup());
         rig.processor.setCurrentProgram(1);
         CHECK(!rig.processor.canUndoAutoSetup());
-        CHECK(rig.processor.applyAutoSetup(result.proposal));
+        CHECK(!rig.processor.applyAutoSetup(fresh.proposal));
         rig.processor.startAutoSetup();
         CHECK(!rig.processor.canUndoAutoSetup());
         rig.processor.cancelAutoSetup();
@@ -1855,7 +1946,7 @@ struct RateRig {
     int block;
     long long sampleIndex{0};
     long long blockIndex{0};
-    long long allocations{0};
+    long long allocations{0}, deallocations{0};
     bool finite{true};
     double peak{0.0};
     int badMidi{0};
@@ -1890,9 +1981,9 @@ struct RateRig {
             hostMidi.clear();
             midiFor(blockIndex, hostMidi);
             playHead.ppq += block / sr * playHead.bpm / 60.0;
-            if (audit) { gAllocations = 0; tCountThisThread = true; gCounting = true; }
+            if (audit) { gAllocations = 0; gDeallocations = 0; tCountThisThread = true; gCounting = true; }
             processor.processBlock(buffer, hostMidi);
-            if (audit) { gCounting = false; tCountThisThread = false; allocations += gAllocations.load(); }
+            if (audit) { gCounting = false; tCountThisThread = false; allocations += gAllocations.load(); deallocations += gDeallocations.load(); }
             for (int c = 0; c < 2; ++c)
                 for (int i = 0; i < block; ++i) {
                     const float v = buffer.getSample(c, i);
@@ -1968,6 +2059,7 @@ void testFeatureInteractionsAndRealtime() {
         CHECK_MSG(!expectEngaged || (maxGr > 0.05f && limbRev > 0 && riffSeen && practiceSeen && autoMeterOn), "sr %.0f block %d: features were not exercised (GR %f limb %u riff %d practice %d meter %d)", cfg.sr, cfg.block, static_cast<double>(maxGr), limbRev, riffSeen, practiceSeen, autoMeterOn);
         CHECK_MSG(rig.badMidi == 0, "sr %.0f block %d: %d MIDI events outside the block", cfg.sr, cfg.block, rig.badMidi);
         CHECK_MSG(rig.allocations == 0, "sr %.0f block %d: %lld allocations inside processBlock with every feature on", cfg.sr, cfg.block, rig.allocations);
+        CHECK_MSG(rig.deallocations == 0, "sr %.0f block %d: %lld frees inside processBlock with every feature on", cfg.sr, cfg.block, rig.deallocations);
         pump(50);
     }
 }
@@ -2575,6 +2667,16 @@ void renderScreenshots(const juce::File& directory, int width, int height) {
 }
 } // namespace
 
+// Native peers are required for popup actions and accessibility providers.
+static void testNativeUiContracts() {
+    section("native menus, owned popups, accessibility and reduced motion");
+    RoboDrummerAudioProcessor processor;
+    const auto check = [](bool ok, const char* detail) { CHECK_MSG(ok, "%s", detail); };
+    robodrummer::test::runParamMenuChecks(processor, check);
+    robodrummer::test::runDrumMapLifetimeChecks(processor, check);
+    robodrummer::test::runReducedMotionChecks(check);
+}
+
 int main(int argc, char** argv) {
 #if defined(__GLIBC__)
     if (const char* trace = std::getenv("RD_ALLOC_TRACE")) gTraceAllocations = trace[0] == '1';
@@ -2587,9 +2689,10 @@ int main(int argc, char** argv) {
     rdui::EditorSettings::fileOverride() = juce::File::getSpecialLocation(juce::File::tempDirectory).getChildFile("robodrummer-ui-test").getChildFile("settings.xml");
     rdui::EditorSettings::fileOverride().getParentDirectory().createDirectory();
     rdui::EditorSettings::fileOverride().replaceWithText("<RoboDrummerSettings tourSeen=\"1\"/>");
-    bool uiOnly = false, featuresOnly = false;
+    bool uiOnly = false, featuresOnly = false, safetyOnly = false;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--ui-only") uiOnly = true;
     for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--features-only") featuresOnly = true;
+    for (int i = 1; i < argc; ++i) if (std::string(argv[i]) == "--safety-only") safetyOnly = true;
     for (int i = 1; i + 1 < argc; ++i) {
         if (std::string(argv[i]) == "--screenshots") screenshotDir = juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1]);
         if (std::string(argv[i]) == "--soak-minutes") soakMinutes = std::atof(argv[i + 1]);
@@ -2606,6 +2709,11 @@ int main(int argc, char** argv) {
         if (std::string(argv[i]) == "--dump-parameters") { dumpParameters(juce::File::getCurrentWorkingDirectory().getChildFile(argv[i + 1])); return 0; }
     }
 
+    if (safetyOnly) {
+        testFirstWaveSafetyRegressions();
+        std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
+        return gFailures == 0 ? 0 : 1;
+    }
     if (featuresOnly) {
         testPresetFuzz();
         testExtremeParameterFuzz();
@@ -2616,6 +2724,7 @@ int main(int argc, char** argv) {
     }
     if (uiOnly) {
         testEditorUi();
+        testNativeUiContracts();
         if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); }
         std::printf("\n%d checks, %d failures\n", gChecks, gFailures);
         return gFailures == 0 ? 0 : 1;
@@ -2650,7 +2759,9 @@ int main(int argc, char** argv) {
     testExtremeParameterFuzz();
     testLimbsWithTimeFeelAndRiffLock();
     testFeatureInteractionsAndRealtime();
+    testFirstWaveSafetyRegressions();
     testEditorUi();
+    testNativeUiContracts();
     testSoak(soakMinutes);
     if (screenshotDir != juce::File()) { renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); renderScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kMinWidth, RoboDrummerAudioProcessorEditor::kMinHeight); renderExtraScreenshots(screenshotDir, RoboDrummerAudioProcessorEditor::kDefaultWidth, RoboDrummerAudioProcessorEditor::kDefaultHeight); }
 

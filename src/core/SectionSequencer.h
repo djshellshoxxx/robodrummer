@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace robodrummer {
 
@@ -78,17 +79,38 @@ public:
     }
 
     [[nodiscard]] SectionAdvanceResult advanceBar() noexcept {
+        return advanceBars(1);
+    }
+
+    // Advance to the destination without replaying skipped section transitions.
+    // Each iteration enters a later section, so work is bounded by Capacity,
+    // even for a host seek of millions of bars. The caller owns transition cues.
+    [[nodiscard]] SectionAdvanceResult advanceBars(std::uint64_t bars) noexcept {
         SectionAdvanceResult result;
         result.enteredStyle = current().style;
         result.enteredIndex = currentIndex_;
         if (count_ == 0) return result;
 
-        ++barsIntoSection_;
-        const auto& section = sections_[currentIndex_];
-        if (!section.autoAdvance || barsIntoSection_ < section.bars)
-            return result;
+        while (bars > 0) {
+            const auto& section = sections_[currentIndex_];
+            if (!section.autoAdvance || currentIndex_ + 1 >= count_) {
+                // Manual and final sections hold indefinitely. Saturate the
+                // existing int API instead of wrapping on distant seeks.
+                const auto headroom = static_cast<std::uint64_t>(std::numeric_limits<int>::max() - barsIntoSection_);
+                barsIntoSection_ = bars >= headroom ? std::numeric_limits<int>::max()
+                                                   : barsIntoSection_ + static_cast<int>(bars);
+                break;
+            }
 
-        if (currentIndex_ + 1 < count_) {
+            // A live edit can shorten a section below its existing position;
+            // like advanceBar, enter its successor on the next bar in that case.
+            const auto untilNext = static_cast<std::uint64_t>(std::max(1, section.bars - barsIntoSection_));
+            if (bars < untilNext) {
+                barsIntoSection_ += static_cast<int>(bars);
+                break;
+            }
+
+            bars -= untilNext;
             ++currentIndex_;
             barsIntoSection_ = 0;
             result.sectionChanged = true;
