@@ -18,6 +18,10 @@ public:
     static constexpr int NoCommand = -1;
     static constexpr int DefaultChannel = 16;
     static constexpr int CommandCount = static_cast<int>(MidiCommand::CountInToggle) + 1;
+    struct NoteBinding {
+        int command{NoCommand};
+        int channel{DefaultChannel};
+    };
 
     MidiLearnMap() noexcept { clearAll(); resetNoteDefaults(); }
 
@@ -28,10 +32,10 @@ public:
     }
 
     void resetNoteDefaults() noexcept {
-        for (auto& v : noteToCommand_) v.store(NoCommand, std::memory_order_relaxed);
-        for (auto& v : noteChannel_) v.store(DefaultChannel, std::memory_order_relaxed);
-        for (int command = 0; command < CommandCount; ++command)
-            noteToCommand_[static_cast<std::size_t>(36 + command)].store(command, std::memory_order_relaxed);
+        for (std::size_t note = 0; note < noteBindings_.size(); ++note) {
+            const int command = note >= 36 && note < 36 + CommandCount ? static_cast<int>(note) - 36 : NoCommand;
+            noteBindings_[note].store(packBinding(command, DefaultChannel), std::memory_order_relaxed);
+        }
     }
 
     // ---- controller bindings ----
@@ -56,24 +60,33 @@ public:
     void bindNote(int note, int command, int channel = DefaultChannel) noexcept {
         if (note < 0 || note > 127 || command < 0 || command >= CommandCount) return;
         unbindCommand(command);
-        noteChannel_[static_cast<std::size_t>(note)].store(channel < 1 || channel > 16 ? DefaultChannel : channel, std::memory_order_relaxed);
-        noteToCommand_[static_cast<std::size_t>(note)].store(command, std::memory_order_relaxed);
+        noteBindings_[static_cast<std::size_t>(note)].store(
+            packBinding(command, channel < 1 || channel > 16 ? DefaultChannel : channel), std::memory_order_relaxed);
     }
     void unbindCommand(int command) noexcept {
-        for (auto& v : noteToCommand_) if (v.load(std::memory_order_relaxed) == command) v.store(NoCommand, std::memory_order_relaxed);
+        for (auto& value : noteBindings_) {
+            auto expected = value.load(std::memory_order_relaxed);
+            if (unpackBinding(expected).command == command)
+                value.compare_exchange_strong(expected, expected & ~0xffu, std::memory_order_relaxed);
+        }
+    }
+    // One load owns the pair. State capture must use this snapshot rather than
+    // reading channelForNote() and commandForNote() in separate operations.
+    [[nodiscard]] NoteBinding noteBindingForNote(int note) const noexcept {
+        return note < 0 || note > 127 ? NoteBinding{} :
+            unpackBinding(noteBindings_[static_cast<std::size_t>(note)].load(std::memory_order_relaxed));
     }
     // A note only triggers its command on the MIDI channel it was bound to (channel 16 for the defaults).
     [[nodiscard]] int commandForNote(int note, int channel) const noexcept {
-        if (note < 0 || note > 127) return NoCommand;
-        if (noteChannel_[static_cast<std::size_t>(note)].load(std::memory_order_relaxed) != channel) return NoCommand;
-        return noteToCommand_[static_cast<std::size_t>(note)].load(std::memory_order_relaxed);
+        const auto binding = noteBindingForNote(note);
+        return binding.channel == channel ? binding.command : NoCommand;
     }
     [[nodiscard]] int channelForNote(int note) const noexcept {
-        return note < 0 || note > 127 ? DefaultChannel : noteChannel_[static_cast<std::size_t>(note)].load(std::memory_order_relaxed);
+        return noteBindingForNote(note).channel;
     }
     [[nodiscard]] int noteForCommand(int command) const noexcept {
         for (int note = 0; note < 128; ++note)
-            if (noteToCommand_[static_cast<std::size_t>(note)].load(std::memory_order_relaxed) == command) return note;
+            if (noteBindingForNote(note).command == command) return note;
         return -1;
     }
 
@@ -107,9 +120,17 @@ public:
     }
 
 private:
+    static_assert(CommandCount < 255);
+    static_assert(std::atomic<std::uint32_t>::is_always_lock_free);
+    // Low byte: command + 1 (zero means unbound). High byte: MIDI channel.
+    static constexpr std::uint32_t packBinding(int command, int channel) noexcept {
+        return static_cast<std::uint32_t>(command + 1) | (static_cast<std::uint32_t>(channel) << 8);
+    }
+    static constexpr NoteBinding unpackBinding(std::uint32_t value) noexcept {
+        return { static_cast<int>(value & 0xffu) - 1, static_cast<int>((value >> 8) & 0xffu) };
+    }
     std::array<std::atomic<int>, 128> ccToTarget_{};
-    std::array<std::atomic<int>, 128> noteToCommand_{};
-    std::array<std::atomic<int>, 128> noteChannel_{};
+    std::array<std::atomic<std::uint32_t>, 128> noteBindings_{};
     std::atomic<int> armedTarget_{NoTarget};
     std::atomic<int> armedCommand_{NoCommand};
 };

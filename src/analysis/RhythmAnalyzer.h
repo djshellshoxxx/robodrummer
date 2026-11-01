@@ -86,6 +86,14 @@ public:
     [[nodiscard]] std::array<RichTempoHypothesis, 3> richHypotheses() const noexcept { return tempo_.richHypotheses(lastUpdateSeconds_); }
     [[nodiscard]] double loopTempoBpm() const noexcept { return pllPeriod_ > 0.0 ? 60.0 / pllPeriod_ : 0.0; }
     [[nodiscard]] float loopConsistency() const noexcept { return pllConsistency_; }
+    // Strictly future accepted PLL grid point, relative to the end of the most recent analysis block.
+    // A rejected subdivision onset cannot move this forecast. Negative means the loop has no anchor yet.
+    [[nodiscard]] double samplesUntilNextLoopBeat() const noexcept {
+        if (!(pllPeriod_ > 0.0) || !std::isfinite(phaseAnchorSeconds_)) return -1.0;
+        double phaseSeconds = std::fmod(static_cast<double>(sampleCursor_) / sampleRate_ - phaseAnchorSeconds_, pllPeriod_);
+        if (phaseSeconds < 0.0) phaseSeconds += pllPeriod_;
+        return (pllPeriod_ - phaseSeconds) * sampleRate_;
+    }
     // Onsets found by the most recent processBlock call (for the analysis display).
     [[nodiscard]] std::size_t lastBlockOnsetCount() const noexcept { return blockOnsetCount_; }
     [[nodiscard]] const OnsetEvent& lastBlockOnset(std::size_t index) const noexcept { return blockOnsets_[index]; }
@@ -212,9 +220,11 @@ private:
         state_.tempoConfidence = targetConfidence;
 
         const double period = 60.0 / std::max(45.0, state_.tempoBpm);
+        long long currentBeat = beatCounter_;
         if (std::isfinite(phaseAnchorSeconds_)) {
             const double beats = (nowSeconds - phaseAnchorSeconds_) / period;
             const double floorBeats = std::floor(beats);
+            currentBeat += static_cast<long long>(floorBeats);
             state_.beatPhase = beats - floorBeats;
             if (state_.beatPhase < 0.0) state_.beatPhase += 1.0;
             state_.predictedNextBeatSeconds = phaseAnchorSeconds_ + (floorBeats + 1.0) * period;
@@ -223,7 +233,7 @@ private:
             state_.predictedNextBeatSeconds = nowSeconds + period;
         }
 
-        const auto bar = downbeat_.state();
+        const auto bar = downbeat_.stateAt(currentBeat);
         state_.meterNumerator = bar.meterNumerator;
         state_.beatInBar = bar.currentBeatInBar;
         state_.downbeatConfidence = bar.downbeatConfidence;

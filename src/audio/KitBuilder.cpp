@@ -8,8 +8,6 @@
 #include "core/Mixer.h"
 #include <algorithm>
 #include <cmath>
-#include <map>
-#include <tuple>
 
 namespace robodrummer {
 namespace {
@@ -136,7 +134,8 @@ Sample synthSample(DrumInstrument instrument, double sr, const Voicing& v) {
     return s;
 }
 
-void configure(DrumSamplePlayer& player) {
+void configure(DrumSamplePlayer& player, double sampleRate) {
+    player.setSampleRate(sampleRate);
     // Open and closed hats share a choke group; each mixer channel feeds its aux output bus.
     player.setChokeGroup(DrumInstrument::ClosedHat, 1);
     player.setChokeGroup(DrumInstrument::OpenHat, 1);
@@ -168,12 +167,6 @@ std::vector<float> resample(const float* data, int numSamples, double sourceRate
     return out;
 }
 
-struct LoadedFile {
-    int layer{0};
-    int roundRobin{0};
-    juce::String name;
-    Sample sample;
-};
 } // namespace
 
 std::unique_ptr<DrumSamplePlayer> KitBuilder::buildBuiltIn(int kitIndex, double sampleRate) {
@@ -181,88 +174,114 @@ std::unique_ptr<DrumSamplePlayer> KitBuilder::buildBuiltIn(int kitIndex, double 
     auto player = std::make_unique<DrumSamplePlayer>();
     for (int i = 0; i <= static_cast<int>(DrumInstrument::Clap); ++i)
         installSynth(*player, static_cast<DrumInstrument>(i), sampleRate, voicing);
-    configure(*player);
+    configure(*player, sampleRate);
     return player;
 }
 
 std::unique_ptr<DrumSamplePlayer> KitBuilder::loadUserFolder(const juce::File& folder, double sampleRate, juce::String& report) {
-    auto player = std::make_unique<DrumSamplePlayer>();
+    return loadUserFolder(folder, sampleRate, report, kMaxKitDecodedBytes);
+}
+
+std::unique_ptr<DrumSamplePlayer> KitBuilder::loadUserFolder(const juce::File& folder, double sampleRate,
+                                                         juce::String& report, std::size_t maxDecodedBytes) {
+    if (!std::isfinite(sampleRate) || sampleRate < 8000.0 || sampleRate > 768000.0) sampleRate = 44100.0;
+    auto player = buildBuiltIn(0, sampleRate);
     if (!folder.isDirectory()) {
         report = "Kit folder not found - using the built-in Studio kit.";
-        return buildBuiltIn(0, sampleRate);
+        return player;
+    }
+
+    // Keep only the lexical-first file for each supported instrument/layer/RR
+    // slot. Enumeration order cannot change the selected kit, and duplicates
+    // never allocate decoded buffers or crowd out another instrument's budget.
+    std::array<juce::File, kKitSlotCount> selected;
+    std::size_t duplicates = 0, unsupported = 0, invalid = 0, overBudget = 0;
+    for (const auto& entry : juce::RangedDirectoryIterator(folder, false, "*", juce::File::findFiles)) {
+        const auto file = entry.getFile();
+        const auto ext = file.getFileExtension().toLowerCase();
+        if (ext != ".wav" && ext != ".aif" && ext != ".aiff" && ext != ".flac") continue;
+        const auto info = parseKitFileName(file.getFileNameWithoutExtension().toStdString());
+        const auto slot = info ? kitSlotIndex(*info) : std::optional<std::size_t>{};
+        if (!slot) { ++unsupported; continue; }
+        auto& chosen = selected[*slot];
+        if (chosen != juce::File{}) ++duplicates;
+        if (chosen == juce::File{} || file.getFileName().compare(chosen.getFileName()) < 0) chosen = file;
     }
 
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
-
-    std::map<int, std::vector<LoadedFile>> byInstrument;
+    std::array<Sample, kKitSlotCount> samples;
+    std::array<bool, kKitSlotCount> loaded{};
+    KitImportBudget budget(std::min(maxDecodedBytes, kMaxKitDecodedBytes), player->sampleStorageBytes());
     int fileCount = 0;
-    int skipped = 0;
-    auto files = folder.findChildFiles(juce::File::findFiles, false);
-    files.sort();
-    for (const auto& file : files) {
-        const auto ext = file.getFileExtension().toLowerCase();
-        if (ext != ".wav" && ext != ".aif" && ext != ".aiff" && ext != ".flac") continue;
-        const auto info = parseKitFileName(file.getFileNameWithoutExtension().toStdString());
-        if (!info) { ++skipped; continue; }
-        std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(file));
-        if (reader == nullptr || reader->lengthInSamples <= 0) { ++skipped; continue; }
-
-        const auto length = static_cast<int>(std::min<juce::int64>(reader->lengthInSamples, static_cast<juce::int64>(reader->sampleRate * 20.0)));
-        juce::AudioBuffer<float> buffer(static_cast<int>(std::min<unsigned>(reader->numChannels, 2)), length);
-        reader->read(&buffer, 0, length, 0, true, buffer.getNumChannels() > 1);
-
-        LoadedFile loaded;
-        loaded.layer = info->layer;
-        loaded.roundRobin = info->roundRobin;
-        loaded.name = file.getFileName();
-        loaded.sample.left = resample(buffer.getReadPointer(0), length, reader->sampleRate, sampleRate);
-        if (buffer.getNumChannels() > 1)
-            loaded.sample.right = resample(buffer.getReadPointer(1), length, reader->sampleRate, sampleRate);
-        byInstrument[static_cast<int>(info->instrument)].push_back(std::move(loaded));
+    for (std::size_t slot = 0; slot < selected.size(); ++slot) {
+        if (selected[slot] == juce::File{}) continue;
+        std::unique_ptr<juce::AudioFormatReader> reader(formats.createReaderFor(selected[slot]));
+        if (reader == nullptr) { ++invalid; continue; }
+        const unsigned channels = std::min(reader->numChannels, 2u);
+        const auto plan = planKitRead(reader->lengthInSamples, reader->sampleRate, sampleRate, channels);
+        if (!plan) { ++invalid; continue; }
+        if (!budget.fits(plan->sourceBytes, plan->targetBytes)) { ++overBudget; continue; }
+        juce::AudioBuffer<float> buffer(static_cast<int>(channels), plan->sourceFrames);
+        if (!reader->read(&buffer, 0, plan->sourceFrames, 0, true, channels > 1)) { ++invalid; continue; }
+        // Validate before interpolation and before any stateful room processing.
+        for (unsigned channel = 0; channel < channels; ++channel)
+            for (int frame = 0; frame < plan->sourceFrames; ++frame)
+                buffer.setSample(static_cast<int>(channel), frame,
+                    DrumSamplePlayer::sanitiseSampleValue(buffer.getSample(static_cast<int>(channel), frame)));
+        auto& sample = samples[slot];
+        sample.left = resample(buffer.getReadPointer(0), plan->sourceFrames, reader->sampleRate, sampleRate);
+        if (channels > 1)
+            sample.right = resample(buffer.getReadPointer(1), plan->sourceFrames, reader->sampleRate, sampleRate);
+        budget.retain(plan->targetBytes);
+        loaded[slot] = true;
         ++fileCount;
     }
 
     int loadedInstruments = 0;
     juce::StringArray missing;
-    for (int i = 0; i <= static_cast<int>(DrumInstrument::Clap); ++i) {
-        const auto instrument = static_cast<DrumInstrument>(i);
-        auto found = byInstrument.find(i);
-        if (found == byInstrument.end()) {
-            installSynth(*player, instrument, sampleRate, kVoicings[0]);
-            // Only the core pieces are worth listing as missing.
-            if (i <= static_cast<int>(DrumInstrument::FloorTom)) {
+    constexpr auto slotsPerInstrument = DrumSamplePlayer::MaxVelocityLayers * DrumSamplePlayer::MaxRoundRobinVariants;
+    for (std::size_t instrument = 0; instrument < DrumSamplePlayer::InstrumentCount; ++instrument) {
+        std::array<bool, DrumSamplePlayer::MaxVelocityLayers> loadedLayers{};
+        std::size_t layerCount = 0;
+        for (std::size_t layer = 0; layer < loadedLayers.size(); ++layer) {
+            for (std::size_t rr = 0; rr < DrumSamplePlayer::MaxRoundRobinVariants; ++rr)
+                loadedLayers[layer] = loadedLayers[layer] || loaded[instrument * slotsPerInstrument
+                    + layer * DrumSamplePlayer::MaxRoundRobinVariants + rr];
+            if (loadedLayers[layer]) ++layerCount;
+        }
+        if (layerCount == 0) {
+            if (instrument <= static_cast<std::size_t>(DrumInstrument::FloorTom)) {
                 static const char* names[] = { "kick", "snare", "closed hat", "open hat", "ride", "crash", "high tom", "mid tom", "floor tom" };
-                missing.add(names[i]);
+                missing.add(names[instrument]);
             }
             continue;
         }
-        auto& entries = found->second;
-        std::stable_sort(entries.begin(), entries.end(), [](const LoadedFile& a, const LoadedFile& b) {
-            return std::tie(a.layer, a.roundRobin, a.name) < std::tie(b.layer, b.roundRobin, b.name);
-        });
-        std::vector<int> layers;
-        for (const auto& e : entries)
-            if (std::find(layers.begin(), layers.end(), e.layer) == layers.end()) layers.push_back(e.layer);
-        const auto layerCount = std::min<std::size_t>(layers.size(), DrumSamplePlayer::MaxVelocityLayers);
-        for (std::size_t li = 0; li < layerCount; ++li) {
-            const float lo = static_cast<float>(li) / static_cast<float>(layerCount);
-            const float hi = static_cast<float>(li + 1) / static_cast<float>(layerCount);
+        const auto drum = static_cast<DrumInstrument>(instrument);
+        std::size_t outputLayer = 0;
+        for (std::size_t layer = 0; layer < loadedLayers.size(); ++layer) {
+            if (!loadedLayers[layer]) continue;
+            const float lo = static_cast<float>(outputLayer) / static_cast<float>(layerCount);
+            const float hi = static_cast<float>(outputLayer + 1) / static_cast<float>(layerCount);
             bool first = true;
-            for (auto& e : entries) {
-                if (e.layer != layers[li]) continue;
-                if (first) { player->setVelocityLayer(instrument, li, lo, hi, std::move(e.sample)); first = false; }
-                else (void) player->addRoundRobinSample(instrument, li, std::move(e.sample));
+            for (std::size_t rr = 0; rr < DrumSamplePlayer::MaxRoundRobinVariants; ++rr) {
+                const auto slot = instrument * slotsPerInstrument + layer * DrumSamplePlayer::MaxRoundRobinVariants + rr;
+                if (!loaded[slot]) continue;
+                if (first) { player->setVelocityLayer(drum, outputLayer, lo, hi, std::move(samples[slot])); first = false; }
+                else (void) player->addRoundRobinSample(drum, outputLayer, std::move(samples[slot]));
             }
+            ++outputLayer;
         }
         ++loadedInstruments;
     }
-    configure(*player);
 
     report = juce::String(fileCount) + " samples on " + juce::String(loadedInstruments) + " instruments loaded from " + folder.getFileName();
-    if (skipped > 0) report << "; " << skipped << " unrecognised file(s) ignored";
+    if (fileCount == 0) report = "No recognisable WAV/AIFF drum samples loaded - using the built-in Studio kit.";
+    if (duplicates > 0) report << "; " << juce::String(static_cast<juce::int64>(duplicates)) << " duplicate slot file(s) skipped";
+    if (unsupported > 0) report << "; " << juce::String(static_cast<juce::int64>(unsupported)) << " unsupported name/slot file(s) skipped";
+    if (invalid > 0) report << "; " << juce::String(static_cast<juce::int64>(invalid)) << " invalid/unreadable file(s) skipped";
+    if (overBudget > 0) report << "; " << juce::String(static_cast<juce::int64>(overBudget)) << " file(s) exceed decoded-memory budget";
     if (!missing.isEmpty()) report << ". Built-in sounds fill in: " << missing.joinIntoString(", ");
-    if (fileCount == 0) report = "No recognisable WAV/AIFF drum samples found - using the built-in Studio kit. Name files like kick.wav, snare_v1.wav, closedhat_rr2.wav.";
     return player;
 }
 

@@ -5,6 +5,8 @@
 set -euo pipefail
 platform="${1:?platform}"; version="${2:?version}"; build="${3:?build dir}"; out="${4:?out dir}"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Validate version/platform and signing policy before removing any staging path.
+signing_mode="$(python3 "$root/scripts/ci/signing.py" policy "$platform" "$version")"
 mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 src="$build/RoboDrummer_artefacts/Release"
@@ -38,10 +40,6 @@ case "$platform" in
   mac-*)
     need "$src/Standalone/RoboDrummer.app"; cp -R "$src/Standalone/RoboDrummer.app" "$stage/"
     if [ -d "$src/AU/RoboDrummer.component" ]; then cp -R "$src/AU/RoboDrummer.component" "$stage/"; fi
-    # Ad-hoc sign so Apple-silicon macs will run the (non-notarised) bundles.
-    for b in "$stage"/*.vst3 "$stage"/*.clap "$stage"/*.component "$stage"/*.app; do
-      if [ -e "$b" ]; then codesign --force --deep -s - "$b"; fi
-    done
     ;;
   linux-*) need "$src/Standalone/RoboDrummer"; cp "$src/Standalone/RoboDrummer" "$stage/"; chmod +x "$stage/RoboDrummer" ;;
   *) echo "::error::Unknown platform $platform"; exit 1 ;;
@@ -51,6 +49,10 @@ cp "$root/LICENSE" "$root/COPYRIGHT-TRADEMARK.md" "$root/docs/INSTALL.md" \
 need "$build/third-party-notices/JUCE-LICENSE.md"
 need "$build/third-party-notices/CLAP-LICENSE"
 cp -R "$build/third-party-notices" "$stage/"
+
+# Sign final staged bytes before archiving or hashing. Missing/partial signing
+# configuration is rejected for stable Windows/macOS builds.
+python3 "$root/scripts/ci/signing.py" stage "$platform" "$version" "$stage"
 
 cd "$out"
 hash_file() {
@@ -78,9 +80,17 @@ if [ "${platform%%-*}" = "windows" ]; then
   fi
   if [ -z "$iscc" ]; then echo "::error::ISCC.exe (Inno Setup) not found"; exit 1; fi
   win() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else echo "$1"; fi; }
+  sign_args=()
+  if [ "$signing_mode" = signed ]; then
+    # Inno substitutes $q with a quote and $f with the quoted file being signed.
+    python_exe="$(command -v python3)"
+    sign_command="\$q$(win "$python_exe")\$q \$q$(win "$root/scripts/ci/signing.py")\$q windows-file \$q$version\$q \$f"
+    sign_args=("/DEnableSigning=1" "/Srd_signing=$sign_command")
+  fi
   # MSYS_NO_PATHCONV stops git-bash mangling the /D switches.
   MSYS_NO_PATHCONV=1 "$iscc" "/DAppVersion=$version" "/DAppNumericVersion=${version%%-*}" "/DStageDir=$(win "$out/$name")" \
-    "/DOutDir=$(win "$out")" "/DOutName=$name-setup" "$(win "$root/installer/RoboDrummer.iss")"
+    "/DOutDir=$(win "$out")" "/DOutName=$name-setup" "${sign_args[@]}" "$(win "$root/installer/RoboDrummer.iss")"
+  python3 "$root/scripts/ci/signing.py" verify-windows-file "$version" "$out/$name-setup.exe"
   hash_file "$name-setup.exe"
 fi
 rm -rf "$name"

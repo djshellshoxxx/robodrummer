@@ -1,47 +1,50 @@
 # RoboDrummer QA record
 
-Status: **BETA READY candidate** — see "Known blockers" before calling it RELEASE READY (CDL §9). Nothing below is claimed unless it was run and the result checked.
+The source is under validation; **BETA READY and RELEASE READY are not claimed**. Automated results do not replace real guitar, DAW, device, screen-reader or physical clean-machine acceptance.
 
-Follow-up capture robustness validation: [2026-10-22 record](feature-audit/CAPTURE_QA_2026-10-22.md). This does not close the manual/platform blockers below.
+## Current automated evidence — 2026-11-01
 
-## Automated suites (run in CI on every push)
+Consolidated source at local integration340befbe66ea2faf58b9b45898cb9f154f45134c includes bounded MIDI/seek callbacks, safe sample import and ownership, analysis/preset fixes, native UI contracts and fixture/packaging infrastructure. This dated local evidence is distinct from the current-source native CI and merge record on [PR36](https://github.com/djshellshoxxx/robodrummer/pull/36).
 
-| Suite | What it covers | Result on this branch |
-|---|---|---|
-| Core suite (`ctest`, 53 tests, JUCE-free) | clock, scheduler, grooves, 22 styles × odd meters, humanization, fills, personalities, tracking fixtures, performance features, follow controls, MIDI tools, input conditioning, mixer, kit parsing, allocation audit of the core | 53/53 pass (Linux); 53/53 also under AddressSanitizer + UndefinedBehaviorSanitizer (2026-10-20 audit) |
-| Tracking fixtures (`tests/test_tracking_fixtures.cpp`) | steady 70–190 BPM, ramp, missing events, syncopation, silence/re-acquire, half/double ambiguity, sudden change (re-locks in ~2 s), noisy jittered transients, noise-only | pass |
-| Plug-in harness (`RoboDrummerHarness`, headless, real `AudioProcessor`) | playback and output modes, tempo sources (host, internal, MIDI clock start/stop), MIDI commands + learn, guitarist-leads acquisition/accelerando, mixer/room/aux outputs, WAV kit loading, state/preset round trips, programmed arrangement, calibration, **SPEC 37 beta scenario**, allocation audit, CPU budget, block sizes (1–70000, zero-length), 11–192 kHz, NaN/Inf, 400 mutated states + 100 garbage blobs, 40 randomised parameter/MIDI/block-size rounds, 5-minute simulated soak | 2330 checks, 0 failures (2026-10-20 audit, Linux); includes the all-features real-time audit, preset and extreme-parameter fuzzing, per-parameter UI/tooltip/handler checks |
-| Editor snapshots | all 9 tabs rendered to PNG (`--screenshots`) | rendered and reviewed |
-| pluginval 1.0.3 / 1.0.4 | VST3 at the **maximum strictness (10)**: scan, cold/warm open, editor (also while processing), audio processing at 44.1/48/96 kHz × 64–1024 blocks, state save/restore, automation, parameter thread safety, background-thread state, bus layouts (all buses enabled/disabled), parameter fuzzing | **SUCCESS** on Linux x64 (run locally under Xvfb: 1.0.4 on 2026-10-14, 1.0.3 on 2026-10-20 against the 0.4.0 build, 25 test groups, exit 0). Windows/Linux runs are also performed by the release workflow (non-blocking step, report in CI artifact `pluginval-*`). |
+| Check | Observed result |
+|---|---|
+| Release portable core plus fixture integration | 70/70 passed; actual production-runner fixture methods execute through CTest. Missing optional real corpus explicitly reports SKIPPED. |
+| Core ASan, LeakSanitizer and UBSan | Earlier full68/68 passed; final7/7 new/affected core checks passed with leak detection enabled, including timeline, preference and fixture follow-ups. This does not claim native processor sanitizer coverage. |
+| Python release, signing, archive, fixture and platform adapters | 59/59 passed with the production fixture runner supplied; no skipped engine methods. |
+| Actual processor harness and native UI contracts | 55,521 checks, zero failures; includes concurrent/reentrant host state, long/cumulative SysEx, replaced prebuffered host MIDI, command/critical overflow, huge PPQ seeks, sampler retirement, float WAV/AIFF imports, preset slices, parameter text, native popup actions, all nine tabs and duplicate accessibility providers. |
+| 30-minute simulated soak | Passed in 15.8 seconds, drummer tempo 112.6–120.2 BPM. This is simulated audio duration. |
+| Historical default audio/MIDI | Full harness passed the unchanged pinned reference from source `102dc33f6bc3202a114a28bb0482e24138b18f8d`. Four-capture final native comparison remains a CI gate. |
+| Native formats | Linux VST3, CLAP, Standalone and harness built. Final Windows and both native macOS architectures must pass current-source PR CI before merge. |
+| Linux VST3 pluginval 1.0.3, strictness 10 | Passed on the rebuilt Linux plugin; exit 0. |
+| CLAP validator 0.4.1 | 44 rows: 31 success, 9 upstream skips, 3 failed, 1 warning. See the explicit contract blocker below. This is separate from VST3 pluginval. |
+| Workflow/script checks | Both workflows pass actionlint 1.7.12; signing/archive adapter regressions pass. Native archives/checksums and isolated Windows install/uninstall run in artifact-only PR CI. |
 
-Measured on the development container (1 core of a shared VM): audio-thread cost ≈ **0.7 %** of real time at 48 kHz / 512 samples with aux buses, room reverb and guitar following; **0 allocations** per block after warm-up, counted at `malloc` level on Linux (JUCE containers included) with every 0.4.0 feature enabled, at 44.1 to 192 kHz and blocks of 1 to 40000 samples. On Windows and macOS only `operator new` is counted. Set `RD_ALLOC_TRACE=1` to print stacks of audited allocations (symbolise with `addr2line`).
+Oversized adaptive entry now predicts an accepted future PLL beat and translates audio/MIDI/capture/practice together; fixed scratch storage streams the full host buffer. The focused production suite passed65checks with zero allocations/frees, including a36116/40000 entry beyond scratch capacity and an extra offbeat rejection. Nine ordinary audio/MIDI comparisons were byte-identical across64/512/1024 samples and all three leadership modes.
 
-Run locally:
+The final callback timing measurement was0.052ms mean and0.583ms worst observed against a10.667ms block deadline on a shared runner; whole fixture processing was0.68% of real time.
+
+The Linux callback audit interposes `malloc/calloc/realloc/free` and counts only the armed audio thread. Other platforms count `new/delete`; that does not instrument every framework C allocation. Audits cover both allocations and frees, with a self-test proving hooks count once. Host-owned MIDI storage must be prebuffered to 8,192 bytes; see [architecture contracts](ARCHITECTURE.md#bounded-host-adapters-and-ownership-contracts). Allocation assertions remain enabled and the historical reference is unchanged.
+
+## Explicit CLAP state-contract blocker
+
+The display/value conversion failures and missing host parameter rescan have been repaired. The remaining three upstream state-reproducibility cases expect every writable parameter to restore its saved value. Established RoboDrummer behavior and its regression tests force Practice Mode and the practice-loop runtime switch off on state load, preventing a saved session from starting practice. The current report exposes Practice Mode On → Off.
+
+CLAP has no transient-parameter flag that communicates this policy. Marking the control readonly/nonautomatable, changing restore behavior or excluding validator tests would change the contract or conceal the result. Preserve the raw failing report and nonzero exit. Clean CLAP state conformance needs a separately specified compatibility decision; it is **not a credential or environment blocker**. Native PR CI runs this separate diagnostic with its failure visible and retains the raw report/logs; it is nonblocking under the existing [host-matrix specification](specs/12-host-matrix-qa.md), which requires CLAP results to be recorded separately from mandatory VST3/AU validation. A compatible transient-state policy is not specified. A green native job does not mean these CLAP cases passed. The command itself keeps its nonzero exit:
 
 ```bash
-cmake -S . -B build -DROBODRUMMER_BUILD_JUCE=ON && cmake --build build
-ctest --test-dir build -C Release --output-on-failure
-./build/RoboDrummerHarness_artefacts/Release/RoboDrummerHarness --soak-minutes 30   # longer soak
+python3 -B scripts/ci/clap_validate.py build/RoboDrummer_artefacts/Release/CLAP/RoboDrummer.clap --output build/qa/clap-validator.json
 ```
 
-## Manual / host checks
+## Fixture and launch gates
 
-| Check | Status |
+`tools/generate_synthetic_fixtures.py` creates original, explicitly synthetic clips. `tools/check_fixtures.py` validates PCM, schema, license, manifest/hash, rate/block coverage and annotations before measuring production analysis. Raw and octave-folded tempo error are separate. Synthetic pluck/ramp/jump ambiguities remain visible failures; successful ingestion is not tracker qualification. A missing optional corpus skips locally; `ROBODRUMMER_FIXTURES_REQUIRED=1` makes missing/corrupt data fail. No authorized real recording corpus is available.
+
+| Remaining acceptance | Status |
 |---|---|
-| Standalone starts and the editor renders (Xvfb) | done (harness snapshots) |
-| Real DAW load/save/automate/resize/close (Reaper, Ableton Live, FL Studio, Cubase, Bitwig) | **not run** |
-| Real guitar fixtures (clean, distorted, palm-muted, strumming, arpeggios, blues, funk, irregular time) | **not run** — no licensed recordings in the repository |
-| AU validation (`auval`) | **not run** (macOS only) |
-| Windows installer on a clean machine | **not run** (built by CI; install test pending) |
+| Licensed real-guitar corpus, consent, independent annotations and spec 11 qualification | Blocked on supplied/verified recordings and reviewers. Synthetic results cannot satisfy it. |
+| Real DAW load/save/automate/resize/close across the supported host matrix | Human/device qualification outstanding. |
+| Physical audio/MIDI device latency, long sessions, OS screen readers and host key forwarding | Human/device qualification outstanding; native peers/accessibility providers are automated coverage only. |
+| Paid Windows/macOS signatures and macOS notarization | Credentials/certificates unavailable. Adapters fail on partial configuration; stable packages cannot silently become unsigned. CI prerelease packages are explicitly unsigned/ad-hoc and are artifacts only. |
+| Windows installer on a physical clean machine | Outstanding; isolated hosted-runner install/uninstall is a separate automated check. |
 
-## Known blockers for RELEASE READY
-
-1. Real-guitar fixtures and tracker tuning (SPEC 36).
-2. Host-matrix testing and an `auval`/`pluginval` pass recorded per platform.
-3. Code signing / notarisation.
-
-## Known limitations
-
-* Tempo tracking is validated on synthetic transients; real guitar may need threshold tuning (the ANALYSIS tab and Calibration are there for that).
-* Analysis runs on the audio thread (cheap and allocation-free, but not a separate worker as in SPEC 33's suggested layout).
-* Changing the number of Jam Style choices (6 → 22) means old *automation lanes* of that parameter map to different styles; saved sessions are unaffected.
+Analysis remains on the audio thread under ADR 10. ADR 16 transient enhancement and spec 14 learned models retain their real-guitar gates. Historical [capture QA](feature-audit/CAPTURE_QA_2026-10-22.md) and prior release CI do not qualify later source changes.

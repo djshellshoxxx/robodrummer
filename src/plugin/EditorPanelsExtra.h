@@ -171,9 +171,10 @@ public:
         close_.setComponentID("autoSetupClose"); again_.setComponentID("autoSetupAgain");
         cancel_.onClick = [this] { dismiss(); };
         close_.onClick = [this] { dismiss(); };
-        again_.onClick = [this] { mode_ = Mode::Hidden; processor_.clearAutoSetupUndo(); begin(); };
+        again_.onClick = [this] { if (dismissIfStale()) return; mode_ = Mode::Hidden; processor_.clearAutoSetupUndo(); begin(); };
         apply_.onClick = [this] { applySelected(); };
         undo_.onClick = [this] {
+            if (dismissIfStale()) return;
             if (processor_.undoAutoSetup()) showMessage(Mode::Applied, "Restored the settings Auto Setup changed.");
             else showMessage(Mode::Applied, "Nothing to undo.");
             layoutForMode();
@@ -192,12 +193,13 @@ public:
     void begin() {
         if (isOpen()) return;                       // the card blocks a second run while it is open
         processor_.startAutoSetup(10.0f);
+        generation_ = processor_.getAutoSetupGeneration();
         mode_ = Mode::Running;
         layoutForMode();
         grabKeyboardFocus();
     }
     void dismiss() {
-        if (mode_ == Mode::Running) processor_.cancelAutoSetup();
+        if (mode_ == Mode::Running && generation_ == processor_.getAutoSetupGeneration()) processor_.cancelAutoSetup();
         mode_ = Mode::Hidden;
         setVisible(false);
         if (onClosed) onClosed();
@@ -205,6 +207,7 @@ public:
 
     void refresh() {
         if (mode_ == Mode::Hidden) return;
+        if (dismissIfStale()) return;
         processor_.finalizeAutoSetupIfReady();
         if (mode_ == Mode::Running) {
             const auto state = processor_.getAutoSetupState();
@@ -268,6 +271,11 @@ private:
         return defs;
     }
     static constexpr int kFieldCount = 11;
+    bool dismissIfStale() {
+        if (generation_ == processor_.getAutoSetupGeneration()) return false;
+        dismiss();
+        return true;
+    }
     static juce::String modeName(robodrummer::LeadershipMode m) {
         static const char* names[] = { "Drummer Leads", "Hybrid", "Guitarist Leads" };
         return names[juce::jlimit(0, 2, static_cast<int>(m))];
@@ -289,6 +297,12 @@ private:
             showMessage(Mode::Failed, "I heard you, but nothing needs changing: your current settings already fit.");
         } else {
             mode_ = Mode::Review;
+            const auto reviewGeneration = generation_;
+            juce::Component::SafePointer<AutoSetupCard> safe(this);
+            apply_.onClick = [safe, reviewGeneration] {
+                if (safe == nullptr || safe->generation_ != reviewGeneration) return;
+                safe->applySelected();
+            };
             const auto current = processor_.getAutoSetupCurrentValues();
             const auto* defs = fields();
             for (int i = 0; i < kFieldCount; ++i) {
@@ -309,6 +323,8 @@ private:
     }
 
     void applySelected() {
+        if (mode_ != Mode::Review) return;
+        if (dismissIfStale()) return;
         auto selected = proposal_;
         const auto* defs = fields();
         for (int i = 0; i < kFieldCount; ++i)
@@ -368,6 +384,7 @@ private:
     struct Row { juce::ToggleButton check; bool has{false}; };
     RoboDrummerAudioProcessor& processor_;
     Mode mode_{Mode::Hidden};
+    std::uint64_t generation_{0};
     Proposal proposal_{};
     juce::Label heading_, prompt_, progressText_, peakText_, message_;
     BarMeter progress_, peak_;

@@ -12,7 +12,9 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 run_gui() {
-  if [ "$platform" = linux ]; then xvfb-run -a "$@"; else "$@"; fi
+  if [ "$platform" = linux ]; then
+    xvfb-run -a -s '-screen 0 1280x1024x24 -extension MIT-SHM' bash "$root/scripts/ci/with_window_manager.sh" "$@"
+  else "$@"; fi
 }
 case "$platform" in
   linux) suffix=""; pv_archive="pluginval_Linux.zip" ;;
@@ -43,6 +45,11 @@ else
   echo "::error::Required RoboDrummerHarness target missing from CMakeLists.txt"
   exit 1
 fi
+
+# CLAP's explicit diagnostic runner is scripts/ci/clap_validate.py. Its state
+# reproducibility contract conflicts with intentionally transient practice
+# controls; retain the failing report separately (docs/QA.md), never exclude
+# those tests or turn their failures into a passing native format gate.
 
 if [ "$platform" = mac ]; then
   # Catch wrong-architecture cache/output reuse before registering an Audio Unit.

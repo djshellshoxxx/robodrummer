@@ -138,17 +138,70 @@ juce::StringArray idsFor(PresetType type, RoboDrummerAudioProcessor& processor) 
 
 // Preset files are plain XML users can edit or share: non-finite values are ignored (the parameter keeps its value)
 // and out-of-range ones are clamped, so a damaged file can never put NaN/Inf on the audio thread.
-void setPlain(RoboDrummerAudioProcessor& processor, const juce::String& id, float plain) {
-    if (!std::isfinite(plain)) return;
+bool setPlain(RoboDrummerAudioProcessor& processor, const juce::String& id, float plain, std::uint64_t generation) {
+    if (processor.getAutoSetupGeneration() != generation) return false;
+    if (!std::isfinite(plain)) return true;
     if (auto* parameter = processor.getParameters().getParameter(id)) {
         parameter->beginChangeGesture();
-        parameter->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, parameter->convertTo0to1(plain)));
+        if (processor.getAutoSetupGeneration() == generation)
+            parameter->setValueNotifyingHost(juce::jlimit(0.0f, 1.0f, parameter->convertTo0to1(plain)));
         parameter->endChangeGesture();
     }
+    return processor.getAutoSetupGeneration() == generation;
 }
 
 bool includesArrangement(PresetType type) noexcept { return type == PresetType::Jam || type == PresetType::Song; }
 bool includesKitPath(PresetType type) noexcept { return type == PresetType::Jam || type == PresetType::Kit; }
+
+// Match a complete decimal token before JUCE's locale-independent conversion.
+// Its permissive getDoubleValue() alone accepts prefixes such as "0.5tail".
+bool numericToken(const juce::String& input) {
+    const auto text = input.trim();
+    if (text.isEmpty()) return false;
+    auto p = text.getCharPointer();
+    if (*p == '+' || *p == '-') ++p;
+    const juce::String unsignedText(p);
+    if (unsignedText.equalsIgnoreCase("nan") || unsignedText.equalsIgnoreCase("inf") || unsignedText.equalsIgnoreCase("infinity")) return true;
+    bool digits = false;
+    while (*p >= '0' && *p <= '9') { digits = true; ++p; }
+    if (*p == '.') {
+        ++p;
+        while (*p >= '0' && *p <= '9') { digits = true; ++p; }
+    }
+    if (!digits) return false;
+    if (*p == 'e' || *p == 'E') {
+        ++p;
+        if (*p == '+' || *p == '-') ++p;
+        bool exponent = false;
+        while (*p >= '0' && *p <= '9') { exponent = true; ++p; }
+        if (!exponent) return false;
+    }
+    return p.isEmpty();
+}
+
+bool validArrangement(const juce::XmlElement& xml, juce::ValueTree& result) {
+    result = juce::ValueTree::fromXml(xml);
+    if (!result.isValid()) return false;
+    constexpr const char* numericFields[] { "Style", "Bars", "Intensity", "Feel", "Transition", "Personality", "FillFreq", "Leadership", "Follow" };
+    for (int slot = 0; slot < RoboDrummerAudioProcessor::ArrangementSlotCount; ++slot) {
+        const auto prefix = juce::String("arr") + juce::String(slot);
+        for (const auto* field : numericFields) {
+            const juce::Identifier id(prefix + field);
+            if (!result.hasProperty(id)) continue;
+            const auto text = result.getProperty(id).toString();
+            if (!numericToken(text)) return false;
+            // Retain historical NaN/Inf tolerance without passing them through integer casts.
+            if (!std::isfinite(static_cast<float>(text.getDoubleValue()))) result.removeProperty(id, nullptr);
+        }
+        for (const auto* field : { "Enabled", "Auto" }) {
+            const juce::Identifier id(prefix + field);
+            if (!result.hasProperty(id)) continue;
+            const auto text = result.getProperty(id).toString().trim();
+            if (text != "0" && text != "1" && !text.equalsIgnoreCase("true") && !text.equalsIgnoreCase("false")) return false;
+        }
+    }
+    return true;
+}
 } // namespace
 
 const char* PresetManager::typeName(PresetType type) noexcept {
@@ -183,11 +236,14 @@ std::vector<PresetEntry> PresetManager::list(PresetType type) {
 }
 
 bool PresetManager::load(RoboDrummerAudioProcessor& processor, PresetType type, const PresetEntry& entry) {
-    processor.clearAutoSetupUndo(); // a stale Auto Setup undo must not overwrite what the preset sets
     if (entry.factory) {
         for (const auto& preset : factoryPresets()) {
             if (preset.type != type || entry.name != preset.name) continue;
-            for (const auto& value : preset.values) setPlain(processor, value.id, value.value);
+            const auto transaction = processor.lockNonRealtimeStateChange();
+            processor.invalidateAutoSetup();
+            const auto generation = processor.getAutoSetupGeneration();
+            for (const auto& value : preset.values)
+                if (!setPlain(processor, value.id, value.value, generation)) return false;
             if (preset.song != 0) applySong(processor, preset.song);
             return true;
         }
@@ -195,13 +251,45 @@ bool PresetManager::load(RoboDrummerAudioProcessor& processor, PresetType type, 
     }
 
     const auto file = userDirectory(type).getChildFile(sanitiseName(entry.name) + ".rdpreset");
+    return loadUserFile(processor, type, file);
+}
+
+bool PresetManager::loadUserFile(RoboDrummerAudioProcessor& processor, PresetType type, const juce::File& file) {
+    const auto index = static_cast<int>(type);
+    if (index < 0 || index >= kPresetTypeCount) return false;
     const auto xml = juce::XmlDocument::parse(file);
     if (xml == nullptr || !xml->hasTagName("RoboDrummerPreset")) return false;
-    for (auto* node : xml->getChildWithTagNameIterator("Param"))
-        setPlain(processor, node->getStringAttribute("id"), static_cast<float>(node->getDoubleAttribute("value")));
-    if (includesArrangement(type))
-        if (auto* arrangement = xml->getChildByName("Arrangement"))
-            processor.applyArrangementState(juce::ValueTree::fromXml(*arrangement));
+    // Every version emitted by RoboDrummer writes type/version=1. Older hand-edited
+    // overlays omitted these attributes, so missing values remain compatible.
+    if (xml->hasAttribute("type") && xml->getStringAttribute("type") != typeName(type)) return false;
+    if (xml->hasAttribute("version") && xml->getStringAttribute("version").trim() != "1") return false;
+    const auto allowed = idsFor(type, processor);
+    juce::StringArray seen;
+    std::vector<std::pair<juce::String, float>> values;
+    for (auto* node : xml->getChildWithTagNameIterator("Param")) {
+        if (!node->hasAttribute("id") || !node->hasAttribute("value")) return false;
+        const auto id = node->getStringAttribute("id");
+        if (!allowed.contains(id)) continue; // forward-compatible unknown fields and other preset slices
+        if (seen.contains(id) || !numericToken(node->getStringAttribute("value"))) return false;
+        seen.add(id);
+        const auto value = static_cast<float>(node->getDoubleAttribute("value"));
+        if (std::isfinite(value)) values.emplace_back(id, value); // historical nonfinite-ignore policy
+    }
+    juce::ValueTree arrangement;
+    if (includesArrangement(type)) {
+        int count = 0;
+        for (auto* node : xml->getChildWithTagNameIterator("Arrangement")) {
+            if (++count > 1 || !validArrangement(*node, arrangement)) return false;
+        }
+    }
+    // Commit only after the complete file has validated. A failed load must
+    // preserve parameters, arrangement, the pending proposal and its Undo.
+    const auto transaction = processor.lockNonRealtimeStateChange();
+    processor.invalidateAutoSetup();
+    const auto generation = processor.getAutoSetupGeneration();
+    for (const auto& [id, value] : values)
+        if (!setPlain(processor, id, value, generation)) return false;
+    if (arrangement.isValid()) processor.applyArrangementState(arrangement);
     if (includesKitPath(type) && xml->hasAttribute("userKitPath")) {
         processor.setUserKitFolder(juce::File(xml->getStringAttribute("userKitPath")));
         processor.requestKitReload();

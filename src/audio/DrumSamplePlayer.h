@@ -16,13 +16,38 @@ public:
     static constexpr std::size_t MaxBuses = 5;
     static constexpr std::size_t MaxVelocityLayers = 4;
     static constexpr std::size_t MaxRoundRobinVariants = 4;
+    // Float files may contain arbitrary IEEE values. Keep +24 dBFS headroom
+    // while bounding interpolation and the fixed 64-voice/4x-gain mix.
+    static constexpr float MaxSampleMagnitude = 16.0f;
+
+    [[nodiscard]] static float sanitiseSampleValue(float value) noexcept {
+        return std::isfinite(value) ? std::clamp(value, -MaxSampleMagnitude, MaxSampleMagnitude) : 0.0f;
+    }
 
     struct Sample {
         std::vector<float> left;
         std::vector<float> right;
     };
 
+    // Mixer changes crossfade existing voices over 5 ms of output time.
+    // Configure off the render thread when preparing a sampler instance.
+    void setSampleRate(double sampleRate) noexcept {
+        if (!std::isfinite(sampleRate)) sampleRate = 44100.0;
+        mixRampSamples_ = static_cast<int>(std::ceil(std::clamp(sampleRate, 8000.0, 768000.0) * 0.005));
+    }
+
+    // Loader-side accounting only; includes mono/stereo storage in every slot.
+    [[nodiscard]] std::size_t sampleStorageBytes() const noexcept {
+        std::size_t bytes = 0;
+        for (const auto& instrument : instruments_)
+            for (const auto& layer : instrument.layers)
+                for (const auto& sample : layer.variants)
+                    bytes += (sample.left.capacity() + sample.right.capacity()) * sizeof(float);
+        return bytes;
+    }
+
     void setSample(DrumInstrument instrument, Sample sample) {
+        sanitiseSample(sample);
         auto& set = instruments_[index(instrument)];
         set.layers = {};
         set.roundRobinCounters.fill(0);
@@ -40,6 +65,8 @@ public:
                           Sample sample) {
         if (layerIndex >= MaxVelocityLayers)
             return;
+
+        sanitiseSample(sample);
 
         auto& set = instruments_[index(instrument)];
         auto& layer = set.layers[layerIndex];
@@ -62,6 +89,7 @@ public:
         if (!layer.configured || layer.variantCount >= MaxRoundRobinVariants)
             return false;
 
+        sanitiseSample(sample);
         layer.variants[layer.variantCount++] = std::move(sample);
         return true;
     }
@@ -74,8 +102,21 @@ public:
         if (!std::isfinite(gain)) gain = 1.0f;
         if (!std::isfinite(pan)) pan = 0.0f;
         auto& set = instruments_[index(instrument)];
-        set.gain = std::clamp(gain, 0.0f, 4.0f);
-        set.pan = std::clamp(pan, -1.0f, 1.0f);
+        gain = std::clamp(gain, 0.0f, 4.0f);
+        pan = std::clamp(pan, -1.0f, 1.0f);
+        if (set.gain == gain && set.pan == pan) return;
+        set.gain = gain;
+        set.pan = pan;
+        const float leftPan = pan > 0.0f ? 1.0f - pan : 1.0f;
+        const float rightPan = pan < 0.0f ? 1.0f + pan : 1.0f;
+        for (auto& voice : voices_) {
+            if (!voice.active || voice.instrument != instrument) continue;
+            voice.targetLeftGain = voice.velocity * gain * leftPan;
+            voice.targetRightGain = voice.velocity * gain * rightPan;
+            voice.leftGainStep = (voice.targetLeftGain - voice.leftGain) / static_cast<float>(mixRampSamples_);
+            voice.rightGainStep = (voice.targetRightGain - voice.rightGain) / static_cast<float>(mixRampSamples_);
+            voice.mixSamplesRemaining = mixRampSamples_;
+        }
     }
 
     // Output bus for this instrument's voices (0 = main mix; 1+ = aux outputs that fall back to main when not rendered).
@@ -144,6 +185,9 @@ public:
         voice.playbackRate = std::pow(2.0, static_cast<double>(instrument.tuningSemitones) / 12.0);
         voice.leftGain = velocity * instrument.gain * leftPan;
         voice.rightGain = velocity * instrument.gain * rightPan;
+        voice.instrument = event.instrument;
+        voice.velocity = velocity;
+        voice.mixSamplesRemaining = 0;
         voice.attackSamples = instrument.attackSamples;
         voice.releaseSamples = instrument.releaseSamples;
         voice.chokeGroup = instrument.chokeGroup;
@@ -180,6 +224,15 @@ public:
             const auto& sample = *voice.sample;
             const double sampleLength = static_cast<double>(sample.left.size());
             for (int n = 0; n < numSamples && voice.position < sampleLength; ++n) {
+                if (voice.mixSamplesRemaining > 0) {
+                    if (--voice.mixSamplesRemaining == 0) {
+                        voice.leftGain = voice.targetLeftGain;
+                        voice.rightGain = voice.targetRightGain;
+                    } else {
+                        voice.leftGain += voice.leftGainStep;
+                        voice.rightGain += voice.rightGainStep;
+                    }
+                }
                 const float envelope = envelopeGain(voice, sampleLength);
                 const float left = interpolate(sample.left, voice.position) * voice.leftGain * envelope;
                 const float rightSource = sample.right.empty()
@@ -202,6 +255,11 @@ public:
     }
 
 private:
+    static void sanitiseSample(Sample& sample) noexcept {
+        for (auto* channel : { &sample.left, &sample.right })
+            for (auto& value : *channel) value = sanitiseSampleValue(value);
+    }
+
     struct Layer {
         bool configured{false};
         float minVelocity{0.0f};
@@ -229,6 +287,11 @@ private:
         double playbackRate{1.0};
         float leftGain{1.0f};
         float rightGain{1.0f};
+        DrumInstrument instrument{DrumInstrument::Kick};
+        float velocity{1.0f};
+        float targetLeftGain{1.0f}, targetRightGain{1.0f};
+        float leftGainStep{0.0f}, rightGainStep{0.0f};
+        int mixSamplesRemaining{0};
         int attackSamples{0};
         int releaseSamples{0};
         int chokeGroup{0};
@@ -278,6 +341,7 @@ private:
 
     std::array<InstrumentSet, InstrumentCount> instruments_{};
     std::array<Voice, MaxVoices> voices_{};
+    int mixRampSamples_{221}; // ceil(44100 * 0.005)
 };
 
 } // namespace robodrummer

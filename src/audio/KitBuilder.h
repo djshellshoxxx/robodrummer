@@ -5,6 +5,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "audio/DrumSamplePlayer.h"
+#include "audio/KitImportPolicy.h"
 #include <memory>
 
 namespace robodrummer {
@@ -23,6 +24,10 @@ class KitBuilder {
 public:
     static std::unique_ptr<DrumSamplePlayer> buildBuiltIn(int kitIndex, double sampleRate);
     static std::unique_ptr<DrumSamplePlayer> loadUserFolder(const juce::File& folder, double sampleRate, juce::String& report);
+    // Embedders may request a lower decoded-memory ceiling; fallback-kit storage
+    // is the minimum and the production 256 MiB ceiling cannot be exceeded.
+    static std::unique_ptr<DrumSamplePlayer> loadUserFolder(const juce::File& folder, double sampleRate,
+                                                          juce::String& report, std::size_t maxDecodedBytes);
 };
 
 } // namespace robodrummer

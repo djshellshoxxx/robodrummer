@@ -47,6 +47,23 @@ foreach(test_src IN LISTS ROBODRUMMER_TEST_SOURCES)
   add_test(NAME ${test_name} COMMAND ${test_target})
 endforeach()
 
+
+# Offline fixture ingestion uses production analysis; absent optional real data
+# reports an explicit skip. A required corpus fails closed in the checker.
+add_executable(robodrummer_fixture_runner tools/fixture_runner.cpp)
+target_link_libraries(robodrummer_fixture_runner PRIVATE robodrummer_core)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME fixture_tools COMMAND ${CMAKE_COMMAND} -E env
+    "ROBODRUMMER_FIXTURE_RUNNER=$<TARGET_FILE:robodrummer_fixture_runner>"
+    "${Python3_EXECUTABLE}" -B -m unittest discover
+    -s "${CMAKE_CURRENT_SOURCE_DIR}/tests" -p test_fixture_tools.py -v)
+  add_test(NAME real_guitar_corpus COMMAND "${Python3_EXECUTABLE}" -B
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/check_fixtures.py"
+    --runner "$<TARGET_FILE:robodrummer_fixture_runner>"
+    --output-dir "${CMAKE_BINARY_DIR}/qa/fixtures")
+endif()
+
 if(ROBODRUMMER_BUILD_JUCE)
   include(FetchContent)
   FetchContent_Declare(
@@ -91,6 +108,7 @@ if(ROBODRUMMER_BUILD_JUCE)
   target_sources(RoboDrummer PRIVATE
     src/plugin/PluginProcessor.cpp
     src/plugin/PluginProcessor.h
+    src/plugin/ReducedMotionPreference.cpp
     src/plugin/PluginEditor.cpp
     src/plugin/PluginEditor.h
     src/plugin/EditorPanels.h
@@ -117,6 +135,9 @@ if(ROBODRUMMER_BUILD_JUCE)
     JUCE_USE_CURL=0
     JUCE_VST3_CAN_REPLACE_VST2=0
   )
+  if(APPLE)
+    target_link_libraries(RoboDrummer PRIVATE objc)
+  endif()
   # Build info for Help/About (spec 17) goes through a generated header so a new commit only recompiles its includers.
   file(WRITE ${CMAKE_BINARY_DIR}/generated/RoboDrummerBuildInfo.h.tmp
 "#pragma once\n#define ROBODRUMMER_BUILD_INFO 1\n")

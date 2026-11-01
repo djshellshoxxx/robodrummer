@@ -13,7 +13,79 @@ concurrency:
 permissions:
   contents: read
 
+# Artifact-only prerelease packaging exercises unsigned native install paths.
+env:
+  CI_PACKAGE_VERSION: 0.4.0-beta.ci
+
 jobs:
+  windows-native:
+    name: native Windows (x64)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 3
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.fc-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache pinned JUCE and CLAP sources
+        uses: actions/cache@v4
+        with:
+          path: .fc-cache
+          key: fetchcontent-windows-${{ hashFiles('CMakeLists.txt') }}
+      - name: Configure native Windows formats and harness
+        shell: bash
+        run: >
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          -DROBODRUMMER_BUILD_JUCE=ON -DROBODRUMMER_BUILD_CLAP=ON
+          -DFETCHCONTENT_BASE_DIR="$FETCHCONTENT_BASE_DIR"
+      - name: Build native formats and run required qualification
+        shell: bash
+        run: bash scripts/ci/windows_native_checks.sh build
+      - name: CLAP diagnostic (unqualified practice-state contract)
+        continue-on-error: true
+        shell: bash
+        run: python3 -B scripts/ci/clap_validate.py build/RoboDrummer_artefacts/Release/CLAP/RoboDrummer.clap --output build/qa/clap-validator.json
+      - name: Package and inspect native Windows artifacts
+        shell: bash
+        run: |
+          bash scripts/ci/package.sh windows-x64 "$CI_PACKAGE_VERSION" build dist
+          python3 -B scripts/ci/validate_packages.py windows-x64 "$CI_PACKAGE_VERSION" dist --native --report build/qa/package-validation.json
+      - name: Isolated hosted installer and uninstaller smoke
+        shell: pwsh
+        run: >-
+          ./scripts/ci/windows_installer_smoke.ps1 -Version $env:CI_PACKAGE_VERSION
+          -Archive "dist/RoboDrummer-${env:CI_PACKAGE_VERSION}-windows-x64.zip"
+          -WorkDirectory "$env:RUNNER_TEMP/robodrummer-installer-smoke"
+      - name: Always clean temporary signing inputs
+        if: always()
+        shell: bash
+        run: python3 -B scripts/ci/signing.py cleanup
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-smoke-native-windows-x64
+          path: ${{ runner.temp }}/robodrummer-installer-smoke/*.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-native-windows-x64
+          path: dist/RoboDrummer-*
+          if-no-files-found: error
+      - name: Retain native validation reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-native-windows-x64
+          path: build/qa
+      - name: Retain built native format binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-x64
+          path: |
+            build/RoboDrummer_artefacts/Release/VST3/RoboDrummer.vst3
+            build/RoboDrummer_artefacts/Release/CLAP/RoboDrummer.clap
+            build/RoboDrummer_artefacts/Release/Standalone/RoboDrummer.exe
+          if-no-files-found: error
+
   mac-native:
     name: native macOS (${{ matrix.arch }})
     strategy:
@@ -52,6 +124,23 @@ jobs:
           cmake --build build --target "${targets[@]}" RoboDrummerHarness
       - name: Processor harness, exact compatibility, and auval
         run: bash scripts/ci/juce_checks.sh build mac
+      - name: CLAP diagnostic (unqualified practice-state contract)
+        continue-on-error: true
+        run: python3 -B scripts/ci/clap_validate.py build/RoboDrummer_artefacts/Release/CLAP/RoboDrummer.clap --output build/qa/clap-validator.json
+      - name: Package and inspect native macOS artifacts
+        env:
+          PACKAGE_PLATFORM: ${{ matrix.arch == 'arm64' && 'mac-arm64' || 'mac-x64' }}
+        run: |
+          bash scripts/ci/package.sh "$PACKAGE_PLATFORM" "$CI_PACKAGE_VERSION" build dist
+          python3 -B scripts/ci/validate_packages.py "$PACKAGE_PLATFORM" "$CI_PACKAGE_VERSION" dist --native --report build/qa/package-validation.json
+      - name: Always clean temporary signing inputs
+        if: always()
+        run: python3 -B scripts/ci/signing.py cleanup
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-native-mac-${{ matrix.arch }}
+          path: dist/RoboDrummer-*
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -90,7 +179,7 @@ jobs:
       - name: Install Linux JUCE dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build xvfb libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxi-dev libfreetype-dev libfontconfig1-dev libglu1-mesa-dev pkg-config
+          sudo apt-get install -y ninja-build xvfb openbox x11-utils libasound2-dev libx11-dev libxext-dev libxinerama-dev libxrandr-dev libxcursor-dev libxi-dev libfreetype-dev libfontconfig1-dev libglu1-mesa-dev pkg-config
 
       - name: Cache FetchContent sources (JUCE, CLAP)
         uses: actions/cache@v4
@@ -124,6 +213,23 @@ jobs:
 
       - name: Headless harness and pluginval (run once, here only)
         run: bash scripts/ci/juce_checks.sh build
+      - name: CLAP diagnostic (unqualified practice-state contract)
+        continue-on-error: true
+        run: xvfb-run -a -s '-screen 0 1280x1024x24 -extension MIT-SHM' bash scripts/ci/with_window_manager.sh python3 -B scripts/ci/clap_validate.py build/RoboDrummer_artefacts/Release/CLAP/RoboDrummer.clap --output build/qa/clap-validator.json
+      - name: Package and inspect native Linux artifacts
+        run: |
+          bash scripts/ci/package.sh linux-x64 "$CI_PACKAGE_VERSION" build dist
+          python3 -B scripts/ci/validate_packages.py linux-x64 "$CI_PACKAGE_VERSION" dist --native --report build/qa/package-validation.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qa-native-linux-x64
+          path: build/qa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-native-linux-x64
+          path: dist/RoboDrummer-*
+          if-no-files-found: error
 
       - name: ccache stats
         run: ccache -s

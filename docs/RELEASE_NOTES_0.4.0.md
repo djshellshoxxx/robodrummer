@@ -26,20 +26,22 @@ Adds practice tools, drum-bus processing, riff following, automatic setup and a 
 * MIDI commands are now 20 (notes 36 to 55 on channel 16 by default); 0.3.x used 36 to 50.
 * The pre-release tag is set at build time with `-DROBODRUMMER_PRERELEASE_TAG=beta.1`; the release workflow does this from the version you enter.
 
-## Verification behind these notes
+## Historical 0.4.0 verification
+
+These bullets record the original feature-audit evidence. Current repaired-source counts, native runs and remaining qualification are maintained in [QA](QA.md).
 * 53 JUCE-free tests pass, also under AddressSanitizer and UndefinedBehaviorSanitizer (Linux).
 * The headless plug-in harness (2300+ checks) passes. It includes a real-time allocation audit (including JUCE containers on Linux) with every new feature switched on at 44.1, 48, 96 and 192 kHz and block sizes from 1 to 40000 samples, fuzzing of saved state and preset files, and a check that every parameter has a control, tooltip and documentation entry.
 * `pluginval` 1.0.3 at strictness 10 passes for the VST3 on Linux.
 * Linux package script run against a real build.
 
 ## Known limitations
-* Not yet tested in a real DAW, and the Windows, macOS (including AU) builds and the Windows installer were not exercised by the audit; the release workflow builds them but their output has not been inspected. The host matrix in [specs/12-host-matrix-qa.md](specs/12-host-matrix-qa.md) has not been run.
-* Builds are unsigned and not notarised. Windows may show SmartScreen; on macOS right-click Open or remove the quarantine attribute (see INSTALL.md).
+* Real DAW/device host-matrix acceptance remains outstanding. Native builds, validator runs and isolated installer checks are recorded by exact source in [QA](QA.md); they do not replace physical clean-machine or DAW acceptance.
+* Without authorized signing credentials, prerelease packages are explicitly unsigned/ad-hoc. Stable Windows/macOS packaging fails instead of silently falling back to unsigned output. Actual paid signing/notarization acceptance remains outstanding.
 * Tempo and beat tracking were tuned and tested on synthetic guitar; a licensed real-guitar corpus does not exist yet.
-* Opening the right-click menu is not covered by an automated test (its text parsers are).
-* Very large audio buffers (about 0.8 seconds) in guitar-following modes were seen not to start the drummer's new features within 14 seconds in a test; normal buffer sizes are fine.
-* The OS "reduce motion" setting is not read; use the plug-in option. Onset scrolling is slowed, not frozen, in reduced-motion mode.
-* Analysis runs on the audio thread (about 0.5 % of real time in the test container).
+* Native-window regressions open menus, invoke actions and cover asynchronous teardown. Actual host key forwarding and screen-reader operation remain qualification work.
+* Oversized guitar-following callbacks now schedule entry on a trusted future beat and render the whole buffer in bounded scratch chunks. Automated audio/MIDI/capture/practice regressions cover the repaired path; real host/device acceptance remains separate.
+* macOS/Windows reduced-motion defaults are read when no explicit saved choice exists; unavailable Linux preference defaults off. Reduced motion freezes onset/grid presentation until accessible Update while analysis and FIFO draining continue.
+* Deterministic analysis remains on the audio thread under ADR 10. Current measured CPU evidence belongs to [QA](QA.md); the ADR governs when a worker is warranted.
 
 ## Install
 See INSTALL.md inside each package. Verify downloads with `SHA256SUMS.txt`.
@@ -47,3 +49,16 @@ See INSTALL.md inside each package. Verify downloads with `SHA256SUMS.txt`.
 * Windows: `-windows-x64.zip` or the `-setup.exe` installer
 * macOS Apple silicon: `-mac-arm64.zip`; Intel: `-mac-x64.zip`
 * Linux: `-linux-x64.tar.gz`
+
+
+## Source hardening (2026-10-31)
+
+- Bound dense/long MIDI input and extreme arrangement seeks, clamp unrepresentable PPQ timelines before conversion, and retain Stop/voice safety without callback allocation or sampler destruction.
+- Prevent adaptive-entry starvation at oversized buffers; align audio, MIDI, capture and practice at the predicted future beat and stream audio beyond fixed scratch capacity.
+- Sanitize imported floating-point audio, bound kit decoding memory and apply mixer changes to ringing voices smoothly.
+- Publish coherent MIDI bindings; keep analysis finite and predicted beat-in-bar advancing through rests.
+- Validate preset slices transactionally and invalidate stale Learn My Playing reviews/Undo across preset and host-state replacement.
+- Validate complete numeric menu paste, balance host gestures, guard detached drum-map actions and honor platform reduced motion with frozen, manually refreshed onset presentation.
+- Add offline fixture ingestion/metrics, native Windows qualification, pinned CLAP reporting, archive inspection, isolated installer smoke and fail-closed signing preparation.
+
+These are source changes, not a published release. Real recordings, physical DAW/device/screen-reader acceptance and paid signing/notarization remain outstanding; see [QA](QA.md).

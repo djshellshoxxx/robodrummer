@@ -9,11 +9,13 @@
 #include "EditorPanels.h"
 #include "PluginProcessor.h"
 #include "PresetManager.h"
+#include "ReducedMotionPreference.h"
 
 class RoboDrummerAudioProcessorEditor final : public juce::AudioProcessorEditor,
                                               private juce::Timer {
 public:
     explicit RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor&);
+    RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor&, std::function<std::optional<bool>()> platformMotionReader);
     ~RoboDrummerAudioProcessorEditor() override;
     void paint(juce::Graphics&) override;
     void resized() override;

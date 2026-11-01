@@ -1,5 +1,6 @@
 #include "core/SectionSequencer.h"
 #include <cassert>
+#include <limits>
 
 int main() {
     using namespace robodrummer;
@@ -55,4 +56,13 @@ int main() {
 
     seq.clear();
     assert(seq.empty());
+
+    // A held manual/final section can run indefinitely, including after a large
+    // host seek. Its public int counter must saturate instead of overflowing.
+    assert(seq.add({JamStyle::Rock, std::numeric_limits<int>::max(), 0.5f, false}));
+    seq.restorePosition(0, std::numeric_limits<int>::max() - 1);
+    (void)seq.advanceBar();
+    assert(seq.barsIntoSection() == std::numeric_limits<int>::max());
+    (void)seq.advanceBar();
+    assert(seq.barsIntoSection() == std::numeric_limits<int>::max());
 }

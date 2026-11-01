@@ -7,6 +7,9 @@
 #pragma once
 #include <JuceHeader.h>
 #include "analysis/AutoSetup.h"
+#include "audio/RealtimeOwnerHandoff.h"
+#include "audio/KitLoaderLifecycle.h"
+#include "core/MidiBlockPolicy.h"
 #include "analysis/CalibrationAnalyzer.h"
 #include "analysis/InputConditioner.h"
 #include "analysis/JamBrain.h"
@@ -203,6 +206,7 @@ extern const std::array<const char*, MidiLearnMap::CommandCount> kCommandNames;
 class RoboDrummerAudioProcessor final : public juce::AudioProcessor,
                                         private juce::AudioProcessorValueTreeState::Listener,
                                         private juce::Timer {
+    friend struct RoboDrummerProcessorTestAccess;
 public:
     RoboDrummerAudioProcessor();
     ~RoboDrummerAudioProcessor() override;
@@ -392,8 +396,22 @@ public:
     bool applyAutoSetup();                                                                  // applies the stored proposal (needs state Done and status Ok)
     bool applyAutoSetup(const robodrummer::AutoSetupProposal& selected);                    // review card: only fields with apply == true
     bool undoAutoSetup();
-    bool canUndoAutoSetup() const noexcept { return autoSetupUndo_.available(); }
-    void clearAutoSetupUndo() noexcept { autoSetupUndo_.clear(); }                          // preset load / state restore call this
+    std::uint64_t getAutoSetupGeneration() const noexcept { return autoSetup_.generation(); }
+    // Recursive gate permits same-thread host callbacks; processBlock never takes it.
+    [[nodiscard]] juce::ScopedLock lockNonRealtimeStateChange() const { return juce::ScopedLock(stateChangeLock_); }
+    void invalidateAutoSetup() noexcept {
+        const auto transaction = lockNonRealtimeStateChange();
+        autoSetup_.invalidate();
+    }
+    bool canUndoAutoSetup() const noexcept {
+        const auto generation = autoSetupUndoGeneration_.load(std::memory_order_acquire);
+        return generation != 0 && generation == autoSetup_.generation();
+    }
+    void clearAutoSetupUndo() noexcept {
+        const auto transaction = lockNonRealtimeStateChange();
+        autoSetupUndoGeneration_.store(0, std::memory_order_release);
+        autoSetupUndo_.clear();
+    }
     void finalizeAutoSetupIfReady();                                                        // idempotent; the timer calls it
 
     // ---- Practice mode (count-in, bar loop, tempo trainer) ----
@@ -481,13 +499,19 @@ private:
     robodrummer::TapTempo tapTempo_{};
     std::array<int, ArrangementSlotCount> arrangementSlotForIndex_{};
     std::array<juce::String, ArrangementSlotCount> arrangementNames_{};
-    // Active sampler is only touched by the audio thread; replacements arrive through pendingPlayer_ and the
-    // old one is handed back through retiredPlayer_ for the message thread to delete.
+    // Audio owns the borrowed facade; deletion and publication happen off the callback.
+    robodrummer::RealtimeOwnerHandoff<robodrummer::DrumSamplePlayer, 4> playerHandoff_{};
     robodrummer::DrumSamplePlayer* player_{nullptr};
-    std::atomic<robodrummer::DrumSamplePlayer*> pendingPlayer_{nullptr};
-    std::array<std::atomic<robodrummer::DrumSamplePlayer*>, 4> retiredPlayers_{};
+    juce::CriticalSection kitSubmissionLock_;
+    bool kitSubmissionsEnabled_{true}; // guarded by kitSubmissionLock_, never used in processBlock
+    std::atomic<bool> kitLoadCancelled_{false};
+    bool midiSafetyStopped_{false}, midiPanicOutputPending_{false}, midiSafetyHostStopSeen_{false};
+    void stopKitLoader();
     double sampleRate_{48000.0};
     bool adaptiveJoined_{false};
+    // Audio-owned delay from the next callback start to a trusted future beat; -1 means unarmed.
+    double pendingAdaptiveJoinSamples_{-1.0};
+    std::atomic<bool> adaptiveJoinResetPending_{false}; // state restoration invalidates the audio-owned prediction
     int lastAudioMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
     double jamBrainCooldownSeconds_{0.0};
     bool lastArrangementEnabled_{false};
@@ -548,7 +572,7 @@ private:
     std::atomic<int> riffBarsSeen_{0}, riffSlots_{16}, riffSlotsPerBeat_{4}, riffNumerator_{4}, riffDenominator_{4};
     std::atomic<bool> riffTriplet_{false};
     std::atomic<int> riffAdded_{0}, riffRemoved_{0};
-    void feedRiffLock(int numSamples, bool trackerLocked) noexcept;
+    void feedRiffLock(int numSamples, bool trackerLocked, int startOffset = 0) noexcept;
     robodrummer::MidiCapture<> capture_;
     std::filesystem::path captureDirectory_;
     robodrummer::DrumMap captureDrumMap() const noexcept;
@@ -572,8 +596,10 @@ private:
     std::array<std::atomic<float>*, kPracParamCount> rawPrac_{};
     robodrummer::AutoSetup autoSetup_;
     std::array<float, AnalysisChunk> autoSetupScratch_{};
+    mutable juce::CriticalSection stateChangeLock_;
     robodrummer::AutoSetupUndo autoSetupUndo_;
-    void writeAutoSetupSnapshot(const robodrummer::AutoSetupSnapshot& values, std::uint32_t mask);
+    std::atomic<std::uint64_t> autoSetupUndoGeneration_{0};
+    bool writeAutoSetupSnapshot(const robodrummer::AutoSetupSnapshot& values, std::uint32_t mask, std::uint64_t expectedGeneration);
     robodrummer::PracticeMode practice_;
     bool practiceSessionWanted_{false};   // the practiceEnabled parameter as last seen
     bool practiceSuspendedByTransport_{false};
