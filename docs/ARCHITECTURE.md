@@ -1,24 +1,24 @@
 # RoboDrummer Architecture
 
-RoboDrummer is split into a portable musical core and host-specific adapters. The portable core deliberately has no JUCE dependency. This keeps timing, groove generation, scheduling and MIDI command behavior directly testable and allows the VST3, standalone and later CLAP layers to remain thin.
+RoboDrummer is split into a portable musical core and host-specific adapters. The portable core deliberately has no JUCE dependency. This keeps timing, groove generation, scheduling and MIDI command behavior directly testable and keeps the VST3, CLAP, AU and standalone host adapters focused.
 
-## Phase 1 modules
+## Portable musical modules
 
-`MusicalClock` owns tempo, meter, beat position and bar position. It accepts sample advances and exposes value snapshots. Future guitarist-following code will correct this clock gradually rather than replacing it.
+`MusicalClock` is a portable, independently tested clock from Phase 1. The live renderer uses `plugin/JamEngine.h`'s sample cursor and musical bar timeline; `PluginProcessor` applies timing authority and phase corrections to that engine.
 
 `DrumEvent` is the realtime event value type. `EventScheduler` is a fixed-capacity scheduler that keeps events ordered by sample offset without allocating during `push()`.
 
-`Style` stores behavior probabilities. `GrooveGenerator` creates a deterministic bar from a style, musical context and seed. The generator is intentionally simple in Phase 1; future style models can add ghost notes, cymbal state, fills, phrase context and limb constraints without changing the event contract.
+`Style` stores behavior probabilities. `GrooveGenerator` creates a deterministic bar from a style, musical context and seed. The style library, fills, phrase context and virtual-limb constraints build on that event contract.
 
-`MidiCommand` and `JamState` define optional performance intervention. MIDI is not the main timing source. It requests musical actions such as fills, section transitions, intensity changes and transport-like behavior.
+`MidiCommand` and `JamState` define optional performance intervention. Intervention notes request fills, section transitions, intensity changes and transport-like behavior. The selectable MIDI Clock input separately supplies tempo through clock/start/continue/stop messages.
 
 ## Realtime boundary
 
-The future plugin audio callback may read immutable snapshots and push/read fixed-capacity events. It must not perform disk access, network access, blocking waits or unbounded allocation. Sample loading, preset serialization, analysis model setup and GUI operations belong on worker or message threads.
+The plugin audio callback reads snapshots and processes fixed-capacity events. It must perform no allocation or deallocation, blocking, locks, file/network I/O, logging or GUI operations. Sample loading, preset serialization, analysis model setup and GUI operations belong on loader or message threads. Deterministic bounded analysis remains inline under ADR 10.
 
-## Planned next layers
+## Live pipeline
 
-1. JUCE VST3 and standalone wrapper.
+1. JUCE VST3/CLAP/AU and standalone adapters.
 2. Internal drum sampler and host MIDI output.
 3. Groove/fill/arrangement expansion.
 4. Guitar input feature extraction.
@@ -66,3 +66,13 @@ Threading: the audio thread owns all analysis and generation state; the UI reads
 | `tests/support/WavReader.h`, `tools/check_fixtures.py` | Bounded offline PCM ingestion, manifest/license/hash/schema validation, production analysis traces and separate raw/folded tempo/lock/beat metrics. | Missing optional corpus reports a skip; required missing/corrupt input fails. Synthetic characterization cannot establish real-guitar qualification. No recordings are downloaded implicitly. |
 
 Parameter IDs/order, plugin identity and supported state/preset formats remain unchanged. Analysis stays on the audio thread under ADR 10; transient enhancement (ADR 16) and learned models (spec 14) retain their real-data gates.
+
+
+## Tempo, transport and meter authority
+
+Internal BPM controls base tempo and ignores host play/stop and PPQ, while retaining the supplied host time signature. Manual meter overrides that signature; without either, the default is 4/4 and the existing automatic-meter gate can supply a confident suggestion. MIDI Clock can own tempo without replacing host/manual meter priority. Dedicated actual-callback regressions characterize this existing separation without new controls or changed automation.
+
+The JamEngine sample timeline is clamped before conversion to 0..2^52, with saturating advances/nudges and headroom for block/bar arithmetic. Giant finite PPQ, backwards recovery and ordinary exact-event traces are covered under UBSan. Offline full-corpus qualification requires at least 20 distinct licensed clips, 48 kHz primaries and 44.1 kHz variants for at least three IDs. Every supplied rate variant runs at 64/512/2048 samples; variants cannot inflate acceptance. Invalid metadata replaces stale output with an ERROR artifact. Synthetic characterization cannot establish real-guitar qualification.
+
+
+Oversized adaptive callbacks cannot rely on landing inside a narrow beat-phase window. The processor latches one future beat from the analyzer's accepted PLL anchor and period, consumes that countdown on later callbacks and translates the shared event array at entry. Rejected offbeat onsets do not move that anchor. State/listening/mode/preparation changes invalidate pending entry. Audio uses repeated fixed-scratch chunks, preserving the single-chunk operation order for ordinary buffers and aligning MIDI, capture and practice clicks throughout the full host buffer.

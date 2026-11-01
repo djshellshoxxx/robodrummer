@@ -509,6 +509,9 @@ private:
     void stopKitLoader();
     double sampleRate_{48000.0};
     bool adaptiveJoined_{false};
+    // Audio-owned delay from the next callback start to a trusted future beat; -1 means unarmed.
+    double pendingAdaptiveJoinSamples_{-1.0};
+    std::atomic<bool> adaptiveJoinResetPending_{false}; // state restoration invalidates the audio-owned prediction
     int lastAudioMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
     double jamBrainCooldownSeconds_{0.0};
     bool lastArrangementEnabled_{false};
@@ -569,7 +572,7 @@ private:
     std::atomic<int> riffBarsSeen_{0}, riffSlots_{16}, riffSlotsPerBeat_{4}, riffNumerator_{4}, riffDenominator_{4};
     std::atomic<bool> riffTriplet_{false};
     std::atomic<int> riffAdded_{0}, riffRemoved_{0};
-    void feedRiffLock(int numSamples, bool trackerLocked) noexcept;
+    void feedRiffLock(int numSamples, bool trackerLocked, int startOffset = 0) noexcept;
     robodrummer::MidiCapture<> capture_;
     std::filesystem::path captureDirectory_;
     robodrummer::DrumMap captureDrumMap() const noexcept;

@@ -31,6 +31,7 @@
 #include "PresetRegressionTests.h"
 #include "ProcessorSafetyChecks.h"
 #include "StateTransactionChecks.h"
+#include "TempoAuthorityChecks.h"
 #include "ParamMenuChecks.h"
 #include "DrumMapLifetimeChecks.h"
 #include "EditorAccessibilityChecks.h"
@@ -253,6 +254,11 @@ void testFirstWaveSafetyRegressions() {
     checkMidiViewParity([](bool equivalent) { CHECK(equivalent); });
     state_transaction_checks::run([](bool ok, const char* detail) { CHECK_MSG(ok, "%s", detail); });
     runProcessorSafetyChecks([](bool valid) { CHECK(valid); }, [](auto&& callback) { return rdAuditNoHeap(callback); });
+    section("internal tempo/meter authority and oversized adaptive entry");
+    const auto authorityCheck = [](bool ok, const char* detail) { CHECK_MSG(ok, "%s", detail); };
+    robodrummer::test::runInternalTempoMeterChecks(authorityCheck);
+    robodrummer::test::runAdaptiveJoinBoundaryChecks(authorityCheck);
+    robodrummer::test::runAdaptiveJoinTimelineChecks(authorityCheck, [](auto&& callback) { return rdAuditNoHeap(callback); });
 
     const auto labelledCheck = [](bool valid, const juce::String& label) { CHECK_MSG(valid, "%s", label.toRawUTF8()); };
     section("real WAV/AIFF import and aggregate sample storage");
@@ -2269,14 +2275,19 @@ void testEditorUi() {
         rig.param("drumBusEnabled", 1); rig.param("drumBusThreshold", -40.0f); rig.param("drumBusRatio", 10.0f);
         rig.param("transientShaperEnabled", 1); rig.param("transientShaperAttack", 80.0f);
         rig.run(200, [](long long s) { return pluck(s, 120.0); }, kNoMidi);
-        pump(120);
+        CHECK_MSG(std::abs(rig.processor.getDrumBusGainReductionDb()) >= 0.05f,
+                  "audio processing must produce meter reduction before UI publication");
         bool sawGain = false, sawReduction = false, sawOn = false;
-        visitAll(ed, [&](juce::Component& c) {
-            if (auto* l = dynamic_cast<juce::Label*>(&c)) {
-                if (l->getText().startsWith("Gain reduction:") && l->getText() != "Gain reduction: 0.0 dB") sawReduction = true;
-                if (l->getText().startsWith("Gain: ")) sawGain = true;
-                if (l->getText() == "ON") sawOn = true;
-            }
+        pumpUntil([&] {
+            sawGain = sawReduction = sawOn = false;
+            visitAll(ed, [&](juce::Component& c) {
+                if (auto* l = dynamic_cast<juce::Label*>(&c)) {
+                    if (l->getText().startsWith("Gain reduction:") && l->getText() != "Gain reduction: 0.0 dB") sawReduction = true;
+                    if (l->getText().startsWith("Gain: ")) sawGain = true;
+                    if (l->getText() == "ON") sawOn = true;
+                }
+            });
+            return sawGain && sawReduction && sawOn;
         });
         CHECK_MSG(sawGain && sawReduction && sawOn, "meter text gain %d reduction %d on %d", sawGain, sawReduction, sawOn);
         rig.param("drumBusEnabled", 0); rig.param("transientShaperEnabled", 0); rig.param("drumBusThreshold", -18.0f); rig.param("drumBusRatio", 4.0f); rig.param("transientShaperAttack", 0.0f);

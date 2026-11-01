@@ -76,7 +76,7 @@ jobs:
         with:
           name: qa-native-windows-x64
           path: build/qa
-      - name: Retain qualified native format binaries
+      - name: Retain built native format binaries
         uses: actions/upload-artifact@v4
         with:
           name: native-windows-x64

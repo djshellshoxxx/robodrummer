@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <thread>
 
 // Defined globally to match the narrow friend declaration in the processor.
@@ -346,6 +347,97 @@ void runProcessorSafetyChecks(Check&& check, Audit&& audit) {
         if (manual) {
             rig.processor.requestCommand(MidiCommand::NextSection);
             host.clear(); check(rig.process(host,audit));
+            check(rig.processor.getCurrentArrangementSection()==4);
+        }
+    }
+
+    std::printf("[processor safety: sample-domain host timeline bounds]\n");
+    for (const bool manual : {false,true}) {
+        SafetyRig rig;
+        configureArrangement(rig,manual);
+        rig.parameter("outputMode",2.0f); // inspect real internal audio and generated MIDI
+        auto player=replacementPlayer();
+        DrumSamplePlayer::Sample crash;
+        crash.left.assign(64,0.1f);
+        player->setSample(DrumInstrument::Crash,std::move(crash));
+        RoboDrummerProcessorTestAccess::publish(rig.processor,std::move(player));
+        juce::MidiBuffer host;
+        host.ensureSize(65536);
+        const auto processAndInspect=[&] {
+            host.clear();
+            check(rig.process(host,audit));
+            bool finiteAudio=true;
+            for (int channel=0;channel<rig.audio.getNumChannels();++channel)
+                for (int sample=0;sample<rig.audio.getNumSamples();++sample)
+                    finiteAudio=finiteAudio && std::isfinite(rig.audio.getSample(channel,sample));
+            check(finiteAudio);
+            bool validMidi=true;
+            int previousOffset=-1;
+            for (const auto metadata : host) {
+                validMidi=validMidi && metadata.numBytes>0
+                    && metadata.samplePosition>=previousOffset
+                    && metadata.samplePosition>=0 && metadata.samplePosition<SafetyRig::Block;
+                previousOffset=metadata.samplePosition;
+            }
+            check(validMidi);
+            check(host.data.size()<=static_cast<int>(MidiBlockPolicy::OutputCapacityBytes));
+            check(!rig.processor.isDrummerStopped());
+            check(rig.processor.getDrummerBarNumber()>=1);
+            check(rig.processor.getDrummerBeatInBar()>=1 && rig.processor.getDrummerBeatInBar()<=4);
+        };
+        const auto checkRecovery=[&](double position) {
+            rig.playHead.ppq=position;
+            // A fresh event proves recovery renders music rather than merely
+            // producing finite silent buffers after a saturated/invalid seek.
+            rig.processor.requestCommand(MidiCommand::Crash);
+            processAndInspect();
+            check(rig.processor.getDrummerBarNumber()==1);
+            check(rig.processor.getDrummerBeatInBar()==1);
+            check(noteOns(host)>0);
+            bool audible=false;
+            for (int channel=0;channel<rig.audio.getNumChannels();++channel)
+                for (int sample=0;sample<rig.audio.getNumSamples();++sample)
+                    audible=audible || std::abs(rig.audio.getSample(channel,sample))>1.0e-7f;
+            check(audible);
+            check(rig.processor.getCurrentArrangementSection()==(manual ? 2 : 4));
+        };
+        processAndInspect();
+        long long saturatedBar=0;
+        for (const double position : {1.0e15,std::numeric_limits<double>::max()}) {
+            rig.playHead.ppq=position;
+            const auto start=std::chrono::steady_clock::now();
+            processAndInspect();
+            processAndInspect();
+            const auto elapsed=std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count();
+            std::printf("  two sample-bound seek callbacks: %.6fs (manual=%d, ppq=%.3g)\n",elapsed,manual,position);
+            check(elapsed<0.25); // gross proportional-work regression, not a realtime deadline
+            const auto bar=rig.processor.getDrummerBarNumber();
+            check(bar>1);
+            if (saturatedBar==0) saturatedBar=bar;
+            check(bar==saturatedBar); // both finite inputs saturate at the same sample ceiling
+            check(rig.processor.getCurrentArrangementSection()==(manual ? 2 : 4));
+            check(rig.processor.getJamStyle()==(manual ? JamStyle::Blues : JamStyle::Reggae));
+            for (const double invalid : {std::numeric_limits<double>::quiet_NaN(),
+                                         std::numeric_limits<double>::infinity(),
+                                         -std::numeric_limits<double>::infinity()}) {
+                rig.playHead.ppq=invalid;
+                processAndInspect();
+                check(rig.processor.getDrummerBarNumber()==saturatedBar); // nonfinite PPQ is ignored
+            }
+            checkRecovery(0.0);
+        }
+        // Finite negative PPQ clamps to zero, including inputs far below the
+        // representable sample domain. Each begins on the saturated timeline.
+        for (const double negative : {-1.0,-std::numeric_limits<double>::max()}) {
+            rig.playHead.ppq=1.0e15;
+            processAndInspect();
+            check(rig.processor.getDrummerBarNumber()==saturatedBar);
+            checkRecovery(negative);
+            checkRecovery(0.0);
+        }
+        if (manual) {
+            rig.processor.requestCommand(MidiCommand::NextSection);
+            processAndInspect();
             check(rig.processor.getCurrentArrangementSection()==4);
         }
     }
