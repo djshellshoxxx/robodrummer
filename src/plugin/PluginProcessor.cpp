@@ -603,7 +603,7 @@ void RoboDrummerAudioProcessor::prepareToPlay(double sampleRate, int samplesPerB
     jam_.setTempo(internalBpm_.load(std::memory_order_relaxed));
     jam_.setIntensity(intensity_.load(std::memory_order_relaxed));
     adaptiveJoined_ = false;
-    pendingAdaptiveJoinSamples_ = -1.0;
+    pendingAdaptiveJoinSamples_ = -1.0; unarmedAdaptiveWaitSamples_ = 0.0;
     adaptiveJoinResetPending_.store(false, std::memory_order_relaxed);
     adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
     lastAudioMode_ = leadershipMode_.load(std::memory_order_relaxed);
@@ -1068,11 +1068,13 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
     }
 
     const int modeValue = static_cast<int>(settings.mode);
-    if (adaptiveJoinResetPending_.exchange(false, std::memory_order_acquire))
+    if (adaptiveJoinResetPending_.exchange(false, std::memory_order_acquire)) {
         pendingAdaptiveJoinSamples_ = -1.0;
+        unarmedAdaptiveWaitSamples_ = 0.0;
+    }
     if (modeValue != lastAudioMode_) {
         adaptiveJoined_ = settings.mode == robodrummer::LeadershipMode::DrummerLeads;
-        pendingAdaptiveJoinSamples_ = -1.0;
+        pendingAdaptiveJoinSamples_ = -1.0; unarmedAdaptiveWaitSamples_ = 0.0;
         adaptiveJoinedVisible_.store(adaptiveJoined_, std::memory_order_relaxed);
         lastAudioMode_ = modeValue;
         resyncPlanner_.reset();
@@ -1122,9 +1124,10 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             const auto advancedBars = static_cast<std::uint64_t>(currentBar) - static_cast<std::uint64_t>(lastArrangementBarIndex_);
             const auto step = arrangement_.advanceBars(advancedBars);
             lastArrangementBarIndex_ = currentBar;
-            if (advancedBars > 1) {
-                if (step.sectionChanged) { publishArrangementSection(); applyCurrentArrangementSection(); }
-            } else if (step.sectionChanged) {
+            // A multi-bar seek resolves in one bounded step. It still runs the destination's
+            // entry (programmed-boundary cue and crash) and the final bar's pre-boundary
+            // transition, matching the established per-bar walk's final state.
+            if (step.sectionChanged) {
                 enterArrangementSection(true);
             } else if (!arrangement_.empty() && arrangement_.current().autoAdvance &&
                        arrangement_.barsIntoSection() == arrangement_.current().bars - 1 &&
@@ -1265,10 +1268,12 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
             bool joinNow = false;
             if (!confident && numSamples > 0) {
                 pendingAdaptiveJoinSamples_ = -1.0;
+                // Confidence hovering at its thresholds keeps the accumulated wait; losing lock restarts it.
+                if (!rhythm.locked) unarmedAdaptiveWaitSamples_ = 0.0;
             } else if (confident && pendingAdaptiveJoinSamples_ >= 0.0) {
                 if (pendingAdaptiveJoinSamples_ < numSamples) {
                     adaptiveEntryOffset = static_cast<int>(pendingAdaptiveJoinSamples_);
-                    pendingAdaptiveJoinSamples_ = -1.0;
+                    pendingAdaptiveJoinSamples_ = -1.0; unarmedAdaptiveWaitSamples_ = 0.0;
                     joinNow = true;
                 } else {
                     pendingAdaptiveJoinSamples_ -= numSamples;
@@ -1281,8 +1286,18 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
                 // attack cannot move the join onto a subdivision.
                 // Its delay is bounded by one tracked beat and is consumed by later callbacks only.
                 const double delay = rhythmAnalyzer_.samplesUntilNextLoopBeat();
-                if (std::isfinite(delay) && delay >= 0.0 && rhythmAnalyzer_.loopConsistency() >= 0.60f)
+                if (std::isfinite(delay) && delay >= 0.0 && rhythmAnalyzer_.loopConsistency() >= 0.60f) {
                     pendingAdaptiveJoinSamples_ = std::round(delay);
+                } else {
+                    // A confident tracker whose loop never becomes consistent must still join. After
+                    // kUnarmedAdaptiveWaitBeats of confident audio, latch the tracker's own next beat
+                    // (phase is at this callback's end), bounded by one beat like the PLL forecast.
+                    unarmedAdaptiveWaitSamples_ += numSamples;
+                    const double phase = rhythm.beatPhase;
+                    if (unarmedAdaptiveWaitSamples_ >= kUnarmedAdaptiveWaitBeats * beatSamples
+                        && std::isfinite(phase) && phase >= 0.0 && phase <= 1.0)
+                        pendingAdaptiveJoinSamples_ = std::round(std::clamp((1.0 - phase) * beatSamples, 0.0, beatSamples));
+                }
             } else {
                 joinNow = confident && nearBeatBoundary; // preserve the established ordinary-block path exactly
             }
@@ -1295,7 +1310,7 @@ void RoboDrummerAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, j
         }
     } else {
         adaptiveJoined_ = true;
-        pendingAdaptiveJoinSamples_ = -1.0;
+        pendingAdaptiveJoinSamples_ = -1.0; unarmedAdaptiveWaitSamples_ = 0.0;
         adaptiveJoinedVisible_.store(true, std::memory_order_relaxed);
         phaseErrorCycles_.store(0.0, std::memory_order_relaxed);
         hardResyncRecommended_.store(false, std::memory_order_relaxed);
@@ -2267,7 +2282,7 @@ void RoboDrummerAudioProcessor::resetListeningState() noexcept {
     phraseFillStrength_.store(0.0f, std::memory_order_relaxed);
     phraseBoundary_.store(false, std::memory_order_relaxed);
     adaptiveJoined_ = false;
-    pendingAdaptiveJoinSamples_ = -1.0;
+    pendingAdaptiveJoinSamples_ = -1.0; unarmedAdaptiveWaitSamples_ = 0.0;
     adaptiveJoinedVisible_.store(false, std::memory_order_relaxed);
 }
 

@@ -66,7 +66,9 @@ case "$platform" in
          ditto -c -k --sequesterRsrc --keepParent "$name" "$archive" ;;
   windows-*) archive="$name.zip"; rm -f "$archive"
          if command -v 7z >/dev/null 2>&1; then 7z a -tzip -bso0 "$archive" "$name"
-         else powershell -NoProfile -Command "Compress-Archive -Path '$name' -DestinationPath '$archive'"; fi ;;
+         # Fallback writer: Python zipfile always stores POSIX '/' member separators,
+         # which validate_packages.py requires (Compress-Archive may emit backslashes).
+         else python3 -B "$root/scripts/ci/zip_tree.py" "$name" "$archive"; fi ;;
   linux-*) archive="$name.tar.gz"; tar -czf "$archive" "$name" ;;
 esac
 hash_file "$archive"

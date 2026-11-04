@@ -163,3 +163,31 @@ class PackageValidationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ZipTreeFallback(unittest.TestCase):
+    """package.sh's no-7z Windows writer must emit members validate_packages accepts."""
+
+    def test_posix_members_under_package_root(self):
+        import importlib.util
+        import sys
+        sys.path.insert(0, str(SCRIPT.parent))   # validate_packages imports its sibling signing module
+        try:
+            spec = importlib.util.spec_from_file_location("validate_packages", SCRIPT)
+            validator = importlib.util.module_from_spec(spec); spec.loader.exec_module(validator)
+        finally:
+            sys.path.remove(str(SCRIPT.parent))
+        with tempfile.TemporaryDirectory() as temp:
+            package = Path(temp) / "RoboDrummer-1.2.3-windows-x64"
+            (package / "RoboDrummer.vst3/Contents/x86_64-win").mkdir(parents=True)
+            (package / "RoboDrummer.vst3/Contents/x86_64-win/RoboDrummer.vst3").write_bytes(b"x")
+            (package / "INSTALL.md").write_text("i")
+            archive = Path(temp) / "out.zip"
+            subprocess.run(["python3", "-B", str(ROOT / "scripts/ci/zip_tree.py"), str(package), str(archive)], check=True)
+            with zipfile.ZipFile(archive) as data: names = data.namelist()
+            self.assertIn("RoboDrummer-1.2.3-windows-x64/RoboDrummer.vst3/Contents/x86_64-win/RoboDrummer.vst3", names)
+            for name in names:
+                self.assertNotIn("\\", name)
+                validator.member_path(name, Path(temp) / "x", package.name)
+            result = subprocess.run(["python3", "-B", str(ROOT / "scripts/ci/zip_tree.py"), str(package), str(archive)], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)  # never overwrites an existing archive

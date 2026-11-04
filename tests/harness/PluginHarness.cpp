@@ -16,6 +16,7 @@
 #include <execinfo.h>
 #include <unistd.h>
 #endif
+#include "CrashDiagnostics.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -235,7 +236,9 @@ void pumpUntil(Predicate&& ready) {
         pump(10);
 }
 
-void section(const char* name) { std::printf("[%s]\n", name); }
+// Flush per section so a crash report on a piped stdout still names the last section reached.
+void section(const char* name) { std::printf("[%s]\n", name); std::fflush(stdout); }
+
 
 void testFirstWaveSafetyRegressions() {
     section("allocator audit hooks count each allocation and free once");
@@ -258,6 +261,7 @@ void testFirstWaveSafetyRegressions() {
     const auto authorityCheck = [](bool ok, const char* detail) { CHECK_MSG(ok, "%s", detail); };
     robodrummer::test::runInternalTempoMeterChecks(authorityCheck);
     robodrummer::test::runAdaptiveJoinBoundaryChecks(authorityCheck);
+    robodrummer::test::runAdaptiveJoinUnarmedLoopChecks(authorityCheck);
     robodrummer::test::runAdaptiveJoinTimelineChecks(authorityCheck, [](auto&& callback) { return rdAuditNoHeap(callback); });
 
     const auto labelledCheck = [](bool valid, const juce::String& label) { CHECK_MSG(valid, "%s", label.toRawUTF8()); };
@@ -369,11 +373,11 @@ void testMidiCommandsAndLearn() {
     CHECK(humanizeTarget >= 0);
     rig.processor.getMidiLearn().armTarget(humanizeTarget);
     rig.run(1, [](long long) { return 0.0f; }, [](long long, juce::MidiBuffer& m) { m.addEvent(juce::MidiMessage::controllerEvent(3, 74, 0), 0); });
-    pump(120);
+    pumpUntil([&] { return rig.processor.getMidiLearn().ccForTarget(humanizeTarget) == 74 && rig.value("humanize") < 0.02f; });
     CHECK(rig.processor.getMidiLearn().ccForTarget(humanizeTarget) == 74);
     CHECK_MSG(rig.value("humanize") < 0.02f, "humanize %f", rig.value("humanize"));
     rig.run(1, [](long long) { return 0.0f; }, [](long long, juce::MidiBuffer& m) { m.addEvent(juce::MidiMessage::controllerEvent(3, 74, 127), 0); });
-    pump(120);
+    pumpUntil([&] { return rig.value("humanize") > 0.98f; });
     CHECK_MSG(rig.value("humanize") > 0.98f, "humanize %f", rig.value("humanize"));
     // MIDI learn a note for Crash on channel 2.
     rig.processor.getMidiLearn().armCommand(static_cast<int>(robodrummer::MidiCommand::Crash));
@@ -2438,9 +2442,12 @@ void testEditorUi() {
         if (auto* restart = dynamic_cast<juce::TextButton*>(findById(red, "practiceRestartTrainer"))) click(restart);
         riff.param("practiceEnabled", 1); riff.param("pracCountInLen", 3); riff.param("pracTrainOn", 1);
         riff.run(200, [](long long s) { return pluck(s, 120.0); }, kNoMidi);
-        pump(150);
+        // The editor timer publishes practice status; wait for it with a bounded deadline.
         bool sawStatus = false;
-        visitAll(red, [&](juce::Component& c) { if (auto* l = dynamic_cast<juce::Label*>(&c)) if (l->getText().contains("Trainer") && l->getText().contains("BPM")) sawStatus = true; });
+        pumpUntil([&] {
+            visitAll(red, [&](juce::Component& c) { if (auto* l = dynamic_cast<juce::Label*>(&c)) if (l->getText().contains("Trainer") && l->getText().contains("BPM")) sawStatus = true; });
+            return sawStatus;
+        });
         CHECK_MSG(sawStatus, "practice status text missing: %s", riff.processor.getPracticeStatusText().toRawUTF8());
         riff.param("practiceEnabled", 0);
     }
@@ -2689,6 +2696,7 @@ static void testNativeUiContracts() {
 }
 
 int main(int argc, char** argv) {
+    rdtest::installCrashDiagnostics();
 #if defined(__GLIBC__)
     if (const char* trace = std::getenv("RD_ALLOC_TRACE")) gTraceAllocations = trace[0] == '1';
     { void* prime[4]; backtrace(prime, 4); }   // the first backtrace() call allocates; do it before any audit
