@@ -22,6 +22,7 @@ struct RoboDrummerProcessorTestAccess {
         processor.playerHandoff_.publish(std::move(player));
     }
     static void drainRetired(RoboDrummerAudioProcessor& processor) { processor.playerHandoff_.drainRetired(); }
+    static float loopConsistency(const RoboDrummerAudioProcessor& processor) { return processor.rhythmAnalyzer_.loopConsistency(); }
 };
 
 namespace robodrummer::processor_safety_tests {
@@ -349,6 +350,38 @@ void runProcessorSafetyChecks(Check&& check, Audit&& audit) {
             host.clear(); check(rig.process(host,audit));
             check(rig.processor.getCurrentArrangementSection()==4);
         }
+    }
+
+    // A multi-bar seek that crosses into a section still performs that section's
+    // entry: a Crash transition marks it, a None transition does not.
+    std::printf("[processor safety: multi-bar seek runs destination section entry]\n");
+    {
+        int afterSeek[2]{};
+        for (const bool crashEntry : {false,true}) {
+            SafetyRig rig;
+            rig.parameter("humanize", 0.0f);
+            for (int index=0; index<RoboDrummerAudioProcessor::ArrangementSlotCount; ++index) {
+                ArrangementSlot slot;
+                slot.enabled=index==0 || index==2;
+                slot.section.bars=4;
+                slot.section.autoAdvance=true;
+                slot.section.style=JamStyle::Rock;
+                slot.section.transition=(index==2 && crashEntry) ? SectionTransition::Crash : SectionTransition::None;
+                rig.processor.setArrangementSlot(index, slot);
+            }
+            rig.parameter("arrangementEnabled", 1.0f);
+            juce::MidiBuffer host;
+            host.ensureSize(65536);
+            check(rig.process(host,audit));
+            check(rig.processor.getCurrentArrangementSection()==0);
+            rig.playHead.ppq=16.0;   // exactly the first bar of slot 2, four bars ahead
+            for (int block=0; block<4; ++block) {
+                host.clear(); check(rig.process(host,audit));
+                afterSeek[crashEntry ? 1 : 0]+=noteOns(host);
+            }
+            check(rig.processor.getCurrentArrangementSection()==2);
+        }
+        check(afterSeek[1]>afterSeek[0]);
     }
 
     std::printf("[processor safety: sample-domain host timeline bounds]\n");

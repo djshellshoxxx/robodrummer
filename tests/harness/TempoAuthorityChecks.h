@@ -1,5 +1,7 @@
 #pragma once
 #include "plugin/PluginProcessor.h"
+#include "ProcessorSafetyChecks.h"   // RoboDrummerProcessorTestAccess observation seam
+#include <cstdio>
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -149,6 +151,53 @@ void runAdaptiveJoinBoundaryChecks(Check&& check) {
             check(result.firstNoteSample >= 0 && result.firstNotePhaseError <= 0.08,
                   "oversized adaptive entry schedules its first generated MIDI hit on the predicted beat inside the callback");
     }
+}
+
+// Loose real-world timing can keep the histogram confident while the onset PLL stays
+// below its 0.60 consistency (this fixture: 9-14 beats; the loop may never settle).
+// Large callbacks must then join on the tracker's own next beat after a bounded wait
+// instead of waiting for as long as the tracker stays confident.
+template <typename Check>
+void runAdaptiveJoinUnarmedLoopChecks(Check&& check) {
+    constexpr int block = 8192;
+    constexpr double period = 24000.0;   // 120 BPM at 48 kHz
+    int starvedCases = 0;
+    for (const double jitter : {0.09, 0.11}) {
+        AuthorityRig rig(block);
+        setAuthorityParameter(*rig.processor, "leadershipMode", 1.0f);
+        setAuthorityParameter(*rig.processor, "humanize", 0.0f);
+        // Deterministic late/on/early offsets around the PLL's 8% on-grid window.
+        constexpr double pattern[] = {1.0, 0.0, -1.0};
+        const auto onset = [&](long long beat) {
+            return static_cast<double>(beat) * period + jitter * period * pattern[static_cast<std::size_t>(beat % 3)];
+        };
+        const auto guitar = [&](long long sample) {
+            const auto beat = static_cast<long long>((static_cast<double>(sample) + 0.5 * period) / period);
+            double value = 0.0;
+            for (long long b = std::max(0LL, beat - 1); b <= beat + 1; ++b) {
+                const double within = static_cast<double>(sample) - onset(b) - period;
+                if (within >= 0.0 && within < 8000.0)
+                    value += (b % 4 == 0 ? 0.8 : 0.45) * std::exp(-within / 2200.0) * std::sin(6.2831853 * 196.0 * within / 48000.0);
+            }
+            return static_cast<float>(value);
+        };
+        double starvedSamples = 0.0;
+        bool joined = false;
+        for (int iteration = 0; iteration < static_cast<int>(40.0 * 48000.0 / block) && !joined; ++iteration) {
+            rig.process(guitar);
+            joined = rig.processor->hasAdaptiveJoined();
+            const bool confident = rig.processor->isGuitarTrackerLocked() && rig.processor->getGuitarTempoConfidence() >= 0.60f
+                && rig.processor->getGuitarBeatConfidence() >= 0.55f;
+            if (!joined && confident && RoboDrummerProcessorTestAccess::loopConsistency(*rig.processor) < 0.60f) starvedSamples += block;
+        }
+        const double starvedBeats = starvedSamples / period;
+        std::printf("  unarmed-loop jitter %.2f: confident with inconsistent loop for %.1f beats, joined=%d\n", jitter, starvedBeats, joined);
+        if (starvedBeats >= 3.0) ++starvedCases;
+        // The fallback arms after kUnarmedAdaptiveWaitBeats (4) of confident audio and enters within
+        // one more beat; confidence dips cancel a latched entry, so allow 12 (without it: never).
+        check(joined && starvedBeats <= 12.0, "confident tracker joins large callbacks within a bounded wait while the onset PLL is inconsistent");
+    }
+    check(starvedCases > 0, "loose-timing fixture actually exercises a confident tracker with an unarmed loop");
 }
 
 // The 60 BPM fixture puts the real accepted entry at sample 36,116 of a 40,000-sample

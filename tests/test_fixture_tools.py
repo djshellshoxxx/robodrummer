@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 import wave
@@ -52,7 +53,7 @@ class FixtureBoundaryTests(unittest.TestCase):
                 corpus.mkdir()
                 metadata = write_corpus(corpus)
                 output = directory / "reports"
-                command = ["python3", "-B", str(ROOT / "tools/check_fixtures.py"), "--corpus", str(corpus),
+                command = [sys.executable, "-B", str(ROOT / "tools/check_fixtures.py"), "--corpus", str(corpus),
                            "--validate-only", "--output-dir", str(output)]
                 before = subprocess.run(command, capture_output=True, text=True)
                 self.assertEqual(before.returncode, 0, before.stderr)
@@ -238,7 +239,7 @@ class FixtureRunnerIntegration(unittest.TestCase):
     def test_44100_variants_use_file_rate_and_runner_rejects_bad_pcm(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            subprocess.run(["python3", str(ROOT / "tools/generate_synthetic_fixtures.py"), str(directory / "corpus"), "--sample-rate", "44100", "--duration", "3"], check=True)
+            subprocess.run([sys.executable, str(ROOT / "tools/generate_synthetic_fixtures.py"), str(directory / "corpus"), "--sample-rate", "44100", "--duration", "3"], check=True)
             corpus = fixtures.validate_corpus(directory / "corpus")
             for clip in (corpus["clips"][0], corpus["clips"][3], corpus["clips"][4]):
                 for block in (64, 512, 2048):
@@ -254,8 +255,8 @@ class FixtureRunnerIntegration(unittest.TestCase):
     def test_synthetic_ingestion_reports_all_three_block_sizes(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            subprocess.run(["python3", str(ROOT / "tools/generate_synthetic_fixtures.py"), str(directory / "corpus")], check=True)
-            result = subprocess.run(["python3", str(ROOT / "tools/check_fixtures.py"), "--corpus", str(directory / "corpus"),
+            subprocess.run([sys.executable, str(ROOT / "tools/generate_synthetic_fixtures.py"), str(directory / "corpus")], check=True)
+            result = subprocess.run([sys.executable, str(ROOT / "tools/check_fixtures.py"), "--corpus", str(directory / "corpus"),
                                      "--required", "--runner", os.environ["ROBODRUMMER_FIXTURE_RUNNER"], "--output-dir", str(directory / "reports")],
                                     text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
