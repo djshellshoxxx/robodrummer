@@ -4,12 +4,12 @@ The source is under validation; **BETA READY and RELEASE READY are not claimed**
 
 ## Current automated evidence — 2026-11-01
 
-Consolidated source at local integration340befbe66ea2faf58b9b45898cb9f154f45134c includes bounded MIDI/seek callbacks, safe sample import and ownership, analysis/preset fixes, native UI contracts and fixture/packaging infrastructure. This dated local evidence is distinct from the current-source native CI and merge record on [PR36](https://github.com/djshellshoxxx/robodrummer/pull/36).
+Consolidated source at local integration `340befbe66ea2faf58b9b45898cb9f154f45134c` includes bounded MIDI/seek callbacks, safe sample import and ownership, analysis/preset fixes, native UI contracts and fixture/packaging infrastructure. This dated local evidence is distinct from the current-source native CI and merge record on [PR 36](https://github.com/djshellshoxxx/robodrummer/pull/36).
 
 | Check | Observed result |
 |---|---|
 | Release portable core plus fixture integration | 70/70 passed; actual production-runner fixture methods execute through CTest. Missing optional real corpus explicitly reports SKIPPED. |
-| Core ASan, LeakSanitizer and UBSan | Earlier full68/68 passed; final7/7 new/affected core checks passed with leak detection enabled, including timeline, preference and fixture follow-ups. This does not claim native processor sanitizer coverage. |
+| Core ASan, LeakSanitizer and UBSan | Earlier full 68/68 passed; final 7/7 new/affected core checks passed with leak detection enabled, including timeline, preference and fixture follow-ups. This does not claim native processor sanitizer coverage. |
 | Python release, signing, archive, fixture and platform adapters | 59/59 passed with the production fixture runner supplied; no skipped engine methods. |
 | Actual processor harness and native UI contracts | 55,521 checks, zero failures; includes concurrent/reentrant host state, long/cumulative SysEx, replaced prebuffered host MIDI, command/critical overflow, huge PPQ seeks, sampler retirement, float WAV/AIFF imports, preset slices, parameter text, native popup actions, all nine tabs and duplicate accessibility providers. |
 | 30-minute simulated soak | Passed in 15.8 seconds, drummer tempo 112.6–120.2 BPM. This is simulated audio duration. |
@@ -19,11 +19,20 @@ Consolidated source at local integration340befbe66ea2faf58b9b45898cb9f154f45134c
 | CLAP validator 0.4.1 | 44 rows: 31 success, 9 upstream skips, 3 failed, 1 warning. See the explicit contract blocker below. This is separate from VST3 pluginval. |
 | Workflow/script checks | Both workflows pass actionlint 1.7.12; signing/archive adapter regressions pass. Native archives/checksums and isolated Windows install/uninstall run in artifact-only PR CI. |
 
-Oversized adaptive entry now predicts an accepted future PLL beat and translates audio/MIDI/capture/practice together; fixed scratch storage streams the full host buffer. The focused production suite passed65checks with zero allocations/frees, including a36116/40000 entry beyond scratch capacity and an extra offbeat rejection. Nine ordinary audio/MIDI comparisons were byte-identical across64/512/1024 samples and all three leadership modes.
+Oversized adaptive entry now predicts an accepted future PLL beat and translates audio/MIDI/capture/practice together; fixed scratch storage streams the full host buffer. The focused production suite passed 65 checks with zero allocations/frees, including a 36116/40000 entry beyond scratch capacity and an extra offbeat rejection. Nine ordinary audio/MIDI comparisons were byte-identical across 64/512/1024 samples and all three leadership modes.
 
-The final callback timing measurement was0.052ms mean and0.583ms worst observed against a10.667ms block deadline on a shared runner; whole fixture processing was0.68% of real time.
+The final callback timing measurement was 0.052 ms mean and 0.583 ms worst observed against a 10.667 ms block deadline on a shared runner; whole fixture processing was 0.68% of real time.
 
 The Linux callback audit interposes `malloc/calloc/realloc/free` and counts only the armed audio thread. Other platforms count `new/delete`; that does not instrument every framework C allocation. Audits cover both allocations and frees, with a self-test proving hooks count once. Host-owned MIDI storage must be prebuffered to 8,192 bytes; see [architecture contracts](ARCHITECTURE.md#bounded-host-adapters-and-ownership-contracts). Allocation assertions remain enabled and the historical reference is unchanged.
+
+## Follow-up — 2026-11-04 (PR 36 CI and review)
+
+* Windows native harness exit 127: MSYS maps unknown NTSTATUS crashes to 127. Each real processor is ~280 KB (fixed real-time scratch), several live on harness stacks, and Windows' main-thread stack is 1 MB. The MSVC harness now links with an 8 MB stack (Linux/macOS default) and prints the native exception code and last section on any crash. Hosts allocate plug-ins on the heap; production code is unchanged. Requires the native Windows CI rerun.
+* Intel macOS flakes (MIDI-learned Humanize, practice status label): fixed 120/150 ms waits replaced by bounded condition polling; assertions unchanged.
+* Large-callback adaptive entry: a confident tracker whose onset PLL stays below 0.60 consistency never joined (fixture: 42+ beats). After 4 beats of confident audio it now latches the tracker's own next beat. New harness regression fails without the fix.
+* Multi-bar seeks into a section again run its entry (programmed-boundary cue, crash unless transition None), as the earlier per-bar walk did. New harness regression fails without the fix.
+* Windows packaging without 7z uses `scripts/ci/zip_tree.py` (POSIX member names) instead of `Compress-Archive`.
+* Local Linux: 70/70 core, 60/60 Python, harness 55,536 checks / 0 failures (without the pinned historical reference, which CI compares).
 
 ## Explicit CLAP state-contract blocker
 

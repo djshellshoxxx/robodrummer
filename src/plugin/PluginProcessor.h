@@ -511,6 +511,10 @@ private:
     bool adaptiveJoined_{false};
     // Audio-owned delay from the next callback start to a trusted future beat; -1 means unarmed.
     double pendingAdaptiveJoinSamples_{-1.0};
+    // Confident large-callback audio seen while the PLL forecast could not arm a join
+    // (kept across brief confidence dips while locked; cleared on unlock, join or reset).
+    double unarmedAdaptiveWaitSamples_{0.0};
+    static constexpr double kUnarmedAdaptiveWaitBeats = 4.0;
     std::atomic<bool> adaptiveJoinResetPending_{false}; // state restoration invalidates the audio-owned prediction
     int lastAudioMode_{static_cast<int>(robodrummer::LeadershipMode::DrummerLeads)};
     double jamBrainCooldownSeconds_{0.0};

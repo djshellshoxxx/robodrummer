@@ -1,4 +1,5 @@
 #include "plugin/JamEngine.h"
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cassert>

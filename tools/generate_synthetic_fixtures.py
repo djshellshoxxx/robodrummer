@@ -60,6 +60,11 @@ def generate(directory, sample_rate=48000, duration=30.0):
         if category == "ramp": tempo_map += [{"start_s": 5, "bpm": 100}, {"start_s": 25, "bpm": 130}]
         elif category == "jump": tempo_map += [{"start_s": 12, "bpm": 140}]
         tempo_map = [p for p in tempo_map if p["start_s"] < duration]
+        # A ramp clipped before its 25 s breakpoint ends at the clip duration with the
+        # interpolated tempo, so target_bpm keeps following the accelerating audio.
+        clip_end = len(pcm) / sample_rate
+        if category == "ramp" and beats and 5 < clip_end <= 25:
+            tempo_map.append({"start_s": clip_end, "bpm": 100 + 30 * (clip_end - 5) / 20})
         metadata = {
             "schema": 1, "id": f"S{index:02d}", "file": name + ".wav", "sample_rate": sample_rate,
             "duration_s": len(pcm) / sample_rate, "category": category, "tone": "synthetic_plucked_strings",

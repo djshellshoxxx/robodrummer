@@ -153,7 +153,7 @@ if(ROBODRUMMER_BUILD_JUCE)
   # Headless end-to-end checks against the real AudioProcessor (no host or audio device needed).
   juce_add_console_app(RoboDrummerHarness PRODUCT_NAME "RoboDrummerHarness")
   juce_generate_juce_header(RoboDrummerHarness)
-  target_sources(RoboDrummerHarness PRIVATE tests/harness/PluginHarness.cpp)
+  target_sources(RoboDrummerHarness PRIVATE tests/harness/PluginHarness.cpp tests/harness/CrashDiagnostics.cpp)
   target_include_directories(RoboDrummerHarness PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   target_compile_definitions(RoboDrummerHarness PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1)
   target_link_libraries(RoboDrummerHarness PRIVATE
@@ -164,6 +164,10 @@ if(ROBODRUMMER_BUILD_JUCE)
     juce::juce_recommended_config_flags)
   if(MSVC)
     target_compile_options(RoboDrummerHarness PRIVATE /UNDEBUG)
+    # Harness checks keep several real processors (each ~280 KB, mostly fixed
+    # real-time scratch) on the stack. Match the 8 MB main-thread stack of
+    # Linux/macOS; Windows' 1 MB default overflows (MSYS reports exit 127).
+    target_link_options(RoboDrummerHarness PRIVATE /STACK:8388608)
   else()
     target_compile_options(RoboDrummerHarness PRIVATE -UNDEBUG)
   endif()
