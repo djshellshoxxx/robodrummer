@@ -1008,12 +1008,49 @@ public:
         riffConfidence_.setTitle("Riff lock confidence");
         for (auto* l : { &riffText_, &riffKicks_, &limbText_, &meterText_ }) { l->setFont(juce::FontOptions(13.0f)); l->setColour(juce::Label::textColourId, kText); l->setMinimumHorizontalScale(0.6f); addAndMakeVisible(*l); }
         riffText_.setTitle("Riff lock status"); limbText_.setTitle("Limb report"); meterText_.setTitle("Auto meter");
+        updateOnsets_.setComponentID("analysisUpdateOnsets");
+        updateOnsets_.setTitle("Update onset snapshot");
+        updateOnsets_.setDescription("Refresh the frozen onset marks and predicted beat grid. Audio analysis continues while the display is frozen.");
+        updateOnsets_.setTooltip(updateOnsets_.getDescription());
+        updateOnsets_.onClick = [this] { drainOnsets(); captureOnsetSnapshot(); repaint(); };
+        addChildComponent(updateOnsets_);
+        updateOnsets_.setVisible(reducedMotion_);
+        if (reducedMotion_) captureOnsetSnapshot();
+    }
+    void setReducedMotion(bool on) {
+        if (reducedMotion_ == on) return;
+        reducedMotion_ = on;
+        updateOnsets_.setVisible(on);
+        if (on) { drainOnsets(); captureOnsetSnapshot(); }
+        repaint();
+    }
+    void drainOnsets() {
+        const auto now = processor_.getAnalysisSampleCursor();
+        if (now < lastOnsetCursor_) onsets_.clear();
+        lastOnsetCursor_ = now;
+        std::array<robodrummer::AnalysisOnsetMark, 64> marks;
+        // A producer running continuously cannot monopolize the message loop.
+        for (int batch = 0; batch < 16; ++batch) {
+            const auto count = processor_.popOnsetMarks(marks.data(), marks.size());
+            if (count == 0) break;
+            for (std::size_t n = 0; n < count; ++n) onsets_.push_back(marks[n]);
+        }
+        const double sr = std::max(1.0, processor_.getSampleRateForDisplay());
+        while (!onsets_.empty() && (onsets_.size() > 2048 || static_cast<double>(now - onsets_.front().sample) / sr > 9.0))
+            onsets_.pop_front();
+    }
+    long long displayedOnsetCursorForTest() const noexcept { return reducedMotion_ ? frozen_.cursor : processor_.getAnalysisSampleCursor(); }
+    std::size_t displayedOnsetCountForTest() const noexcept { return reducedMotion_ ? frozenOnsets_.size() : onsets_.size(); }
+    long long consumedOnsetCursorForTest() const noexcept { return lastOnsetCursor_; }
+    juce::Rectangle<int> onsetPresentationBoundsForTest() const noexcept {
+        return centerArea_.withHeight(centerArea_.getHeight() * 30 / 100).reduced(12, 6).withTrimmedTop(22);
     }
     void resized() override {
         auto all = getLocalBounds().reduced(8);
         auto right = all.removeFromRight(all.getWidth() * 32 / 100);
         all.removeFromRight(8);
         centerArea_ = all;
+        updateOnsets_.setBounds(centerArea_.getRight() - 94, centerArea_.getY() + 3, 86, 22);
         capture_.setBounds(right.removeFromTop(juce::jmin(190, right.getHeight() / 2)));
         right.removeFromTop(8);
         riffArea_ = right.removeFromTop(juce::jmin(206, right.getHeight() * 60 / 100));
@@ -1026,8 +1063,9 @@ public:
     }
 
     void paint(juce::Graphics& g) override {
-        const double sr = processor_.getSampleRateForDisplay();
-        const double nowSeconds = static_cast<double>(processor_.getAnalysisSampleCursor()) / std::max(1.0, sr);
+        const auto plotState = reducedMotion_ ? frozen_ : onsetPlotState();
+        const double sr = plotState.sampleRate;
+        const double nowSeconds = static_cast<double>(plotState.cursor) / std::max(1.0, sr);
 
         auto area = centerArea_;
         const auto logArea = logArea_;
@@ -1035,17 +1073,17 @@ public:
 
         // ---- onsets and predicted beat grid ----
         auto onsetArea = area.removeFromTop(area.getHeight() * 30 / 100);
-        drawPanel(g, onsetArea, "Onsets (last 8 s) and predicted beat grid");
+        drawPanel(g, onsetArea, reducedMotion_ ? "Onsets (frozen) and predicted beat grid" : "Onsets (last 8 s) and predicted beat grid");
         auto plot = onsetArea.reduced(12, 6); plot.removeFromTop(22);
         g.setColour(kBackground);
         g.fillRoundedRectangle(plot.toFloat(), 4.0f);
         constexpr double window = 8.0;
         const auto xFor = [&](double t) { return plot.getX() + static_cast<float>((t - (nowSeconds - window)) / window) * plot.getWidth(); };
-        const double bpm = processor_.getDetectedGuitarBpm();
+        const double bpm = plotState.bpm;
         const double period = 60.0 / std::max(30.0, bpm);
-        const double phase = processor_.getGuitarBeatPhase();
-        const int beatInBar = processor_.getGuitarBeatInBar();
-        const int meter = std::max(1, processor_.getEffectiveMeterNumerator());
+        const double phase = plotState.phase;
+        const int beatInBar = plotState.beatInBar;
+        const int meter = std::max(1, plotState.meter);
         const double lastBeat = nowSeconds - phase * period;
         for (int k = 0; k < 60; ++k) {
             const double t = lastBeat - k * period;
@@ -1055,18 +1093,19 @@ public:
             g.drawLine(xFor(t), static_cast<float>(plot.getY()), xFor(t), static_cast<float>(plot.getBottom()), number == 0 ? 2.0f : 1.0f);
         }
         g.setColour(kAccentAlt.withAlpha(0.6f)); // the predicted next beat
-        const double nextBeat = processor_.getPredictedNextGuitarBeatSeconds();
+        const double nextBeat = plotState.nextBeat;
         if (nextBeat > nowSeconds - 0.001 && nextBeat < nowSeconds + 1.0) {
             const float x = std::min(xFor(nextBeat), static_cast<float>(plot.getRight()) - 1.0f);
             g.drawLine(x, static_cast<float>(plot.getY()), x, static_cast<float>(plot.getBottom()), 2.0f);
         }
-        for (const auto& onset : onsets_) {
+        const auto drawOnsets = [&](const auto& marks) { for (const auto& onset : marks) {
             const double t = static_cast<double>(onset.sample) / std::max(1.0, sr);
             if (t < nowSeconds - window) continue;
             const float h = 6.0f + onset.strength * (plot.getHeight() - 10.0f);
             g.setColour(kAccent);
             g.fillRect(juce::Rectangle<float>(xFor(t) - 1.5f, plot.getBottom() - h, 3.0f, h));
-        }
+        } };
+        if (reducedMotion_) drawOnsets(frozenOnsets_); else drawOnsets(onsets_);
         g.setColour(kDim); g.setFont(juce::FontOptions(11.0f));
         g.drawText("now", plot.getRight() - 40, plot.getY(), 38, 14, juce::Justification::centredRight);
 
@@ -1099,7 +1138,7 @@ public:
                    "  density " + whole(perf.transientDensity * 100.0) + "  regularity " + whole(perf.regularity * 100.0) + "  accent " + whole(perf.accentProbability * 100.0) +
                    "  silence " + whole(perf.silenceProbability * 100.0) + "%", textRow.removeFromTop(16), juce::Justification::centredLeft);
         g.setColour(kText); g.setFont(juce::FontOptions(13.0f));
-        g.drawText("Guitar " + juce::String(bpm, 1) + " BPM  |  drummer " + juce::String(processor_.getEffectiveDrummerBpm(), 1) + " BPM  |  " + movementName(processor_.getTempoMovement()) +
+        g.drawText("Guitar " + juce::String(processor_.getDetectedGuitarBpm(), 1) + " BPM  |  drummer " + juce::String(processor_.getEffectiveDrummerBpm(), 1) + " BPM  |  " + movementName(processor_.getTempoMovement()) +
                    " (" + juce::String(processor_.getTempoVelocity(), 2) + " BPM/s)  |  lookahead " + juce::String(processor_.getLookaheadMs(), 1) + " ms",
                    textRow.removeFromTop(20), juce::Justification::centredLeft);
         inner.removeFromLeft(14);
@@ -1170,16 +1209,7 @@ public:
     }
 
     void refresh() override {
-        // pull onset marks and trim old ones
-        std::array<robodrummer::AnalysisOnsetMark, 64> marks;
-        for (;;) {
-            const auto n = processor_.popOnsetMarks(marks.data(), marks.size());
-            if (n == 0) break;
-            for (std::size_t i = 0; i < n; ++i) onsets_.push_back(marks[i]);
-        }
-        const double sr = std::max(1.0, processor_.getSampleRateForDisplay());
-        const long long nowSample = processor_.getAnalysisSampleCursor();
-        while (!onsets_.empty() && static_cast<double>(nowSample - onsets_.front().sample) / sr > 9.0) onsets_.pop_front();
+        drainOnsets();
 
         historyHead_ = (historyHead_ + 1) % HistoryLength;
         history_[(historyHead_ + HistoryLength - 1) % HistoryLength] = { processor_.getGuitarTempoConfidence(), processor_.getGuitarBeatConfidence(), processor_.getGuitarDownbeatConfidence() };
@@ -1214,6 +1244,17 @@ public:
     }
 
 private:
+    struct OnsetPlotState {
+        double sampleRate{}, bpm{}, phase{}, nextBeat{};
+        long long cursor{};
+        int beatInBar{}, meter{};
+    };
+    OnsetPlotState onsetPlotState() const {
+        return {processor_.getSampleRateForDisplay(), processor_.getDetectedGuitarBpm(), processor_.getGuitarBeatPhase(),
+            processor_.getPredictedNextGuitarBeatSeconds(), processor_.getAnalysisSampleCursor(),
+            processor_.getGuitarBeatInBar(), processor_.getEffectiveMeterNumerator()};
+    }
+    void captureOnsetSnapshot() { frozen_ = onsetPlotState(); frozenOnsets_.assign(onsets_.begin(), onsets_.end()); }
     static constexpr std::size_t HistoryLength = 360;
     struct LogEntry { double time; juce::String text; };
 
@@ -1224,6 +1265,11 @@ private:
     juce::Label riffText_, riffKicks_, limbText_, meterText_;
     juce::Rectangle<int> centerArea_, riffArea_, logArea_;
     std::deque<robodrummer::AnalysisOnsetMark> onsets_;
+    std::vector<robodrummer::AnalysisOnsetMark> frozenOnsets_;
+    OnsetPlotState frozen_;
+    long long lastOnsetCursor_{0};
+    bool reducedMotion_{uiPrefs().reducedMotion};
+    juce::TextButton updateOnsets_{"Update"};
     std::array<std::array<float, 3>, HistoryLength> history_;
     std::size_t historyHead_{0};
     std::deque<LogEntry> log_;
@@ -1238,21 +1284,26 @@ private:
 // ====================================================================================================================
 class DrumMapEditor final : public juce::Component {
 public:
-    explicit DrumMapEditor(RoboDrummerAudioProcessor& p) : processor_(p) {
+    explicit DrumMapEditor(RoboDrummerAudioProcessor& p, juce::Component* lifetimeOwner = nullptr)
+        : processor_(p), owner_(lifetimeOwner != nullptr ? lifetimeOwner : this) {
+        setTitle("MIDI drum output map");
         static const char* names[16] { "Kick", "Snare", "Closed hat", "Open hat", "Ride", "Crash", "High tom", "Mid tom", "Floor tom",
                                        "Rimshot", "Side stick", "China", "Splash", "Cowbell", "Tambourine", "Clap" };
         for (int i = 0; i < 16; ++i) {
             rows_[static_cast<std::size_t>(i)].label.setText(names[i], juce::dontSendNotification);
+            rows_[static_cast<std::size_t>(i)].combo.setTitle(juce::String(names[i]) + " MIDI note");
+            rows_[static_cast<std::size_t>(i)].combo.setDescription("Choose the MIDI output note for this drum.");
             for (int note = 0; note < 128; ++note)
                 rows_[static_cast<std::size_t>(i)].combo.addItem(juce::String(note) + "  " + juce::MidiMessage::getMidiNoteName(note, true, true, 3), note + 1);
             addAndMakeVisible(rows_[static_cast<std::size_t>(i)].label);
             addAndMakeVisible(rows_[static_cast<std::size_t>(i)].combo);
             rows_[static_cast<std::size_t>(i)].combo.onChange = [this, i] {
+                if (owner_ == nullptr) return;
                 processor_.setMidiDrumNote(static_cast<robodrummer::DrumInstrument>(i), rows_[static_cast<std::size_t>(i)].combo.getSelectedId() - 1);
             };
         }
         reset_.setTooltip("Restore the General MIDI percussion map.");
-        reset_.onClick = [this] { processor_.resetMidiDrumMap(); load(); };
+        reset_.onClick = [this] { if (owner_ != nullptr) { processor_.resetMidiDrumMap(); load(); } };
         addAndMakeVisible(reset_);
         load();
         setSize(330, 16 * 28 + 52);
@@ -1272,6 +1323,7 @@ private:
     }
     struct Row { juce::Label label; juce::ComboBox combo; };
     RoboDrummerAudioProcessor& processor_;
+    juce::Component::SafePointer<juce::Component> owner_;
     std::array<Row, 16> rows_;
     juce::TextButton reset_{"RESET TO GENERAL MIDI"};
 };
@@ -1303,7 +1355,8 @@ public:
         for (auto* c : std::initializer_list<juce::Component*>{ &mode_, &gain_, &autoGain_, &gate_, &monitor_, &dynamic_, &strength_, &inertia_, &correction_, &sensitivity_, &midiChannel_ }) addAndMakeVisible(*c);
         drumMap_.setTooltip("Edit which MIDI note each drum sends (General MIDI by default).");
         drumMap_.onClick = [this] {
-            juce::CallOutBox::launchAsynchronously(std::make_unique<DrumMapEditor>(processor_), drumMap_.getScreenBounds(), nullptr);
+            if (drumMapCallout_ != nullptr) drumMapCallout_->dismiss();
+            drumMapCallout_ = &juce::CallOutBox::launchAsynchronously(std::make_unique<DrumMapEditor>(processor_, this), drumMap_.getScreenBounds(), nullptr);
         };
         addAndMakeVisible(drumMap_);
         addAndMakeVisible(meter_);
@@ -1324,8 +1377,8 @@ public:
         tooltips_.setTitle("Show tooltips"); tooltips_.setDescription("Show or hide the hover help on every control.");
         tooltips_.onClick = [this] { if (callbacks_.tooltips) callbacks_.tooltips(tooltips_.getToggleState()); };
         reducedMotion_.setToggleState(initial.reducedMotion, juce::dontSendNotification);
-        reducedMotion_.setTooltip("Reduce motion: updates meters and graphs less often (5 times a second instead of 20).");
-        reducedMotion_.setTitle("Reduce motion"); reducedMotion_.setDescription("Updates meters and graphs less often.");
+        reducedMotion_.setTooltip("Updates meters and confidence graphs five times a second and freezes onset scrolling until Update is pressed.");
+        reducedMotion_.setTitle("Reduce motion"); reducedMotion_.setDescription(reducedMotion_.getTooltip());
         reducedMotion_.onClick = [this] { if (callbacks_.reducedMotion) callbacks_.reducedMotion(reducedMotion_.getToggleState()); };
         highContrast_.setToggleState(initial.highContrast, juce::dontSendNotification);
         highContrast_.setTooltip("Thicker panel outlines and full-strength caption text for easier reading.");
@@ -1353,6 +1406,7 @@ public:
         addAndMakeVisible(website_);
         refresh();
     }
+    ~SettingsPanel() override { if (drumMapCallout_ != nullptr) drumMapCallout_->dismiss(); }
     void paint(juce::Graphics& g) override {
         drawPanel(g, inputArea_, "Guitar input & analysis");
         drawPanel(g, calibrationArea_, "Calibration");
@@ -1424,6 +1478,7 @@ private:
     ParamToggle autoGain_;
     ParamSlider gate_, monitor_, dynamic_, strength_, inertia_, correction_, sensitivity_, midiChannel_;
     juce::TextButton drumMap_{"EDIT DRUM MAP..."};
+    juce::Component::SafePointer<juce::CallOutBox> drumMapCallout_;
     BarMeter meter_, progress_;
     juce::TextButton calibrate_{"CALIBRATE (8 s)"}, apply_{"APPLY SUGGESTIONS"}, helpButton_{"HELP / ABOUT"}, tourButton_{"SHOW TOUR"};
     juce::ToggleButton tooltips_, reducedMotion_, highContrast_;

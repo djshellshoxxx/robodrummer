@@ -7,6 +7,8 @@
 #include <JuceHeader.h>
 #include <functional>
 #include <memory>
+#include <sstream>
+#include <locale>
 #include "PluginProcessor.h"
 
 namespace rdui {
@@ -109,6 +111,18 @@ inline bool parseToggleText(const juce::String& raw, bool& value) {
     return false;
 }
 
+inline bool parseSliderText(const juce::String& raw, double minimum, double maximum, double& value) {
+    const auto text = raw.trim();
+    if (text.isEmpty() || text.length() >= 24) return false;
+    std::istringstream input(text.toStdString());
+    input.imbue(std::locale::classic());
+    double parsed = 0.0;
+    input >> std::noskipws >> parsed;
+    if (input.fail() || !input.eof() || !std::isfinite(parsed) || parsed < minimum || parsed > maximum) return false;
+    value = parsed;
+    return true;
+}
+
 inline int findLearnTarget(const juce::String& id) {
     for (int i = 0; i < robodrummer::kLearnTargetCount; ++i)
         if (id == robodrummer::kLearnTargets[static_cast<std::size_t>(i)].id) return i;
@@ -197,7 +211,7 @@ public:
             defaultValue_ = parameter_->convertFrom0to1(parameter_->getDefaultValue());
             slider_.setDoubleClickReturnValue(true, defaultValue_);
         }
-        slider_.addMouseListener(this, false);
+        slider_.addMouseListener(this, true);
     }
     ~ParamSlider() override { slider_.removeMouseListener(this); }
 
@@ -213,16 +227,14 @@ public:
     ParamMenuActions menuActions() {
         ParamMenuActions actions;
         juce::Component::SafePointer<ParamSlider> safe(this);
-        actions.reset = [safe] { if (safe != nullptr) safe->slider_.setValue(safe->defaultValue_, juce::sendNotificationSync); };
+        actions.reset = [safe] { if (safe != nullptr) setParameterPlain(safe->parameter_, static_cast<float>(safe->defaultValue_)); };
         actions.copyText = [safe] { return safe != nullptr ? juce::String(safe->slider_.getValue(), 4) : juce::String(); };
         actions.paste = [safe](const juce::String& raw) {
             if (safe == nullptr) return;
-            const auto text = raw.trim();
-            const bool numeric = text.isNotEmpty() && text.length() < 24 && text.containsOnly("0123456789.-+eE") && text.containsAnyOf("0123456789");
-            const double value = text.getDoubleValue();
+            double value = 0.0;
             auto& slider = safe->slider_;
-            if (numeric && std::isfinite(value) && value >= slider.getMinimum() && value <= slider.getMaximum())
-                slider.setValue(value, juce::sendNotificationSync);
+            if (parseSliderText(raw, slider.getMinimum(), slider.getMaximum(), value))
+                setParameterPlain(safe->parameter_, static_cast<float>(value));
         };
         return actions;
     }
@@ -275,7 +287,7 @@ public:
         describe(combo_, caption, tooltip, id);
         addAndMakeVisible(combo_);
         attachment_ = std::make_unique<APVTS::ComboBoxAttachment>(state, id, combo_);
-        combo_.addMouseListener(this, false);
+        combo_.addMouseListener(this, true);
     }
     ~ParamCombo() override { combo_.removeMouseListener(this); }
     ParamMenuActions menuActions() {

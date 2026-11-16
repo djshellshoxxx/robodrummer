@@ -67,7 +67,9 @@ public:
                 framePeakIndex_ = frameSamples_;
             }
             ++frameSamples_;
-            ++samplesSinceOnset_;
+            // Only refractory eligibility matters; an idle plug-in may receive
+            // hours of silence, so never accumulate an unbounded sample age.
+            if (samplesSinceOnset_ < refractorySamples_) ++samplesSinceOnset_;
 
             if (frameSamples_ < frameSize_) continue;
 

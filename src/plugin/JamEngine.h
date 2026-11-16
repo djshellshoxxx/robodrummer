@@ -58,7 +58,7 @@ public:
     // Bar index and phase (0..1) of the position `offset` samples after the current cursor, in the current feel.
     void barPhaseAt(long long offset, long long& bar, double& phase) const noexcept {
         const long long barSamples = currentBarSamples();
-        const long long position = std::max<long long>(0, sampleCursor_ + offset);
+        const long long position = offsetSamplePosition(sampleCursor_, offset);
         bar = position / barSamples;
         phase = static_cast<double>(position - bar * barSamples) / static_cast<double>(barSamples);
     }
@@ -74,7 +74,7 @@ public:
         if (!(bpm_ > 0.0) || !(sampleRate_ > 0.0)) return;
         // The cursor is a real-time sample position; half/double time only changes bar and beat sizes.
         const double samplesPerQuarter = sampleRate_ * 60.0 / bpm_;
-        const auto target = static_cast<long long>(std::llround(std::max(0.0, ppqPosition) * samplesPerQuarter));
+        const auto target = boundedSamplePosition(std::max(0.0, ppqPosition) * samplesPerQuarter);
         // A backwards move or a jump of more than a quarter note is a host seek/loop: pending bar targets
         // computed on the old timeline would otherwise silence or stall the groove.
         if (target < sampleCursor_ - 1 || target - sampleCursor_ > static_cast<long long>(samplesPerQuarter))
@@ -86,7 +86,7 @@ public:
     void setTempoPreservingPosition(double bpm) noexcept {
         const double next = std::clamp(std::isfinite(bpm) ? bpm : 120.0, 20.0, 400.0);
         if (next != bpm_ && bpm_ > 0.0) {
-            sampleCursor_ = static_cast<long long>(std::llround(static_cast<double>(sampleCursor_) * bpm_ / next));
+            sampleCursor_ = boundedSamplePosition(static_cast<double>(sampleCursor_) * bpm_ / next);
             clearBarTargets();
         }
         bpm_ = next;
@@ -112,7 +112,7 @@ public:
     // A deliberate jump (practice loop): like nudgePhaseSamples, and pending fill/break targets are re-planned.
     void jumpPhaseSamples(long long deltaSamples) noexcept { nudgePhaseSamples(deltaSamples); clearBarTargets(); }
     void nudgePhaseSamples(long long deltaSamples) noexcept {
-        sampleCursor_ = std::max<long long>(0, sampleCursor_ + deltaSamples);
+        sampleCursor_ = offsetSamplePosition(sampleCursor_, deltaSamples);
     }
     [[nodiscard]] long long currentBarIndex() const noexcept {
         const double effectiveBpm = bpm_ * state_.timeScale;
@@ -182,7 +182,7 @@ public:
         fillHitCount_ = FillGenerator::generate(outroFill, 0.9f, fillTotalBeats_, 0x0070u + static_cast<std::uint32_t>(outroFinalBeat_), fillHits_);
     }
     [[nodiscard]] std::size_t processBlock(int numSamples, DrumEvent* out, std::size_t capacity) noexcept {
-        if (numSamples <= 0 || out == nullptr || capacity == 0 || state_.stopped) { if (numSamples > 0) sampleCursor_ += numSamples; return 0; }
+        if (numSamples <= 0 || out == nullptr || capacity == 0 || state_.stopped) { if (numSamples > 0) sampleCursor_ = offsetSamplePosition(sampleCursor_, numSamples); return 0; }
         const double effectiveBpm = bpm_ * state_.timeScale;
         const double spq = sampleRate_ * 60.0 / effectiveBpm;
         const double spb = spq * (4.0 / static_cast<double>(denominator_));
@@ -344,11 +344,27 @@ public:
             }
         }
         if (state_.crashRequested && count < capacity) { out[count++] = {DrumInstrument::Crash, 0, 1.0f, 0}; state_.crashRequested = false; }
-        sampleCursor_ = blockEnd;
+        sampleCursor_ = std::min(blockEnd, MaxTimelineSamples);
         std::sort(out, out + count, [](const DrumEvent& a, const DrumEvent& b){ return a.sampleOffset < b.sampleOffset; });
         return count;
     }
 private:
+    // A bounded sample timeline keeps every cursor integer exactly representable
+    // as a double, with ample signed-integer headroom for one callback, nearby
+    // bar/fill targets and tempo changes. Beyond this centuries-long audio
+    // timeline, host seeks and free-running advances saturate until a valid
+    // backwards seek/reset. Ordinary sample positions retain their exact path.
+    static constexpr long long MaxTimelineSamples = 1LL << 52;
+    static long long boundedSamplePosition(double samples) noexcept {
+        if (!(samples > 0.0)) return 0;
+        if (samples >= static_cast<double>(MaxTimelineSamples)) return MaxTimelineSamples;
+        return std::llround(samples);
+    }
+    static long long offsetSamplePosition(long long position, long long delta) noexcept {
+        if (delta > MaxTimelineSamples - position) return MaxTimelineSamples;
+        if (delta < -position) return 0;
+        return position + delta;
+    }
     static float finiteOr(float value, float fallback) noexcept { return std::isfinite(value) ? value : fallback; }
     void clearBarTargets() noexcept { if (outroFinalBeat_ < 0) fillStartBeat_ = -1; breakUntilBar_ = -1; }
 

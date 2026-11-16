@@ -64,7 +64,7 @@ The qualification record is [RELEASE_QA_2026-10-22.md](feature-audit/RELEASE_QA_
 
 ## Tempo sources
 
-`tempoSource`: **Host / Internal** (host tempo and transport when available, Internal BPM otherwise), **Internal BPM only** (free-running, ignores the host transport), **MIDI Clock** (24 ppqn with Start/Stop/Continue; falls back to the host/internal tempo when no clock is present). Tap tempo sets Internal BPM.
+`tempoSource`: **Host / Internal** (host tempo and transport when available, Internal BPM otherwise), **Internal BPM only** (free-running, ignores host BPM, play/stop and PPQ; host time signature remains active unless Manual meter overrides it), **MIDI Clock** (24 ppqn with Start/Stop/Continue; falls back to the host/internal tempo when no clock is present). Tap tempo sets Internal BPM.
 
 ## Current timing modes
 

@@ -56,6 +56,7 @@ struct AutoSetupProposal {
     AutoSetupField<float> bpm;                   // param bpm 40..240
     AutoSetupField<JamStyle> jamStyle;
     AutoSetupField<float> intensity;             // 0..1
+    std::uint64_t generation{0};                 // transient run identity; never serialized
     [[nodiscard]] bool any() const noexcept {
         return inputGainDb.apply || autoGain.apply || gateThresholdDb.apply || followStrength.apply || tempoInertia.apply ||
                confidenceSensitivity.apply || timingMode.apply || leadership.apply || bpm.apply || jamStyle.apply || intensity.apply;
@@ -257,9 +258,9 @@ public:
     // Audio thread, from prepareToPlay.
     void prepare(double sampleRate) noexcept {
         sampleRate_ = (sampleRate > 0.0 && std::isfinite(sampleRate)) ? sampleRate : 48000.0;
-        state_.store(AutoSetupState::Idle, std::memory_order_release);
-        pendingStart_.store(false);
-        cancel_.store(false);
+        advanceGeneration(AutoSetupState::Idle);
+        audioGeneration_ = 0;
+        cancelGeneration_.store(0);
         prompt_.store(AutoSetupPrompt::None);
         progress_.store(0.0f);
     }
@@ -267,26 +268,36 @@ public:
     // Message thread. seconds is clamped to 8..12.
     void start(float seconds = 10.0f) noexcept {
         duration_.store(autosetup_detail::sane(seconds, 8.0f, 12.0f, 10.0f));
-        cancel_.store(false);
         progress_.store(0.0f);
         prompt_.store(AutoSetupPrompt::GetReady);
         peakDb_.store(-100.0f);
         result_ = {};
-        state_.store(AutoSetupState::Listening, std::memory_order_release);
-        pendingStart_.store(true, std::memory_order_release);
+        advanceGeneration(AutoSetupState::Listening);
     }
 
-    // Message thread. While listening the audio thread performs the transition at its next block.
+    // Message thread. A listening cancellation is consumed at the next audio block.
     void cancel() noexcept {
-        const auto s = state_.load(std::memory_order_acquire);
-        if (s == AutoSetupState::Listening) cancel_.store(true, std::memory_order_release);
+        const auto token = runState_.load(std::memory_order_acquire);
+        const auto s = decodeState(token);
+        if (s == AutoSetupState::Listening) cancelGeneration_.store(token >> StateBits, std::memory_order_release);
         else if (s == AutoSetupState::Analyzing || s == AutoSetupState::Done) {
             result_.status = AutoSetupStatus::Cancelled; result_.proposal = {}; result_.lineCount = 0;
-            state_.store(AutoSetupState::Cancelled, std::memory_order_release);
+            auto expected = token;
+            runState_.compare_exchange_strong(expected, encode(token >> StateBits, AutoSetupState::Cancelled),
+                                             std::memory_order_release, std::memory_order_relaxed);
         }
     }
 
-    [[nodiscard]] AutoSetupState state() const noexcept { return state_.load(std::memory_order_acquire); }
+    // Host state/preset replacement may invalidate from another thread. This
+    // changes only the atomic token, never audio-owned measurements or UI result storage.
+    void invalidate() noexcept { advanceGeneration(AutoSetupState::Cancelled); }
+    [[nodiscard]] std::uint64_t generation() const noexcept { return runState_.load(std::memory_order_acquire) >> StateBits; }
+    [[nodiscard]] bool accepts(const AutoSetupProposal& proposal) const noexcept {
+        const auto token = runState_.load(std::memory_order_acquire);
+        return decodeState(token) == AutoSetupState::Done && proposal.generation != 0
+            && proposal.generation == (token >> StateBits) && result_.status == AutoSetupStatus::Ok;
+    }
+    [[nodiscard]] AutoSetupState state() const noexcept { return decodeState(runState_.load(std::memory_order_acquire)); }
     [[nodiscard]] AutoSetupPrompt prompt() const noexcept { return prompt_.load(std::memory_order_relaxed); }
     [[nodiscard]] float progress() const noexcept { return progress_.load(std::memory_order_relaxed); }
     [[nodiscard]] float inputPeakDb() const noexcept { return peakDb_.load(std::memory_order_relaxed); }
@@ -296,11 +307,15 @@ public:
 
     // Audio thread: RAW mono guitar (before InputConditioner). A cheap no-op unless a run is active.
     void process(const float* mono, int numSamples) noexcept {
-        if (pendingStart_.load(std::memory_order_acquire)) { beginRun(); pendingStart_.store(false, std::memory_order_release); }
-        if (state_.load(std::memory_order_acquire) != AutoSetupState::Listening) return;
-        if (cancel_.load(std::memory_order_acquire)) {
-            cancel_.store(false);
-            state_.store(AutoSetupState::Cancelled, std::memory_order_release);
+        const auto token = runState_.load(std::memory_order_acquire);
+        if (decodeState(token) != AutoSetupState::Listening) return;
+        const auto runGeneration = token >> StateBits;
+        if (audioGeneration_ != runGeneration) { beginRun(); audioGeneration_ = runGeneration; }
+        if (runState_.load(std::memory_order_acquire) != token) return;
+        if (cancelGeneration_.load(std::memory_order_acquire) == runGeneration) {
+            auto expected = token;
+            runState_.compare_exchange_strong(expected, encode(runGeneration, AutoSetupState::Cancelled),
+                                             std::memory_order_release, std::memory_order_relaxed);
             return;
         }
         for (int i = 0; i < numSamples; ++i) {
@@ -313,23 +328,45 @@ public:
             if (staged_ == ChunkSamples) {
                 staged_ = 0;
                 processChunk();
-                if (state_.load(std::memory_order_relaxed) != AutoSetupState::Listening) return;
+                if (runState_.load(std::memory_order_acquire) != token) return;
             }
         }
     }
 
     // Message thread (UI timer) once state() == Analyzing. Does the maths and formats the explanations.
     void finalize() noexcept {
-        if (state_.load(std::memory_order_acquire) != AutoSetupState::Analyzing) return;
+        const auto token = runState_.load(std::memory_order_acquire);
+        if (decodeState(token) != AutoSetupState::Analyzing) return;
         buildResult();
+        result_.proposal.generation = token >> StateBits;
         progress_.store(1.0f);
         prompt_.store(AutoSetupPrompt::None);
-        state_.store(AutoSetupState::Done, std::memory_order_release);
+        auto expected = token;
+        runState_.compare_exchange_strong(expected, encode(token >> StateBits, AutoSetupState::Done),
+                                         std::memory_order_release, std::memory_order_relaxed);
     }
 
     [[nodiscard]] int badSampleCount() const noexcept { return badSamples_; }
 
 private:
+    // State and generation form one value so an old audio block cannot publish
+    // Analyzing over a newer cancellation/start. No retry loop runs in process().
+    static constexpr unsigned StateBits = 3;
+    static constexpr std::uint64_t StateMask = (1u << StateBits) - 1u;
+    static constexpr std::uint64_t encode(std::uint64_t generation, AutoSetupState state) noexcept {
+        return (generation << StateBits) | static_cast<std::uint64_t>(state);
+    }
+    static constexpr AutoSetupState decodeState(std::uint64_t token) noexcept {
+        return static_cast<AutoSetupState>(token & StateMask);
+    }
+    void advanceGeneration(AutoSetupState state) noexcept {
+        auto previous = runState_.load(std::memory_order_relaxed);
+        std::uint64_t next;
+        do {
+            const auto generation = ((previous >> StateBits) + 1) & (UINT64_MAX >> StateBits);
+            next = encode(generation == 0 ? 1 : generation, state);
+        } while (!runState_.compare_exchange_weak(previous, next, std::memory_order_acq_rel, std::memory_order_relaxed));
+    }
     static constexpr int kMaxOnsets = 256;
     static constexpr int kMaxTempoSamples = 96;
     static constexpr int kMaxLead = 128;
@@ -454,7 +491,11 @@ private:
         if (t >= 5.0f && act < 0.3f && onsetCount_ < 2) finish = true;                       // nothing heard
         else if (t >= durationNominal_ && act >= 4.0f && onsetCount_ >= 12) finish = true;    // enough material
         else if (t >= durationCap_) { finish = true; hitCap_ = true; }                         // timeout
-        if (finish) state_.store(AutoSetupState::Analyzing, std::memory_order_release);
+        if (finish) {
+            auto expected = encode(audioGeneration_, AutoSetupState::Listening);
+            runState_.compare_exchange_strong(expected, encode(audioGeneration_, AutoSetupState::Analyzing),
+                                             std::memory_order_release, std::memory_order_relaxed);
+        }
     }
 
     // ---- analysis (message thread) ----
@@ -699,13 +740,14 @@ private:
     }
 
     double sampleRate_{48000.0};
-    std::atomic<AutoSetupState> state_{AutoSetupState::Idle};
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    std::atomic<std::uint64_t> runState_{encode(0, AutoSetupState::Idle)};
+    std::atomic<std::uint64_t> cancelGeneration_{0};
+    std::uint64_t audioGeneration_{0}; // audio thread only
     std::atomic<AutoSetupPrompt> prompt_{AutoSetupPrompt::None};
     std::atomic<float> progress_{0.0f};
     std::atomic<float> peakDb_{-100.0f};
     std::atomic<float> duration_{10.0f};
-    std::atomic<bool> pendingStart_{false};
-    std::atomic<bool> cancel_{false};
 
     // Audio-thread-owned run data (reset in beginRun).
     AdaptiveOnsetDetector detector_{};

@@ -75,7 +75,9 @@ public:
         double positiveMotion = 0.0;
         std::array<double, 3> bandEnergy{};
         for (int i = 0; i < numSamples; ++i) {
-            const float x = std::isfinite(input[i]) ? input[i] : 0.0f;
+            // Standalone callers need the same analysis-only headroom guard as
+            // the conditioned path; float IIR differences can otherwise overflow.
+            const float x = std::isfinite(input[i]) ? std::clamp(input[i], -1.0e4f, 1.0e4f) : 0.0f;
             const float a = std::abs(x);
             energy += static_cast<double>(x) * static_cast<double>(x);
             peak = std::max(peak, a);

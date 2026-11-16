@@ -13,6 +13,10 @@ const char* RoboDrummerAudioProcessorEditor::tabName(int index) {
 }
 
 RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p)
+    : RoboDrummerAudioProcessorEditor(p, rdui::queryPlatformReducedMotion) {}
+
+RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudioProcessor& p,
+    std::function<std::optional<bool>()> platformMotionReader)
     : AudioProcessorEditor(&p), processor_(p) {
     setLookAndFeel(&lookAndFeel_);
 
@@ -23,7 +27,13 @@ RoboDrummerAudioProcessorEditor::RoboDrummerAudioProcessorEditor(RoboDrummerAudi
     rdui::styleCaption(subtitle_, "adaptive jam partner", 13.0f);
     addAndMakeVisible(subtitle_);
 
-    const auto settings = rdui::EditorSettings::load();
+    auto settings = rdui::EditorSettings::load();
+    const auto savedSettings = juce::XmlDocument::parse(rdui::EditorSettings::file());
+    const std::optional<bool> savedMotion = savedSettings != nullptr
+        && savedSettings->hasTagName("RoboDrummerSettings") && savedSettings->hasAttribute("reducedMotion")
+        ? std::optional<bool>{settings.reducedMotion} : std::nullopt;
+    settings.reducedMotion = rdui::resolveReducedMotionPreference(savedMotion,
+        !savedMotion && platformMotionReader ? platformMotionReader() : std::optional<bool>{});
     rdui::uiPrefs().reducedMotion = settings.reducedMotion;
     rdui::uiPrefs().highContrast = settings.highContrast;
     tooltipDelayMs_ = settings.tooltipDelayMs;
@@ -135,6 +145,7 @@ void RoboDrummerAudioProcessorEditor::applyTooltipDelay(int ms) {
 void RoboDrummerAudioProcessorEditor::applyReducedMotion(bool on) {
     rdui::uiPrefs().reducedMotion = on;
     setTimerRate(on ? 5 : 20);
+    static_cast<rdui::AnalysisPanel&>(*panels_[7]).setReducedMotion(on);
     rdui::EditorSettings::setBool("reducedMotion", on);
 }
 
@@ -246,6 +257,9 @@ void RoboDrummerAudioProcessorEditor::resized() {
 }
 
 void RoboDrummerAudioProcessorEditor::timerCallback() {
+    // Keep consuming the audio producer even while another tab is visible or
+    // the onset presentation is frozen. Only the message-thread model changes.
+    static_cast<rdui::AnalysisPanel&>(*panels_[7]).drainOnsets();
     panels_[static_cast<std::size_t>(currentTab_)]->refresh();
     focusRing_.refresh();
 }

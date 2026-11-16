@@ -49,13 +49,18 @@ public:
     }
 
     [[nodiscard]] DownbeatState state() const noexcept {
+        return stateAt(beatIndex_ - 1);
+    }
+
+    // Projects position on the same absolute grid used by observeBeatAt. This
+    // reads the inferred bar offset without advancing or fabricating evidence.
+    [[nodiscard]] DownbeatState stateAt(long long beatNumber) const noexcept {
         if (beatIndex_ <= 0)
             return {meter_, 1, meter_ > 1 ? 2 : 1, 0.0f};
 
-        const int lastSlot = (beatIndex_ - 1) % meter_;
-        const int current = ((lastSlot - inferredDownbeatSlot_ + meter_) % meter_) + 1;
-        const int nextSlot = beatIndex_ % meter_;
-        const int next = ((nextSlot - inferredDownbeatSlot_ + meter_) % meter_) + 1;
+        const int slot = static_cast<int>(((beatNumber % meter_) + meter_) % meter_);
+        const int current = ((slot - inferredDownbeatSlot_ + meter_) % meter_) + 1;
+        const int next = current % meter_ + 1;
         return {meter_, current, next, confidence_};
     }
 
@@ -97,7 +102,11 @@ private:
         if (bestSlot == inferredDownbeatSlot_ || proposedConfidence >= std::max(0.45f, confidence_ + 0.12f))
             inferredDownbeatSlot_ = bestSlot;
 
-        confidence_ += (proposedConfidence - confidence_) * 0.20f;
+        // Until a competing origin clears hysteresis, its evidence must not
+        // inflate the incumbent's confidence and continually raise the switch
+        // threshold. Confidence always describes the origin we actually publish.
+        const float acceptedConfidence = bestSlot == inferredDownbeatSlot_ ? proposedConfidence : 0.0f;
+        confidence_ += (acceptedConfidence - confidence_) * 0.20f;
         confidence_ = std::clamp(confidence_, 0.0f, 1.0f);
     }
 
